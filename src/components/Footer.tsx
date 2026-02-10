@@ -2,6 +2,7 @@ import React from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Mail, Phone, MapPin, Linkedin, Github } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { getFlagEmoji } from '@/lib/utils';
 
 const Footer: React.FC = () => {
@@ -43,11 +44,10 @@ const Footer: React.FC = () => {
           <div>
             <h4 className="text-lg font-semibold mb-4">Services</h4>
             <ul className="space-y-2 text-gray-300">
-                          <li><a href="/blog?category=Analytics" className="hover:text-white transition-colors">Data Analytics</a></li>
-            <li><a href="/blog?category=Machine%20Learning" className="hover:text-white transition-colors">Machine Learning</a></li>
-            <li><a href="/blog?category=Engineering" className="hover:text-white transition-colors">Data Engineering</a></li>
-            <li><a href="/blog?category=Business%20Intelligence" className="hover:text-white transition-colors">Business Intelligence</a></li>
-            <li><a href="/blog?category=Database" className="hover:text-white transition-colors">Database Design & Smart Data Collection</a></li>
+              <li><Link to="/analyze" className="hover:text-white transition-colors">Data Analysis Tool</Link></li>
+              <li><Link to="/pricing" className="hover:text-white transition-colors">PDF Reports</Link></li>
+              <li><Link to="/request-report" className="hover:text-white transition-colors">Custom Report Writing</Link></li>
+              <li><Link to="/blog" className="hover:text-white transition-colors">Blog & Insights</Link></li>
             </ul>
           </div>
 
@@ -83,9 +83,9 @@ const Footer: React.FC = () => {
               Subscribe to get the latest insights and updates.
             </p>
             <div className="flex flex-col space-y-2">
-              <Input 
-                type="email" 
-                placeholder="Enter your email" 
+              <Input
+                type="email"
+                placeholder="Enter your email"
                 className="bg-gray-800 border-gray-700 text-white placeholder-gray-400"
               />
               <Button size="sm" className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700">
@@ -97,7 +97,7 @@ const Footer: React.FC = () => {
 
         <div className="border-t border-gray-800 mt-8 pt-8 text-center">
           <p className="text-gray-400 text-sm">
-            © {currentYear} DataAfrik. All rights reserved. Built with React & Tailwind CSS.
+            &copy; {currentYear} DataAfrik. All rights reserved.
           </p>
         </div>
       </div>

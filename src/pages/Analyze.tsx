@@ -3,15 +3,10 @@ import FunctionalDataUpload from '@/components/FunctionalDataUpload';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 
-const ProjectsPage: React.FC = () => {
+const AnalyzePage: React.FC = () => {
   return (
     <div className="min-h-screen bg-white">
-      <Navbar 
-        activeSection="projects"
-        setActiveSection={() => {}}
-        mobileMenuOpen={false}
-        setMobileMenuOpen={() => {}}
-      />
+      <Navbar />
       <main className="pt-16">
         <FunctionalDataUpload />
       </main>
@@ -20,4 +15,4 @@ const ProjectsPage: React.FC = () => {
   );
 };
 
-export default ProjectsPage;
+export default AnalyzePage;

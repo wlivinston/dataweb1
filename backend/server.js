@@ -9,6 +9,7 @@ require('dotenv').config();
 const authRoutes = require('./routes/auth');
 const commentRoutes = require('./routes/comments');
 const blogRoutes = require('./routes/blog');
+const reportRoutes = require('./routes/reports');
 
 // Supabase-based DB helpers (no localhost:5432)
 const { connectDB } = require('./config/database');
@@ -77,6 +78,7 @@ app.get('/health', (_req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/comments', commentRoutes);
 app.use('/api/blog', blogRoutes);
+app.use('/api/reports', reportRoutes);
 
 /* -------------------- Error handling -------------------- */
 app.use((err, _req, res, _next) => {

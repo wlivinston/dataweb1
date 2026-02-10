@@ -64,7 +64,7 @@
     --secondary-foreground: 210 40% 98%;
 
     --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215.20.2% 65.1%;
+    --muted-foreground: 215 20.2% 65.1%;
 
     --accent: 217.2 32.6% 17.5%;
     --accent-foreground: 210 40% 98%;
@@ -107,7 +107,7 @@
 
 /* Professional Newspaper-style Blog Layout */
 .blog-container {
-  @apply max-w-4xl mx-auto px-4 sm:px-6 lg:px-8;
+  @apply max-w-6xl mx-auto px-4 sm:px-6 lg:px-8;
 }
 
 .blog-header {

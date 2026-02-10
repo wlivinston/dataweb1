@@ -6,11 +6,12 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "@/components/theme-provider";
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
-import Projects from "./pages/Projects";
-import BlogPost from "./pages/BlogPost";
-import Blog from "./components/Blog";
+import AnalyzePage from "./pages/Analyze";
+import BlogPage from "./pages/BlogPage";
+import BlogPostPage from "./pages/BlogPostPage";
+import PricingPage from "./pages/Pricing";
+import RequestReportPage from "./pages/RequestReport";
 import Login from "./pages/Login";
-
 
 const queryClient = new QueryClient();
 
@@ -22,10 +23,12 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <Routes>
-            <Route path="/projects" element={<Projects />} />
             <Route path="/" element={<Index />} />
-            <Route path="/blog" element={<Blog />} />
-            <Route path="/blog/:slug" element={<BlogPost />} />
+            <Route path="/analyze" element={<AnalyzePage />} />
+            <Route path="/blog" element={<BlogPage />} />
+            <Route path="/blog/:slug" element={<BlogPostPage />} />
+            <Route path="/pricing" element={<PricingPage />} />
+            <Route path="/request-report" element={<RequestReportPage />} />
             <Route path="/login" element={<Login />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

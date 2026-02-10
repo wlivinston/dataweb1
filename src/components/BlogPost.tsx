@@ -1,66 +1,49 @@
-import React, { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import React, { useState, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
-import { Calendar, Clock, User, Share2, MessageCircle, Heart, BookOpen } from "lucide-react";
+import { Calendar, Clock, User, Share2, Heart, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
-import BlogComments from "./BlogComments";
-import { supabase } from "@/lib/supabase";
+import { Link } from "react-router-dom";
+import RequestReportCTA from "./RequestReportCTA";
 
-interface BlogPostData {
-  id: number;
-  slug: string;
+export interface BlogPostLayoutData {
   title: string;
-  excerpt: string | null;
+  excerpt?: string;
   content: string;
   author: string;
-  category: string | null;
-  tags: string[] | null;
-  featured: boolean;
-  published: boolean;
-  published_at: string;
-  created_at: string;
-  updated_at: string;
-  read_time: string | null;
-  view_count: number;
-  like_count: number;
-  comment_count: number;
+  date: string;
+  readTime: string;
+  category: string;
+  featured?: boolean;
+  qualification?: string;
 }
 
-const BlogPost: React.FC = () => {
-  const { slug } = useParams();
-  const [post, setPost] = useState<BlogPostData | null>(null);
+interface BlogPostLayoutProps {
+  post: BlogPostLayoutData;
+}
+
+function extractHeadings(markdown: string): { id: string; text: string; level: number }[] {
+  const headingRegex = /^(#{2,3})\s+(.+)$/gm;
+  const headings: { id: string; text: string; level: number }[] = [];
+  let match;
+  while ((match = headingRegex.exec(markdown)) !== null) {
+    const level = match[1].length;
+    const text = match[2].trim();
+    const id = text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-');
+    headings.push({ id, text, level });
+  }
+  return headings;
+}
+
+const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post }) => {
   const [likes, setLikes] = useState(0);
 
-  useEffect(() => {
-    const fetchPost = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('blog_posts')
-          .select('*')
-          .eq('slug', slug)
-          .eq('published', true)
-          .single();
-
-        if (error) {
-          console.error('Error fetching post:', error);
-          return;
-        }
-
-        setPost(data);
-        setLikes(data.like_count || 0);
-      } catch (error) {
-        console.error('Error fetching post:', error);
-      }
-    };
-
-    if (slug) {
-      fetchPost();
-    }
-  }, [slug]);
+  const headings = useMemo(() => extractHeadings(post.content), [post.content]);
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("en-US", {
@@ -72,38 +55,30 @@ const BlogPost: React.FC = () => {
 
   const handleLike = () => {
     setLikes(prev => prev + 1);
-    // TODO: Implement like functionality with backend
   };
 
   const handleShare = (platform: string) => {
     const url = window.location.href;
-    const title = post?.title || '';
-    
-    const shareUrls = {
+    const title = post.title;
+
+    const shareUrls: Record<string, string> = {
       twitter: `https://twitter.com/intent/tweet?url=${encodeURIComponent(url)}&text=${encodeURIComponent(title)}`,
       linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`,
-      facebook: `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`
+      facebook: `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`,
     };
-    
-    window.open(shareUrls[platform as keyof typeof shareUrls], '_blank');
+
+    window.open(shareUrls[platform], '_blank');
   };
 
-  if (!post) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading article...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-white">
+    <div className="bg-white">
       {/* Hero Section */}
       <div className="bg-gradient-to-br from-blue-50 to-indigo-100 py-16">
         <div className="blog-container">
+          <Link to="/blog" className="inline-flex items-center text-sm text-blue-600 hover:text-blue-800 mb-6 transition-colors">
+            <ArrowLeft className="h-4 w-4 mr-1" />
+            Back to Blog
+          </Link>
           <div className="blog-header">
             <Badge variant="secondary" className="mb-4">
               {post.category}
@@ -112,7 +87,7 @@ const BlogPost: React.FC = () => {
             {post.excerpt && (
               <p className="blog-subtitle">{post.excerpt}</p>
             )}
-            
+
             <div className="blog-meta">
               <div className="blog-author">
                 <User className="h-4 w-4 inline mr-1" />
@@ -120,11 +95,11 @@ const BlogPost: React.FC = () => {
               </div>
               <div className="blog-date">
                 <Calendar className="h-4 w-4" />
-                {formatDate(post.published_at)}
+                {formatDate(post.date)}
               </div>
               <div className="blog-read-time">
                 <Clock className="h-4 w-4" />
-                {post.read_time || '5 min read'}
+                {post.readTime}
               </div>
               {post.featured && (
                 <Badge className="bg-gradient-to-r from-blue-600 to-purple-600">
@@ -145,6 +120,18 @@ const BlogPost: React.FC = () => {
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 rehypePlugins={[rehypeRaw]}
+                components={{
+                  h2: ({ children, ...props }) => {
+                    const text = typeof children === 'string' ? children : String(children);
+                    const id = text.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
+                    return <h2 id={id} {...props}>{children}</h2>;
+                  },
+                  h3: ({ children, ...props }) => {
+                    const text = typeof children === 'string' ? children : String(children);
+                    const id = text.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
+                    return <h3 id={id} {...props}>{children}</h3>;
+                  },
+                }}
               >
                 {post.content}
               </ReactMarkdown>
@@ -153,8 +140,8 @@ const BlogPost: React.FC = () => {
             {/* Article Footer */}
             <div className="mt-12 pt-8 border-t border-gray-200">
               {/* Engagement Section */}
-              <div className="flex items-center justify-between mb-8">
-                <div className="flex items-center gap-6">
+              <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
+                <div className="flex items-center gap-4">
                   <Button
                     variant="outline"
                     size="sm"
@@ -164,25 +151,14 @@ const BlogPost: React.FC = () => {
                     <Heart className="h-4 w-4" />
                     {likes} Likes
                   </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="flex items-center gap-2"
-                  >
-                    <MessageCircle className="h-4 w-4" />
-                    Comments
-                  </Button>
                 </div>
-                
-                <div className="social-share">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleShare('twitter')}
-                    className="twitter"
-                  >
-                    <Share2 className="h-4 w-4" />
-                    Share
+
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => handleShare('twitter')}>
+                    <Share2 className="h-4 w-4 mr-1" /> Twitter
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => handleShare('linkedin')}>
+                    <Share2 className="h-4 w-4 mr-1" /> LinkedIn
                   </Button>
                 </div>
               </div>
@@ -191,66 +167,60 @@ const BlogPost: React.FC = () => {
               <div className="author-bio">
                 <h3>About the Author</h3>
                 <p>
-                  <strong>{post.author}</strong> is a data science professional with expertise in analytics, 
-                  machine learning, and business intelligence. With a passion for turning complex data into 
-                  actionable insights, they help organizations make data-driven decisions.
+                  <strong>{post.author}</strong>
+                  {post.qualification && <> &mdash; {post.qualification}</>}.{' '}
+                  A data science professional with expertise in analytics,
+                  machine learning, and business intelligence. Passionate about turning complex data into
+                  actionable insights to help organizations make data-driven decisions.
                 </p>
-                <div className="flex items-center gap-4 mt-4 text-sm text-gray-600">
-                  <span>🎓 MS Data Science</span>
-                  <span>📊 Power BI Expert</span>
-                  <span>🤖 ML Practitioner</span>
-                </div>
               </div>
             </div>
 
-            {/* Comments Section */}
-            <BlogComments postId={post.id} postSlug={post.slug} />
+            {/* Report CTA */}
+            <div className="mt-8">
+              <RequestReportCTA />
+            </div>
           </article>
 
           {/* Sidebar */}
           <aside className="blog-sidebar">
-            <div className="sticky top-8">
-              {/* Table of Contents */}
-              <div className="bg-gray-50 rounded-lg p-6 mb-8">
-                <h3 className="font-serif text-lg font-semibold mb-4">Table of Contents</h3>
-                <nav className="space-y-2">
-                  <a href="#introduction" className="block text-sm text-gray-600 hover:text-blue-600 transition-colors">
-                    Introduction
-                  </a>
-                  <a href="#why-pictures-matter" className="block text-sm text-gray-600 hover:text-blue-600 transition-colors">
-                    Why Pictures Matter
-                  </a>
-                  <a href="#watch-analytics" className="block text-sm text-gray-600 hover:text-blue-600 transition-colors">
-                    Watch: Analytics in Action
-                  </a>
-                  <a href="#final-thoughts" className="block text-sm text-gray-600 hover:text-blue-600 transition-colors">
-                    Final Thoughts
-                  </a>
-                </nav>
-              </div>
+            <div className="sticky top-24">
+              {/* Dynamic Table of Contents */}
+              {headings.length > 0 && (
+                <div className="bg-gray-50 rounded-lg p-6 mb-8">
+                  <h3 className="font-serif text-lg font-semibold mb-4">Table of Contents</h3>
+                  <nav className="space-y-2">
+                    {headings.map((heading, i) => (
+                      <a
+                        key={i}
+                        href={`#${heading.id}`}
+                        className={`block text-sm text-gray-600 hover:text-blue-600 transition-colors ${
+                          heading.level === 3 ? 'pl-4' : ''
+                        }`}
+                      >
+                        {heading.text}
+                      </a>
+                    ))}
+                  </nav>
+                </div>
+              )}
 
               {/* Related Articles */}
               <div className="bg-gray-50 rounded-lg p-6">
                 <h3 className="font-serif text-lg font-semibold mb-4">Related Articles</h3>
                 <div className="space-y-4">
-                  <div className="border-l-4 border-blue-500 pl-4">
-                    <h4 className="text-sm font-medium text-gray-900 mb-1">
-                      Building Scalable Data Pipelines
-                    </h4>
-                    <p className="text-xs text-gray-600">Learn how to build robust data pipelines...</p>
-                  </div>
-                  <div className="border-l-4 border-green-500 pl-4">
-                    <h4 className="text-sm font-medium text-gray-900 mb-1">
-                      Real-time Analytics with Kafka
-                    </h4>
-                    <p className="text-xs text-gray-600">Stream processing for real-time insights...</p>
-                  </div>
-                  <div className="border-l-4 border-purple-500 pl-4">
-                    <h4 className="text-sm font-medium text-gray-900 mb-1">
-                      The Future of Machine Learning
-                    </h4>
-                    <p className="text-xs text-gray-600">Emerging trends in ML and AI...</p>
-                  </div>
+                  <Link to="/blog/building-scalable-data-pipelines" className="block border-l-4 border-blue-500 pl-4 hover:bg-gray-100 rounded-r-lg py-1 transition-colors">
+                    <h4 className="text-sm font-medium text-gray-900 mb-1">Building Scalable Data Pipelines</h4>
+                    <p className="text-xs text-gray-600">Design robust data pipelines at scale...</p>
+                  </Link>
+                  <Link to="/blog/machine-learning-in-production" className="block border-l-4 border-green-500 pl-4 hover:bg-gray-100 rounded-r-lg py-1 transition-colors">
+                    <h4 className="text-sm font-medium text-gray-900 mb-1">Machine Learning in Production</h4>
+                    <p className="text-xs text-gray-600">Best practices for deploying ML models...</p>
+                  </Link>
+                  <Link to="/blog/statistical-analysis-for-beginners" className="block border-l-4 border-purple-500 pl-4 hover:bg-gray-100 rounded-r-lg py-1 transition-colors">
+                    <h4 className="text-sm font-medium text-gray-900 mb-1">Statistical Analysis for Beginners</h4>
+                    <p className="text-xs text-gray-600">A comprehensive guide to statistics...</p>
+                  </Link>
                 </div>
               </div>
 
@@ -272,4 +242,4 @@ const BlogPost: React.FC = () => {
   );
 };
 
-export default BlogPost;
+export default BlogPostLayout;
