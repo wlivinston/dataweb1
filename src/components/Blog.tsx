@@ -1,16 +1,12 @@
+//import { loadPosts } from "@/lib/loadPosts";
 import React, { useEffect, useState, useMemo } from "react";
-import type { PostData } from "@/lib/loadPosts";
+import { loadPosts, type PostData } from "@/lib/loadPosts";
+//import type { PostData } from "@/lib/loadPosts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar, Clock, ArrowRight } from "lucide-react";
 import { Link } from "react-router-dom";
-
-function calculateReadTime(text: string, wpm = 200): string {
-  const wordCount = text.split(/\s+/).length;
-  const minutes = Math.max(1, Math.ceil(wordCount / wpm));
-  return `${minutes} min read`;
-}
 
 const categoryColors: Record<string, string> = {
   "Data Engineering": "from-orange-100 to-amber-100",
@@ -22,6 +18,7 @@ const categoryColors: Record<string, string> = {
   "Cloud Computing": "from-sky-100 to-blue-100",
   "SQL": "from-yellow-100 to-amber-100",
   "Dashboard Development": "from-teal-100 to-cyan-100",
+  "Analytics": "from-blue-100 to-cyan-100",
 };
 
 const categoryIcons: Record<string, string> = {
@@ -34,6 +31,7 @@ const categoryIcons: Record<string, string> = {
   "Cloud Computing": "☁️",
   "SQL": "🗃️",
   "Dashboard Development": "📱",
+  "Analytics": "📊",
 };
 
 const Blog: React.FC = () => {
@@ -42,122 +40,23 @@ const Blog: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<string>("All");
 
   useEffect(() => {
-    const staticPosts: PostData[] = [
-      {
-        title: "Building Scalable Data Pipelines",
-        excerpt: "Learn how to design and implement robust data pipelines that can handle large-scale data processing with Apache Airflow and modern cloud technologies.",
-        date: "2024-01-15",
-        readTime: "8 min read",
-        category: "Data Engineering",
-        featured: true,
-        slug: "building-scalable-data-pipelines",
-        content: "",
-        author: "DataAfrik Team"
-      },
-      {
-        title: "Data Analytics and Visual Storytelling",
-        excerpt: "Transform raw data into compelling visual narratives that drive business decisions using advanced visualization techniques.",
-        date: "2024-01-10",
-        readTime: "6 min read",
-        category: "Data Visualization",
-        featured: true,
-        slug: "data-analytics-visual-storytelling",
-        content: "",
-        author: "DataAfrik Team"
-      },
-      {
-        title: "Machine Learning in Production",
-        excerpt: "Best practices for deploying and maintaining machine learning models in production environments.",
-        date: "2024-01-08",
-        readTime: "10 min read",
-        category: "Machine Learning",
-        featured: false,
-        slug: "machine-learning-in-production",
-        content: "",
-        author: "DataAfrik Team"
-      },
-      {
-        title: "Real-time Analytics with Apache Kafka",
-        excerpt: "Build real-time data processing systems using Apache Kafka and stream processing technologies.",
-        date: "2024-01-05",
-        readTime: "12 min read",
-        category: "Real-time Analytics",
-        featured: false,
-        slug: "real-time-analytics-with-kafka",
-        content: "",
-        author: "DataAfrik Team"
-      },
-      {
-        title: "Statistical Analysis for Beginners",
-        excerpt: "A comprehensive guide to statistical analysis techniques for data science beginners.",
-        date: "2024-01-03",
-        readTime: "15 min read",
-        category: "Statistics",
-        featured: false,
-        slug: "statistical-analysis-for-beginners",
-        content: "",
-        author: "DataAfrik Team"
-      },
-      {
-        title: "The Future of Machine Learning",
-        excerpt: "Exploring emerging trends and technologies that will shape the future of machine learning.",
-        date: "2024-01-01",
-        readTime: "7 min read",
-        category: "Machine Learning",
-        featured: false,
-        slug: "the-future-of-machine-learning",
-        content: "",
-        author: "DataAfrik Team"
-      },
-      {
-        title: "Data Privacy and Security in Analytics",
-        excerpt: "Best practices for protecting sensitive data while maintaining analytical capabilities in modern data environments.",
-        date: "2023-12-28",
-        readTime: "9 min read",
-        category: "Data Security",
-        featured: false,
-        slug: "data-privacy-security-analytics",
-        content: "",
-        author: "DataAfrik Team"
-      },
-      {
-        title: "Cloud Data Warehousing Strategies",
-        excerpt: "Comprehensive guide to designing and implementing cloud-based data warehousing solutions for modern businesses.",
-        date: "2023-12-25",
-        readTime: "11 min read",
-        category: "Cloud Computing",
-        featured: false,
-        slug: "cloud-data-warehousing-strategies",
-        content: "",
-        author: "DataAfrik Team"
-      },
-      {
-        title: "Advanced SQL Techniques for Data Analysis",
-        excerpt: "Master advanced SQL techniques including window functions, CTEs, and complex joins for sophisticated data analysis.",
-        date: "2023-12-22",
-        readTime: "13 min read",
-        category: "SQL",
-        featured: false,
-        slug: "advanced-sql-techniques-data-analysis",
-        content: "",
-        author: "DataAfrik Team"
-      },
-      {
-        title: "Building Real-time Dashboards",
-        excerpt: "Learn how to create dynamic, real-time dashboards that provide instant insights into your business metrics.",
-        date: "2023-12-20",
-        readTime: "8 min read",
-        category: "Dashboard Development",
-        featured: false,
-        slug: "building-real-time-dashboards",
-        content: "",
-        author: "DataAfrik Team"
+    let mounted = true;
+  
+    (async () => {
+      try {
+        const mdPosts = await loadPosts();
+        if (mounted) setPosts(mdPosts);
+      } catch (e) {
+        console.error("Failed to load markdown posts:", e);
+      } finally {
+        if (mounted) setLoading(false);
       }
-    ];
-    setPosts(staticPosts);
-    setLoading(false);
+    })();
+  
+    return () => {
+      mounted = false;
+    };
   }, []);
-
   const categories = useMemo(() => {
     const cats = new Set(posts.map(p => p.category));
     return ["All", ...Array.from(cats)];

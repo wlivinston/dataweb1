@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { supabase } from "@/lib/supabase";
-import { STATIC_BLOG_POSTS } from "@/lib/staticBlogData";
 import BlogPostLayout, { type BlogPostLayoutData } from "@/components/BlogPost";
+import { loadPostBySlug } from "@/lib/loadPosts";
 
 const BlogPostView: React.FC = () => {
   const { slug } = useParams();
@@ -13,45 +12,18 @@ const BlogPostView: React.FC = () => {
     const loadPost = async () => {
       if (!slug) return;
 
-      // Try Supabase first
-      try {
-        const { data, error } = await supabase
-          .from('blog_posts')
-          .select('*')
-          .eq('slug', slug)
-          .eq('published', true)
-          .single();
-
-        if (data && !error) {
-          setPost({
-            title: data.title,
-            excerpt: data.excerpt || undefined,
-            content: data.content,
-            author: data.author,
-            date: data.published_at || data.created_at,
-            readTime: data.read_time || '5 min read',
-            category: data.category || 'General',
-            featured: data.featured,
-          });
-          return;
-        }
-      } catch {
-        // Supabase unavailable, fall through to static
-      }
-
-      // Fall back to static blog data
-      const staticPost = STATIC_BLOG_POSTS[slug];
-      if (staticPost) {
+      const mdPost = await loadPostBySlug(slug);
+      if (mdPost) {
         setPost({
-          title: staticPost.title,
-          excerpt: staticPost.excerpt,
-          content: staticPost.content,
-          author: staticPost.author || 'DataAfrik Team',
-          date: staticPost.date,
-          readTime: staticPost.readTime,
-          category: staticPost.category,
-          featured: staticPost.featured,
-          qualification: staticPost.qualification,
+          title: mdPost.title,
+          excerpt: mdPost.excerpt,
+          content: mdPost.content,
+          author: mdPost.author,
+          date: mdPost.date,
+          readTime: mdPost.readTime,
+          category: mdPost.category,
+          featured: mdPost.featured,
+          qualification: mdPost.qualification,
         });
       } else {
         setNotFound(true);

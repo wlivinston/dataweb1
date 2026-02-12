@@ -1,17 +1,36 @@
 // AI-Powered Insights Panel - One-click analysis with executive summaries
 // Makes data analysis accessible to everyone regardless of technical background
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { 
-  Brain, TrendingUp, TrendingDown, AlertTriangle, CheckCircle, 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  Brain, TrendingUp, TrendingDown, AlertTriangle, CheckCircle,
   Lightbulb, BarChart3, Link2, Zap, RefreshCw, ChevronRight,
-  ArrowUp, ArrowDown, Minus, Target, Eye, Sparkles, Clock
+  ArrowUp, ArrowDown, Minus, Target, Eye, Sparkles, Clock,
+  MoreVertical, Trash2, ArrowLeftRight, Calculator, Wrench
 } from 'lucide-react';
 import { Dataset } from '@/lib/types';
 import { 
@@ -31,6 +50,13 @@ import {
   quickFixRecommendation 
 } from '@/lib/autoDataCleaning';
 import { updateDatasetStats } from '@/lib/dataUtils';
+import {
+  fixSingleAnomaly,
+  fixAnomaliesInColumn,
+  fixAllAnomalies,
+  AnomalyFixAction,
+  getFixDescription
+} from '@/lib/anomalyFixUtils';
 import DataProcessingOverlay from './DataProcessingOverlay';
 import { toast } from 'sonner';
 
@@ -269,6 +295,132 @@ const AIInsightsPanel: React.FC<AIInsightsPanelProps> = ({
     }
   };
   
+
+  // --- Anomaly Fix State & Handlers ---
+  const [pendingFix, setPendingFix] = useState<{
+    anomaly?: AnomalyResult;
+    anomalies?: AnomalyResult[];
+    action: AnomalyFixAction;
+    scope: 'single' | 'column' | 'all';
+    columnName?: string;
+  } | null>(null);
+
+  // Group anomalies by column for organized rendering
+  const anomalyGroups = useMemo(() => {
+    if (!insights?.anomalies?.length) return {};
+    const groups: Record<string, AnomalyResult[]> = {};
+    for (const a of insights.anomalies) {
+      if (!groups[a.column]) groups[a.column] = [];
+      groups[a.column].push(a);
+    }
+    return groups;
+  }, [insights?.anomalies]);
+
+  const handleAnomalyFix = async () => {
+    if (!dataset || !pendingFix) return;
+
+    const { anomaly, anomalies, action, scope, columnName } = pendingFix;
+    setPendingFix(null);
+
+    setIsCleaning(true);
+    setShowOverlay(true);
+    setOverlayStage('processing');
+    setOverlayProgress(0);
+    setOverlayMessage('Applying anomaly fix...');
+
+    try {
+      await yieldToBrowser();
+
+      setOverlayProgress(20);
+      setOverlayMessage(`Applying fix: ${action.replace(/([A-Z])/g, ' $1').toLowerCase().trim()}...`);
+      await yieldToBrowser();
+
+      let result;
+      if (scope === 'single' && anomaly) {
+        result = fixSingleAnomaly(dataset, anomaly, action);
+      } else if (scope === 'column' && anomalies) {
+        result = fixAnomaliesInColumn(dataset, anomalies, action);
+      } else if (scope === 'all' && insights?.anomalies) {
+        result = fixAllAnomalies(dataset, insights.anomalies, action);
+      }
+
+      if (!result) {
+        setShowOverlay(false);
+        toast.info('No changes were applied');
+        return;
+      }
+
+      setOverlayProgress(50);
+      setOverlayMessage('Updating dataset statistics...');
+      await yieldToBrowser();
+
+      const updatedDataset = updateDatasetStats(result.dataset);
+      onDatasetUpdate?.(updatedDataset);
+
+      setOverlayProgress(70);
+      setOverlayMessage('Re-analyzing data...');
+      await yieldToBrowser();
+
+      // Re-run analysis to refresh anomaly list
+      const newInsights = await runAIAnalysisAsync(updatedDataset, (progress, msg) => {
+        setOverlayProgress(70 + (progress * 0.25));
+        setOverlayMessage(msg);
+      });
+      setInsights(newInsights);
+
+      setOverlayProgress(100);
+      setOverlayStage('complete');
+      setOverlayMessage('Fix applied successfully!');
+
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      toast.success(`${result.description} (${result.fixedCount} fixed)`);
+    } catch (error) {
+      console.error('Anomaly fix error:', error);
+      toast.error('Failed to apply anomaly fix');
+    } finally {
+      setIsCleaning(false);
+      setTimeout(() => {
+        setShowOverlay(false);
+        setOverlayProgress(0);
+        setOverlayStage('processing');
+        setOverlayMessage('');
+      }, 1000);
+    }
+  };
+
+  const requestFix = (
+    action: AnomalyFixAction,
+    scope: 'single' | 'column' | 'all',
+    anomaly?: AnomalyResult,
+    anomalies?: AnomalyResult[],
+    columnName?: string
+  ) => {
+    setPendingFix({ anomaly, anomalies, action, scope, columnName });
+  };
+
+  const FixDropdownItems: React.FC<{
+    onSelect: (action: AnomalyFixAction) => void;
+  }> = ({ onSelect }) => (
+    <>
+      <DropdownMenuItem onClick={() => onSelect('removeRow')}>
+        <Trash2 className="h-4 w-4 mr-2 text-red-500" />
+        Remove Row(s)
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => onSelect('capToBounds')}>
+        <ArrowLeftRight className="h-4 w-4 mr-2 text-blue-500" />
+        Cap to Bounds
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => onSelect('replaceWithMean')}>
+        <Calculator className="h-4 w-4 mr-2 text-green-500" />
+        Replace with Mean
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => onSelect('replaceWithMedian')}>
+        <Calculator className="h-4 w-4 mr-2 text-purple-500" />
+        Replace with Median
+      </DropdownMenuItem>
+    </>
+  );
 
   const getTrendIcon = (trend: TrendResult['trend']) => {
     switch (trend) {
@@ -661,7 +813,7 @@ const AIInsightsPanel: React.FC<AIInsightsPanelProps> = ({
 
             {/* Anomalies Tab */}
             <TabsContent value="anomalies" className="p-6">
-              <ScrollArea className="h-[400px]">
+              <ScrollArea className="h-[500px]">
                 {insights.anomalies.length === 0 ? (
                   <div className="text-center py-8 text-gray-500">
                     <CheckCircle className="h-12 w-12 mx-auto mb-3 text-green-300" />
@@ -669,47 +821,175 @@ const AIInsightsPanel: React.FC<AIInsightsPanelProps> = ({
                     <p className="text-sm text-gray-400 mt-1">Your data looks clean!</p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    {insights.anomalies.slice(0, 20).map((anomaly, index) => (
-                      <Card 
-                        key={index} 
-                        className={`p-4 border ${getSeverityColor(anomaly.severity)}`}
-                      >
-                        <div className="flex items-center justify-between mb-2">
+                  <div className="space-y-4">
+                    {/* Global Fix All Header */}
+                    <div className="flex items-center justify-between pb-3 border-b border-gray-200">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="h-5 w-5 text-orange-500" />
+                        <span className="font-semibold text-gray-700">
+                          {insights.anomalies.length} Anomal{insights.anomalies.length === 1 ? 'y' : 'ies'} Detected
+                        </span>
+                        <Badge variant="secondary" className="text-xs">
+                          {Object.keys(anomalyGroups).length} column{Object.keys(anomalyGroups).length > 1 ? 's' : ''}
+                        </Badge>
+                      </div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            size="sm"
+                            className="bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600"
+                            disabled={isCleaning}
+                          >
+                            <Wrench className="h-4 w-4 mr-2" />
+                            Fix All Anomalies
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuLabel>Fix all {insights.anomalies.length} anomalies</DropdownMenuLabel>
+                          <DropdownMenuSeparator />
+                          <FixDropdownItems
+                            onSelect={(action) => requestFix(action, 'all', undefined, insights.anomalies)}
+                          />
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+
+                    {/* Grouped by Column */}
+                    {Object.entries(anomalyGroups).map(([columnName, columnAnomalies]) => (
+                      <div key={columnName} className="space-y-2">
+                        {/* Column Group Header */}
+                        <div className="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-2">
                           <div className="flex items-center gap-2">
-                            <AlertTriangle className={`h-4 w-4 ${
-                              anomaly.severity === 'critical' ? 'text-red-600' :
-                              anomaly.severity === 'high' ? 'text-orange-600' :
-                              anomaly.severity === 'medium' ? 'text-yellow-600' : 'text-blue-600'
-                            }`} />
-                            <span className="font-medium">{anomaly.column}</span>
+                            <span className="font-medium text-gray-700">Column: &quot;{columnName}&quot;</span>
                             <Badge variant="outline" className="text-xs">
-                              Row {anomaly.rowIndex + 1}
+                              {columnAnomalies.length} anomal{columnAnomalies.length === 1 ? 'y' : 'ies'}
                             </Badge>
                           </div>
-                          <Badge className={
-                            anomaly.severity === 'critical' ? 'bg-red-500' :
-                            anomaly.severity === 'high' ? 'bg-orange-500' :
-                            anomaly.severity === 'medium' ? 'bg-yellow-500' : 'bg-blue-500'
-                          }>
-                            {anomaly.severity}
-                          </Badge>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="outline" size="sm" disabled={isCleaning}>
+                                <Wrench className="h-3.5 w-3.5 mr-1.5" />
+                                Fix All in Column
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuLabel>Fix {columnAnomalies.length} in &quot;{columnName}&quot;</DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <FixDropdownItems
+                                onSelect={(action) => requestFix(action, 'column', undefined, columnAnomalies, columnName)}
+                              />
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
-                        <p className="text-sm">{anomaly.description}</p>
-                        <div className="mt-2 text-xs text-gray-500">
-                          Value: <span className="font-mono font-bold">{anomaly.value}</span> | 
-                          Expected: <span className="font-mono">{anomaly.expectedRange.min} - {anomaly.expectedRange.max}</span>
-                        </div>
-                      </Card>
+
+                        {/* Individual Anomaly Cards */}
+                        {columnAnomalies.slice(0, 10).map((anomaly, index) => (
+                          <Card
+                            key={`${columnName}-${index}`}
+                            className={`p-4 border ${getSeverityColor(anomaly.severity)} ml-2`}
+                          >
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2">
+                                <AlertTriangle className={`h-4 w-4 ${
+                                  anomaly.severity === 'critical' ? 'text-red-600' :
+                                  anomaly.severity === 'high' ? 'text-orange-600' :
+                                  anomaly.severity === 'medium' ? 'text-yellow-600' : 'text-blue-600'
+                                }`} />
+                                <span className="font-medium">{anomaly.column}</span>
+                                <Badge variant="outline" className="text-xs">
+                                  Row {anomaly.rowIndex + 1}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Badge className={
+                                  anomaly.severity === 'critical' ? 'bg-red-500' :
+                                  anomaly.severity === 'high' ? 'bg-orange-500' :
+                                  anomaly.severity === 'medium' ? 'bg-yellow-500' : 'bg-blue-500'
+                                }>
+                                  {anomaly.severity}
+                                </Badge>
+                                {/* Per-anomaly fix dropdown */}
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-7 w-7 p-0 hover:bg-white/50"
+                                      disabled={isCleaning}
+                                    >
+                                      <MoreVertical className="h-4 w-4" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuLabel>Fix this anomaly</DropdownMenuLabel>
+                                    <DropdownMenuSeparator />
+                                    <FixDropdownItems
+                                      onSelect={(action) => requestFix(action, 'single', anomaly)}
+                                    />
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </div>
+                            </div>
+                            <p className="text-sm">{anomaly.description}</p>
+                            <div className="mt-2 text-xs text-gray-500">
+                              Value: <span className="font-mono font-bold">{anomaly.value}</span> |{' '}
+                              Expected: <span className="font-mono">
+                                {typeof anomaly.expectedRange.min === 'number' ? anomaly.expectedRange.min.toLocaleString() : anomaly.expectedRange.min} - {typeof anomaly.expectedRange.max === 'number' ? anomaly.expectedRange.max.toLocaleString() : anomaly.expectedRange.max}
+                              </span>
+                            </div>
+                          </Card>
+                        ))}
+                        {columnAnomalies.length > 10 && (
+                          <p className="text-center text-xs text-gray-400 ml-2">
+                            Showing 10 of {columnAnomalies.length} anomalies in this column
+                          </p>
+                        )}
+                      </div>
                     ))}
-                    {insights.anomalies.length > 20 && (
-                      <p className="text-center text-sm text-gray-500">
-                        Showing 20 of {insights.anomalies.length} anomalies
-                      </p>
-                    )}
                   </div>
                 )}
               </ScrollArea>
+
+              {/* Anomaly Fix Confirmation Dialog */}
+              <AlertDialog open={!!pendingFix} onOpenChange={(open) => !open && setPendingFix(null)}>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle className="flex items-center gap-2">
+                      <Wrench className="h-5 w-5 text-orange-500" />
+                      Confirm Anomaly Fix
+                    </AlertDialogTitle>
+                    <AlertDialogDescription asChild>
+                      <div className="space-y-3">
+                        <p className="text-sm text-gray-600">
+                          {pendingFix && getFixDescription(
+                            pendingFix.action,
+                            pendingFix.scope,
+                            pendingFix.anomaly,
+                            pendingFix.anomalies || (insights?.anomalies),
+                            pendingFix.columnName,
+                            dataset || undefined
+                          )}
+                        </p>
+                        <div className="bg-orange-50 border border-orange-200 rounded-md p-3">
+                          <p className="text-xs text-orange-700">
+                            <strong>Note:</strong> This action will modify your dataset. The analysis will automatically re-run after the fix is applied.
+                          </p>
+                        </div>
+                      </div>
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={handleAnomalyFix}
+                      className="bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600"
+                    >
+                      <Wrench className="h-4 w-4 mr-2" />
+                      Apply Fix
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </TabsContent>
 
             {/* Patterns Tab */}

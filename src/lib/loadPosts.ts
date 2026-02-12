@@ -9,11 +9,11 @@ export interface PostData {
   featured?: boolean;
   slug: string;
   content: string;
-  author?: string;
+  author: string;
   qualification?: string;
 }
 
-export async function loadPosts(): Promise<PostData[]> {
+export async function loadPostsFromBackend(): Promise<PostData[]> {
   console.log("LOADING POSTS FROM BACKEND...");
   
   try {
@@ -114,4 +114,86 @@ function getStaticPosts(): PostData[] {
       author: "DataWeb Team"
     }
   ];
+}
+
+function calculateReadTime(text: string, wpm = 200): string {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const minutes = Math.max(1, Math.ceil(words.length / wpm));
+  return `${minutes} min read`;
+}
+
+function slugFromPath(path: string): string {
+  // Handle both Unix (/) and Windows (\) path separators
+  const file = path.split(/[/\\]/).pop() ?? path;
+  return file.replace(/\.md$/i, "");
+}
+
+function parseFrontmatter(md: string): { data: Record<string, any>; content: string } {
+  const match = md.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+  if (!match) return { data: {}, content: md };
+
+  const raw = match[1];
+  const content = match[2];
+
+  const data: Record<string, any> = {};
+  raw.split("\n").forEach((line) => {
+    const idx = line.indexOf(":");
+    if (idx === -1) return;
+    const key = line.slice(0, idx).trim();
+    let value = line.slice(idx + 1).trim();
+
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) value = value.slice(1, -1);
+
+    if (value === "true") data[key] = true;
+    else if (value === "false") data[key] = false;
+    else data[key] = value;
+  });
+
+  return { data, content };
+}
+
+let cached: PostData[] | null = null;
+
+// ✅ PRIMARY loader — Markdown is source of truth (path relative to this file: src/lib → src/blogs)
+export async function loadPosts(): Promise<PostData[]> {
+  if (cached) return cached;
+
+  const modules = import.meta.glob("../blogs/*.md", {
+    as: "raw",
+    eager: true,
+  }) as Record<string, string>;
+
+  const posts: PostData[] = Object.entries(modules)
+    .filter(([path]) => path.includes("blogs") && path.endsWith(".md"))
+    .map(([path, rawMd]) => {
+      const slug = slugFromPath(path);
+      const { data, content } = parseFrontmatter(rawMd);
+
+      return {
+        title: data.title ?? slug,
+        excerpt: data.excerpt ?? "",
+        date: data.date ?? "1970-01-01",
+        category: data.category ?? "General",
+        featured: Boolean(data.featured),
+        slug,
+        content,
+        author: data.author ?? "DataWeb Team",
+        qualification: data.qualification,
+        readTime: calculateReadTime(content),
+      };
+    });
+
+  posts.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+  cached = posts;
+  return posts;
+}
+
+// ✅ Single post helper (used by /blog/:slug)
+export async function loadPostBySlug(slug: string): Promise<PostData | null> {
+  const posts = await loadPosts();
+  return posts.find((p) => p.slug === slug) ?? null;
 }
