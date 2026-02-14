@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Menu, X, LogIn } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
+import { PUBLIC_CONFIG } from '@/lib/publicConfig';
 
 interface NavbarProps {
   activeSection?: string;
@@ -22,6 +23,7 @@ const navItems: NavItem[] = [
   { id: 'home', label: 'Home', type: 'section' },
   { id: 'services', label: 'Services', type: 'section' },
   { id: 'analyze', label: 'Analyze Your Data', type: 'link', href: '/analyze' },
+  { id: 'finance', label: 'Finance', type: 'link', href: '/finance' },
   { id: 'pricing', label: 'Pricing', type: 'link', href: '/pricing' },
   { id: 'blog', label: 'Blog', type: 'link', href: '/blog' },
   { id: 'about', label: 'Who We Are', type: 'section' },
@@ -70,12 +72,14 @@ const Navbar: React.FC<NavbarProps> = ({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
           <Link to="/" className="flex items-center space-x-3" onClick={() => setActiveSection?.('home')}>
-            <img
-              src="https://d64gsuwffb70l.cloudfront.net/685bf1cbc177f8a9ceb476a7_1751773536445_02dde769.png"
-              alt="DataAfrik Logo"
-              className="h-10 w-auto"
-            />
-            <span className="text-2xl font-bold text-green-600">DataAfrik</span>
+            {PUBLIC_CONFIG.logoUrl && (
+              <img
+                src={PUBLIC_CONFIG.logoUrl}
+                alt={`${PUBLIC_CONFIG.brandName} Logo`}
+                className="h-10 w-auto"
+              />
+            )}
+            <span className="text-2xl font-bold text-green-600">{PUBLIC_CONFIG.brandName}</span>
           </Link>
 
           {/* Desktop Menu */}

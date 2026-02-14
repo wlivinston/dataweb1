@@ -1,4 +1,5 @@
 // src/lib/loadPosts.ts
+import { getApiUrl } from "@/lib/publicConfig";
 
 export interface PostData {
   title: string;
@@ -13,13 +14,22 @@ export interface PostData {
   qualification?: string;
 }
 
+function normalizeSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/%20/g, " ")
+    .replace(/[\s_]+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
 export async function loadPostsFromBackend(): Promise<PostData[]> {
   console.log("LOADING POSTS FROM BACKEND...");
   
   try {
-    // Use the deployed backend URL
-    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'https://clownfish-app-3hmi3.ondigitalocean.app';
-    const response = await fetch(`${backendUrl}/api/blog/posts`);
+    const response = await fetch(getApiUrl("/api/blog/posts"));
     
     if (!response.ok) {
       console.error('Failed to fetch posts from backend:', response.status, response.statusText);
@@ -129,14 +139,16 @@ function slugFromPath(path: string): string {
 }
 
 function parseFrontmatter(md: string): { data: Record<string, any>; content: string } {
-  const match = md.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
-  if (!match) return { data: {}, content: md };
+  // Handle UTF-8 BOM + both LF/CRLF line endings so frontmatter is parsed reliably.
+  const normalized = md.replace(/^\uFEFF/, "");
+  const match = normalized.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/);
+  if (!match) return { data: {}, content: normalized };
 
   const raw = match[1];
   const content = match[2];
 
   const data: Record<string, any> = {};
-  raw.split("\n").forEach((line) => {
+  raw.split(/\r?\n/).forEach((line) => {
     const idx = line.indexOf(":");
     if (idx === -1) return;
     const key = line.slice(0, idx).trim();
@@ -159,10 +171,11 @@ let cached: PostData[] | null = null;
 
 // ✅ PRIMARY loader — Markdown is source of truth (path relative to this file: src/lib → src/blogs)
 export async function loadPosts(): Promise<PostData[]> {
-  if (cached) return cached;
+  if (cached && !import.meta.env.DEV) return cached;
 
   const modules = import.meta.glob("../blogs/*.md", {
-    as: "raw",
+    query: "?raw",
+    import: "default",
     eager: true,
   }) as Record<string, string>;
 
@@ -195,5 +208,13 @@ export async function loadPosts(): Promise<PostData[]> {
 // ✅ Single post helper (used by /blog/:slug)
 export async function loadPostBySlug(slug: string): Promise<PostData | null> {
   const posts = await loadPosts();
-  return posts.find((p) => p.slug === slug) ?? null;
+  const rawSlug = decodeURIComponent(slug);
+  const normalizedParamSlug = normalizeSlug(rawSlug);
+
+  return (
+    posts.find((p) => p.slug === rawSlug) ??
+    posts.find((p) => p.slug.toLowerCase() === rawSlug.toLowerCase()) ??
+    posts.find((p) => normalizeSlug(p.slug) === normalizedParamSlug) ??
+    null
+  );
 }

@@ -358,15 +358,43 @@ const AIInsightsPanel: React.FC<AIInsightsPanelProps> = ({
       onDatasetUpdate?.(updatedDataset);
 
       setOverlayProgress(70);
-      setOverlayMessage('Re-analyzing data...');
+      setOverlayMessage('Updating insights...');
       await yieldToBrowser();
 
-      // Re-run analysis to refresh anomaly list
-      const newInsights = await runAIAnalysisAsync(updatedDataset, (progress, msg) => {
-        setOverlayProgress(70 + (progress * 0.25));
-        setOverlayMessage(msg);
-      });
-      setInsights(newInsights);
+      // Instead of re-running full analysis (which recalculates IQR bounds and
+      // flags NEW anomalies from the tighter distribution), remove the fixed
+      // anomalies from the current insights so the user sees them disappear.
+      if (insights) {
+        // Build set of fixed anomaly keys for removal
+        const fixedKeys = new Set<string>();
+        if (scope === 'single' && anomaly) {
+          fixedKeys.add(`${anomaly.column}:${anomaly.rowIndex}`);
+        } else if (scope === 'column' && anomalies) {
+          anomalies.forEach(a => fixedKeys.add(`${a.column}:${a.rowIndex}`));
+        } else if (scope === 'all') {
+          insights.anomalies.forEach(a => fixedKeys.add(`${a.column}:${a.rowIndex}`));
+        }
+
+        // For 'removeRow', row indices shift after deletion — but since we're
+        // removing those anomalies entirely from the list, we just filter by key.
+        const remainingAnomalies = insights.anomalies.filter(
+          a => !fixedKeys.has(`${a.column}:${a.rowIndex}`)
+        );
+
+        // Update the critical findings count
+        const removedCritical = insights.anomalies.filter(
+          a => fixedKeys.has(`${a.column}:${a.rowIndex}`) && (a.severity === 'critical' || a.severity === 'high')
+        ).length;
+
+        setInsights({
+          ...insights,
+          anomalies: remainingAnomalies,
+          totalInsights: insights.totalInsights - fixedKeys.size,
+          criticalFindings: Math.max(0, insights.criticalFindings - removedCritical),
+          // Bump quality score proportionally
+          dataQualityScore: Math.min(100, insights.dataQualityScore + Math.round((fixedKeys.size / Math.max(1, insights.anomalies.length)) * 10))
+        });
+      }
 
       setOverlayProgress(100);
       setOverlayStage('complete');

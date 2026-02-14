@@ -6,8 +6,65 @@ import { Table } from '@/components/ui/table';
 import { optimizeVisualizationData, RENDERING_LIMITS } from './dataOptimization';
 import PaginatedTable from '@/components/PaginatedTable';
 
-export const renderVisualization = (viz: Visualization) => {
-  if (viz.type === 'table') {
+export type SupportedVisualizationType = 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'table';
+
+const getFirstNumericValue = (entry: Record<string, any>): number => {
+  const numericKey = Object.keys(entry).find(key => typeof entry[key] === 'number' && Number.isFinite(entry[key]));
+  if (!numericKey) return 0;
+  return Number(entry[numericKey]) || 0;
+};
+
+const toCategoryValueData = (data: any[]): { category: string; value: number }[] => {
+  return data.map((entry, index) => {
+    if (entry && typeof entry === 'object') {
+      const categoryRaw = entry.category ?? entry.name ?? entry.label ?? entry.x ?? entry.date ?? entry.month ?? `Item ${index + 1}`;
+      const valueRaw = entry.value ?? entry.y ?? entry.amount ?? entry.total ?? entry.count ?? getFirstNumericValue(entry);
+      return {
+        category: String(categoryRaw),
+        value: Number(valueRaw) || 0,
+      };
+    }
+    return {
+      category: `Item ${index + 1}`,
+      value: Number(entry) || 0,
+    };
+  });
+};
+
+const toScatterData = (data: any[]): { x: number; y: number; name?: string }[] => {
+  return data
+    .map((entry, index) => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+
+      if (typeof entry.x === 'number' && typeof entry.y === 'number') {
+        return {
+          x: entry.x,
+          y: entry.y,
+          name: String(entry.name ?? entry.category ?? `Point ${index + 1}`),
+        };
+      }
+
+      const numericKeys = Object.keys(entry).filter(key => typeof entry[key] === 'number' && Number.isFinite(entry[key]));
+      if (numericKeys.length >= 2) {
+        return {
+          x: Number(entry[numericKeys[0]]) || 0,
+          y: Number(entry[numericKeys[1]]) || 0,
+          name: String(entry.name ?? entry.category ?? `Point ${index + 1}`),
+        };
+      }
+
+      return null;
+    })
+    .filter((point): point is { x: number; y: number; name?: string } => point !== null);
+};
+
+export const renderVisualization = (viz: Visualization, overrideType?: SupportedVisualizationType) => {
+  const effectiveType: SupportedVisualizationType =
+    overrideType ?? (viz.type === 'gauge' ? 'bar' : viz.type);
+
+  if (effectiveType === 'table') {
     const data = viz.data as any[];
     const columns = data.length > 0 ? Object.keys(data[0]) : [];
     
@@ -61,17 +118,31 @@ export const renderVisualization = (viz: Visualization) => {
   
   // Optimize chart data to prevent rendering crashes
   const rawData = Array.isArray(viz.data) ? viz.data : [];
-  const chartData = optimizeVisualizationData(rawData, viz.type);
+  const normalizedData = effectiveType === 'scatter'
+    ? toScatterData(rawData)
+    : toCategoryValueData(rawData);
+  const chartData = optimizeVisualizationData(
+    normalizedData,
+    effectiveType === 'scatter' ? 'scatter' : effectiveType
+  );
   
   // Show warning if data was sampled
-  const wasSampled = rawData.length > chartData.length;
+  const wasSampled = normalizedData.length > chartData.length;
   
-  if (viz.type === 'bar') {
+  if (chartData.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full text-gray-400">
+        <p className="text-xs">No chart data available</p>
+      </div>
+    );
+  }
+  
+  if (effectiveType === 'bar') {
     return (
       <div className="space-y-2 h-full">
         {wasSampled && (
           <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
-            ⚠️ Large dataset: Showing {chartData.length.toLocaleString()} of {rawData.length.toLocaleString()} data points for performance
+            ⚠️ Large dataset: Showing {chartData.length.toLocaleString()} of {normalizedData.length.toLocaleString()} data points for performance
           </div>
         )}
         <ResponsiveContainer width="100%" height={220}>
@@ -93,7 +164,7 @@ export const renderVisualization = (viz: Visualization) => {
     );
   }
   
-  if (viz.type === 'pie') {
+  if (effectiveType === 'pie') {
     // Calculate total for percentage calculations - ensure we're using actual numeric values
     const total = chartData.reduce((sum, entry) => {
       const val = typeof entry.value === 'number' ? entry.value : Number(entry.value) || 0;
@@ -242,12 +313,12 @@ export const renderVisualization = (viz: Visualization) => {
     );
   }
 
-  if (viz.type === 'line') {
+  if (effectiveType === 'line') {
     return (
       <div className="space-y-2">
         {wasSampled && (
           <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
-            ⚠️ Large dataset: Showing {chartData.length.toLocaleString()} of {rawData.length.toLocaleString()} data points for performance
+            ⚠️ Large dataset: Showing {chartData.length.toLocaleString()} of {normalizedData.length.toLocaleString()} data points for performance
           </div>
         )}
         <ResponsiveContainer width="100%" height={220}>
@@ -263,12 +334,12 @@ export const renderVisualization = (viz: Visualization) => {
     );
   }
   
-  if (viz.type === 'area') {
+  if (effectiveType === 'area') {
     return (
       <div className="space-y-2">
         {wasSampled && (
           <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
-            ⚠️ Large dataset: Showing {chartData.length.toLocaleString()} of {rawData.length.toLocaleString()} data points for performance
+            ⚠️ Large dataset: Showing {chartData.length.toLocaleString()} of {normalizedData.length.toLocaleString()} data points for performance
           </div>
         )}
         <ResponsiveContainer width="100%" height={220}>
@@ -284,13 +355,13 @@ export const renderVisualization = (viz: Visualization) => {
     );
   }
   
-  if (viz.type === 'scatter') {
-    const scatterData = Array.isArray(viz.data) ? viz.data : [];
+  if (effectiveType === 'scatter') {
+    const scatterData = chartData;
     return (
       <div className="space-y-2">
         {wasSampled && (
           <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
-            ⚠️ Large dataset: Showing {scatterData.length.toLocaleString()} of {rawData.length.toLocaleString()} data points for performance
+            ⚠️ Large dataset: Showing {scatterData.length.toLocaleString()} of {normalizedData.length.toLocaleString()} data points for performance
           </div>
         )}
         <ResponsiveContainer width="100%" height={220}>
@@ -310,9 +381,7 @@ export const renderVisualization = (viz: Visualization) => {
   // Placeholder for other chart types
   return (
     <div className="flex items-center justify-center h-full text-gray-400">
-      <p className="text-xs">{viz.type} chart</p>
+      <p className="text-xs">{effectiveType} chart</p>
     </div>
   );
 };
-
-

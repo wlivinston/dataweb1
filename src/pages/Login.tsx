@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { supabase } from '@/lib/supabase';
+import { isSupabaseConfigured, supabase, supabaseConfigError } from '@/lib/supabase';
 import { LogIn, Mail, Lock, AlertCircle } from 'lucide-react';
 
 const Login: React.FC = () => {
@@ -22,8 +22,14 @@ const Login: React.FC = () => {
     setError(null);
     setMessage(null);
 
+    if (!supabase) {
+      setError(supabaseConfigError ?? 'Authentication is currently unavailable.');
+      setLoading(false);
+      return;
+    }
+
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
@@ -50,8 +56,14 @@ const Login: React.FC = () => {
     setError(null);
     setMessage(null);
 
+    if (!supabase) {
+      setError(supabaseConfigError ?? 'Authentication is currently unavailable.');
+      setLoading(false);
+      return;
+    }
+
     try {
-      const { data, error } = await supabase.auth.signUp({
+      const { error } = await supabase.auth.signUp({
         email,
         password,
         options: {
@@ -86,6 +98,15 @@ const Login: React.FC = () => {
         </CardHeader>
         <CardContent>
           <form className="space-y-4">
+            {!isSupabaseConfigured && (
+              <Alert className="border-amber-200 bg-amber-50">
+                <AlertCircle className="h-4 w-4 text-amber-700" />
+                <AlertDescription className="text-amber-900">
+                  {supabaseConfigError}
+                </AlertDescription>
+              </Alert>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
               <div className="relative">
@@ -135,7 +156,7 @@ const Login: React.FC = () => {
               <Button
                 type="submit"
                 onClick={handleLogin}
-                disabled={loading}
+                disabled={loading || !isSupabaseConfigured}
                 className="w-full"
               >
                 <LogIn className="h-4 w-4 mr-2" />
@@ -146,7 +167,7 @@ const Login: React.FC = () => {
                 type="button"
                 variant="outline"
                 onClick={handleSignUp}
-                disabled={loading}
+                disabled={loading || !isSupabaseConfigured}
                 className="w-full"
               >
                 {loading ? 'Creating account...' : 'Create Account'}

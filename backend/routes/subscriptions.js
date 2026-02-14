@@ -1,10 +1,159 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const crypto = require('crypto');
 const { query } = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
+const { supabase } = require('../config/supabase');
 const { sendSubscriptionEmail, sendUnsubscribeEmail } = require('../services/emailService');
 
 const router = express.Router();
+
+const SUPPORTED_PAYMENT_PROVIDERS = new Set(['stripe', 'paystack']);
+const SUPPORTED_PDF_PLANS = new Set(['single', 'monthly']);
+
+function normalizeBaseUrl(url) {
+  return (url || '').replace(/\/+$/, '');
+}
+
+function getPdfPlanConfig(plan) {
+  const selectedPlan = plan === 'monthly' ? 'monthly' : 'single';
+
+  if (selectedPlan === 'monthly') {
+    return {
+      plan: 'monthly',
+      amount: Number(process.env.PDF_REPORT_MONTHLY_PRICE || 49),
+      statusOnSuccess: 'professional',
+      description: 'Monthly PDF report access',
+    };
+  }
+
+  return {
+    plan: 'single',
+    amount: Number(process.env.PDF_REPORT_SINGLE_PRICE || 29),
+    statusOnSuccess: 'paid',
+    description: 'Single PDF report purchase',
+  };
+}
+
+async function updateCustomerSubscriptionStatus(customerId, nextStatus) {
+  if (supabase) {
+    const { error } = await supabase
+      .from('customers')
+      .update({
+        subscription_status: nextStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', customerId);
+
+    if (error) throw error;
+    return;
+  }
+
+  await query(
+    'UPDATE customers SET subscription_status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+    [nextStatus, customerId]
+  );
+}
+
+async function updateCustomerSubscriptionStatusByIdentity(identity, nextStatus) {
+  const customerId = identity?.customerId ? Number(identity.customerId) : null;
+  const email = identity?.email ? String(identity.email).trim().toLowerCase() : null;
+
+  if (!customerId && !email) {
+    throw new Error('Missing customer identity for subscription status update');
+  }
+
+  if (customerId) {
+    await updateCustomerSubscriptionStatus(customerId, nextStatus);
+    return;
+  }
+
+  if (supabase) {
+    const { error } = await supabase
+      .from('customers')
+      .update({
+        subscription_status: nextStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('email', email);
+
+    if (error) throw error;
+    return;
+  }
+
+  await query(
+    'UPDATE customers SET subscription_status = $1, updated_at = CURRENT_TIMESTAMP WHERE email = $2',
+    [nextStatus, email]
+  );
+}
+
+function safeTimingCompare(aHex, bHex) {
+  const a = Buffer.from(String(aHex || ''), 'hex');
+  const b = Buffer.from(String(bHex || ''), 'hex');
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function verifyStripeSignature(rawBodyBuffer, signatureHeader, webhookSecret) {
+  if (!rawBodyBuffer || !signatureHeader || !webhookSecret) {
+    return { valid: false, reason: 'Missing payload/signature/webhook secret' };
+  }
+
+  const parsedSignature = String(signatureHeader)
+    .split(',')
+    .map(segment => segment.trim())
+    .reduce((acc, segment) => {
+      const [key, value] = segment.split('=');
+      if (key && value) {
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(value);
+      }
+      return acc;
+    }, {});
+
+  const timestamp = parsedSignature.t?.[0];
+  const candidateSignatures = parsedSignature.v1 || [];
+
+  if (!timestamp || !candidateSignatures.length) {
+    return { valid: false, reason: 'Missing Stripe timestamp/signature parts' };
+  }
+
+  const toleranceSeconds = Number(process.env.STRIPE_WEBHOOK_TOLERANCE_SECONDS || 300);
+  const signedAt = Number(timestamp);
+  if (Number.isFinite(signedAt) && toleranceSeconds > 0) {
+    const current = Math.floor(Date.now() / 1000);
+    if (Math.abs(current - signedAt) > toleranceSeconds) {
+      return { valid: false, reason: 'Stripe signature timestamp outside tolerance window' };
+    }
+  }
+
+  const signedPayload = `${timestamp}.${rawBodyBuffer.toString('utf8')}`;
+  const expectedSignature = crypto
+    .createHmac('sha256', webhookSecret)
+    .update(signedPayload, 'utf8')
+    .digest('hex');
+
+  const anyMatch = candidateSignatures.some(signature => safeTimingCompare(signature, expectedSignature));
+  return anyMatch
+    ? { valid: true }
+    : { valid: false, reason: 'Stripe signature mismatch' };
+}
+
+function verifyPaystackSignature(rawBodyBuffer, signatureHeader, secretKey) {
+  if (!rawBodyBuffer || !signatureHeader || !secretKey) {
+    return { valid: false, reason: 'Missing payload/signature/secret key' };
+  }
+
+  const expectedSignature = crypto
+    .createHmac('sha512', secretKey)
+    .update(rawBodyBuffer)
+    .digest('hex');
+
+  const valid = safeTimingCompare(signatureHeader, expectedSignature);
+  return valid
+    ? { valid: true }
+    : { valid: false, reason: 'Paystack signature mismatch' };
+}
 
 // Subscribe to newsletter (public endpoint)
 router.post('/newsletter', [
@@ -121,6 +270,357 @@ router.get('/plans', async (req, res) => {
   } catch (error) {
     console.error('Get subscription plans error:', error);
     res.status(500).json({ error: 'Failed to fetch subscription plans' });
+  }
+});
+
+// Stripe webhook for PDF payment entitlement updates
+router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    const webhookSecret = (process.env.STRIPE_WEBHOOK_SECRET || '').trim();
+    const signature = req.headers['stripe-signature'];
+    const rawBody = req.body;
+
+    if (!webhookSecret) {
+      return res.status(500).json({ error: 'Stripe webhook secret is not configured' });
+    }
+
+    const verification = verifyStripeSignature(rawBody, signature, webhookSecret);
+    if (!verification.valid) {
+      return res.status(400).json({ error: verification.reason || 'Invalid Stripe webhook signature' });
+    }
+
+    const event = JSON.parse(Buffer.from(rawBody).toString('utf8'));
+    if (!event?.type || !event?.data?.object) {
+      return res.status(400).json({ error: 'Invalid Stripe webhook payload structure' });
+    }
+
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const planKey = String(session?.metadata?.pdf_plan || 'single').toLowerCase();
+      const plan = getPdfPlanConfig(planKey);
+
+      const identity = {
+        customerId: session?.metadata?.customer_id || null,
+        email: session?.metadata?.email || session?.customer_details?.email || null,
+      };
+
+      if (!identity.customerId && !identity.email) {
+        return res.status(200).json({ received: true, ignored: 'Missing identity metadata' });
+      }
+
+      await updateCustomerSubscriptionStatusByIdentity(identity, plan.statusOnSuccess);
+      return res.status(200).json({ received: true, provider: 'stripe', processed: true });
+    }
+
+    if (event.type === 'invoice.payment_succeeded') {
+      const invoice = event.data.object;
+      const planKey = String(invoice?.lines?.data?.[0]?.metadata?.pdf_plan || 'monthly').toLowerCase();
+      const plan = getPdfPlanConfig(planKey === 'single' ? 'single' : 'monthly');
+
+      const identity = {
+        customerId: invoice?.metadata?.customer_id || invoice?.lines?.data?.[0]?.metadata?.customer_id || null,
+        email: invoice?.customer_email || invoice?.lines?.data?.[0]?.metadata?.email || null,
+      };
+
+      if (identity.customerId || identity.email) {
+        await updateCustomerSubscriptionStatusByIdentity(identity, plan.statusOnSuccess);
+      }
+    }
+
+    res.status(200).json({ received: true, provider: 'stripe', processed: false });
+  } catch (error) {
+    console.error('Stripe webhook error:', error);
+    res.status(500).json({ error: 'Failed to process Stripe webhook' });
+  }
+});
+
+// Paystack webhook for PDF payment entitlement updates
+router.post('/webhooks/paystack', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    const paystackSecretKey = (process.env.PAYSTACK_SECRET_KEY || '').trim();
+    const signature = req.headers['x-paystack-signature'];
+    const rawBody = req.body;
+
+    if (!paystackSecretKey) {
+      return res.status(500).json({ error: 'Paystack secret key is not configured' });
+    }
+
+    const verification = verifyPaystackSignature(rawBody, signature, paystackSecretKey);
+    if (!verification.valid) {
+      return res.status(400).json({ error: verification.reason || 'Invalid Paystack webhook signature' });
+    }
+
+    const event = JSON.parse(Buffer.from(rawBody).toString('utf8'));
+    if (!event?.event || !event?.data) {
+      return res.status(400).json({ error: 'Invalid Paystack webhook payload structure' });
+    }
+
+    if (event.event === 'charge.success') {
+      const metadata = event.data?.metadata || {};
+      const planKey = String(metadata?.pdf_plan || 'single').toLowerCase();
+      const plan = getPdfPlanConfig(planKey);
+
+      const identity = {
+        customerId: metadata?.customer_id || null,
+        email: metadata?.email || event.data?.customer?.email || null,
+      };
+
+      if (!identity.customerId && !identity.email) {
+        return res.status(200).json({ received: true, ignored: 'Missing identity metadata' });
+      }
+
+      await updateCustomerSubscriptionStatusByIdentity(identity, plan.statusOnSuccess);
+      return res.status(200).json({ received: true, provider: 'paystack', processed: true });
+    }
+
+    res.status(200).json({ received: true, provider: 'paystack', processed: false });
+  } catch (error) {
+    console.error('Paystack webhook error:', error);
+    res.status(500).json({ error: 'Failed to process Paystack webhook' });
+  }
+});
+
+// Create checkout URL for paid PDF access (Stripe or Paystack)
+router.post('/pdf-checkout', authenticateToken, [
+  body('provider').isIn(['stripe', 'paystack']),
+  body('plan').optional().isIn(['single', 'monthly']),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const provider = String(req.body.provider || '').toLowerCase();
+    const requestedPlan = String(req.body.plan || 'single').toLowerCase();
+
+    if (!SUPPORTED_PAYMENT_PROVIDERS.has(provider)) {
+      return res.status(400).json({ error: 'Unsupported payment provider' });
+    }
+
+    if (!SUPPORTED_PDF_PLANS.has(requestedPlan)) {
+      return res.status(400).json({ error: 'Unsupported PDF plan' });
+    }
+
+    if (!req.user?.email || !req.user?.customer_id) {
+      return res.status(400).json({ error: 'User account is missing required billing fields' });
+    }
+
+    const plan = getPdfPlanConfig(requestedPlan);
+    const frontendBase = normalizeBaseUrl(process.env.FRONTEND_URL || 'http://localhost:5173');
+
+    if (provider === 'stripe') {
+      const stripeSecretKey = (process.env.STRIPE_SECRET_KEY || '').trim();
+      if (!stripeSecretKey) {
+        return res.status(500).json({ error: 'Stripe is not configured. Set STRIPE_SECRET_KEY.' });
+      }
+
+      const stripeCurrency = (process.env.STRIPE_CURRENCY || 'usd').toLowerCase();
+      const stripeSinglePriceId = (process.env.STRIPE_PDF_SINGLE_PRICE_ID || '').trim();
+      const stripeMonthlyPriceId = (process.env.STRIPE_PDF_MONTHLY_PRICE_ID || '').trim();
+      const mode = requestedPlan === 'monthly' ? 'subscription' : 'payment';
+      const successUrl = `${frontendBase}/finance?pdfPayment=success&provider=stripe&session_id={CHECKOUT_SESSION_ID}`;
+      const cancelUrl = `${frontendBase}/finance?pdfPayment=cancel&provider=stripe`;
+
+      const form = new URLSearchParams();
+      form.append('mode', mode);
+      form.append('success_url', successUrl);
+      form.append('cancel_url', cancelUrl);
+      form.append('line_items[0][quantity]', '1');
+      form.append('customer_email', req.user.email);
+      form.append('metadata[customer_id]', String(req.user.customer_id));
+      form.append('metadata[email]', req.user.email);
+      form.append('metadata[pdf_plan]', requestedPlan);
+
+      const selectedPriceId = requestedPlan === 'monthly' ? stripeMonthlyPriceId : stripeSinglePriceId;
+      if (selectedPriceId) {
+        form.append('line_items[0][price]', selectedPriceId);
+      } else {
+        form.append('line_items[0][price_data][currency]', stripeCurrency);
+        form.append('line_items[0][price_data][unit_amount]', String(Math.round(plan.amount * 100)));
+        form.append('line_items[0][price_data][product_data][name]', plan.description);
+
+        if (requestedPlan === 'monthly') {
+          form.append('line_items[0][price_data][recurring][interval]', 'month');
+        }
+      }
+
+      const stripeResponse = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${stripeSecretKey}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: form.toString(),
+      });
+
+      const stripePayload = await stripeResponse.json();
+      if (!stripeResponse.ok || !stripePayload?.url) {
+        return res.status(502).json({
+          error: stripePayload?.error?.message || 'Failed to initialize Stripe checkout',
+        });
+      }
+
+      return res.json({
+        provider: 'stripe',
+        plan: requestedPlan,
+        checkout_url: stripePayload.url,
+        session_id: stripePayload.id,
+      });
+    }
+
+    const paystackSecretKey = (process.env.PAYSTACK_SECRET_KEY || '').trim();
+    if (!paystackSecretKey) {
+      return res.status(500).json({ error: 'Paystack is not configured. Set PAYSTACK_SECRET_KEY.' });
+    }
+
+    const paystackCurrency = (process.env.PAYSTACK_CURRENCY || 'NGN').toUpperCase();
+    const paystackSingleAmount = Number(process.env.PAYSTACK_PDF_SINGLE_AMOUNT || plan.amount);
+    const paystackMonthlyAmount = Number(process.env.PAYSTACK_PDF_MONTHLY_AMOUNT || plan.amount);
+    const amount = requestedPlan === 'monthly' ? paystackMonthlyAmount : paystackSingleAmount;
+    const callbackUrl = `${frontendBase}/finance?pdfPayment=success&provider=paystack`;
+    const reference = `pdf_${requestedPlan}_${req.user.customer_id}_${Date.now()}`;
+
+    const paystackResponse = await fetch('https://api.paystack.co/transaction/initialize', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${paystackSecretKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: req.user.email,
+        amount: Math.round(amount * 100),
+        currency: paystackCurrency,
+        callback_url: callbackUrl,
+        reference,
+        metadata: {
+          customer_id: req.user.customer_id,
+          email: req.user.email,
+          pdf_plan: requestedPlan,
+        },
+      }),
+    });
+
+    const paystackPayload = await paystackResponse.json();
+    if (!paystackResponse.ok || !paystackPayload?.status || !paystackPayload?.data?.authorization_url) {
+      return res.status(502).json({
+        error: paystackPayload?.message || 'Failed to initialize Paystack checkout',
+      });
+    }
+
+    return res.json({
+      provider: 'paystack',
+      plan: requestedPlan,
+      checkout_url: paystackPayload.data.authorization_url,
+      reference: paystackPayload.data.reference,
+    });
+  } catch (error) {
+    console.error('Create PDF checkout error:', error);
+    res.status(500).json({ error: 'Failed to initialize PDF checkout' });
+  }
+});
+
+// Verify PDF payment and grant paid access
+router.get('/pdf-verify', authenticateToken, async (req, res) => {
+  try {
+    const provider = String(req.query.provider || '').toLowerCase();
+    if (!SUPPORTED_PAYMENT_PROVIDERS.has(provider)) {
+      return res.status(400).json({ error: 'Unsupported payment provider' });
+    }
+
+    if (!req.user?.customer_id) {
+      return res.status(400).json({ error: 'Invalid authenticated user context' });
+    }
+
+    if (provider === 'stripe') {
+      const stripeSecretKey = (process.env.STRIPE_SECRET_KEY || '').trim();
+      const sessionId = String(req.query.session_id || '').trim();
+
+      if (!stripeSecretKey) {
+        return res.status(500).json({ error: 'Stripe is not configured.' });
+      }
+      if (!sessionId) {
+        return res.status(400).json({ error: 'Missing session_id for Stripe verification.' });
+      }
+
+      const stripeResponse = await fetch(
+        `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}`,
+        {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${stripeSecretKey}` },
+        }
+      );
+
+      const stripePayload = await stripeResponse.json();
+      if (!stripeResponse.ok) {
+        return res.status(502).json({
+          error: stripePayload?.error?.message || 'Failed to verify Stripe payment',
+        });
+      }
+
+      const isPaid =
+        stripePayload?.payment_status === 'paid' ||
+        stripePayload?.status === 'complete';
+
+      if (!isPaid) {
+        return res.status(400).json({ error: 'Stripe payment is not completed yet.' });
+      }
+
+      const requestedPlan = String(stripePayload?.metadata?.pdf_plan || 'single').toLowerCase();
+      const plan = getPdfPlanConfig(requestedPlan);
+      await updateCustomerSubscriptionStatus(req.user.customer_id, plan.statusOnSuccess);
+
+      return res.json({
+        verified: true,
+        provider: 'stripe',
+        plan: requestedPlan,
+        subscription_status: plan.statusOnSuccess,
+      });
+    }
+
+    const paystackSecretKey = (process.env.PAYSTACK_SECRET_KEY || '').trim();
+    const reference = String(req.query.reference || '').trim();
+
+    if (!paystackSecretKey) {
+      return res.status(500).json({ error: 'Paystack is not configured.' });
+    }
+    if (!reference) {
+      return res.status(400).json({ error: 'Missing reference for Paystack verification.' });
+    }
+
+    const paystackResponse = await fetch(
+      `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${paystackSecretKey}` },
+      }
+    );
+
+    const paystackPayload = await paystackResponse.json();
+    if (!paystackResponse.ok || !paystackPayload?.status) {
+      return res.status(502).json({
+        error: paystackPayload?.message || 'Failed to verify Paystack payment',
+      });
+    }
+
+    const isPaid = paystackPayload?.data?.status === 'success';
+    if (!isPaid) {
+      return res.status(400).json({ error: 'Paystack payment is not successful yet.' });
+    }
+
+    const requestedPlan = String(paystackPayload?.data?.metadata?.pdf_plan || 'single').toLowerCase();
+    const plan = getPdfPlanConfig(requestedPlan);
+    await updateCustomerSubscriptionStatus(req.user.customer_id, plan.statusOnSuccess);
+
+    return res.json({
+      verified: true,
+      provider: 'paystack',
+      plan: requestedPlan,
+      subscription_status: plan.statusOnSuccess,
+    });
+  } catch (error) {
+    console.error('Verify PDF payment error:', error);
+    res.status(500).json({ error: 'Failed to verify PDF payment' });
   }
 });
 

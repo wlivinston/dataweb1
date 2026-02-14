@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { User, Session } from '@supabase/supabase-js'
-import { supabase } from '@/lib/supabase'
+import { isSupabaseConfigured, supabase, supabaseConfigError } from '@/lib/supabase'
 
 interface AuthState {
   user: User | null
@@ -20,18 +20,39 @@ export const useAuth = () => {
   const [authState, setAuthState] = useState<AuthState>({
     user: null,
     session: null,
-    loading: true
+    loading: isSupabaseConfigured
   })
 
+  const missingConfigError = () =>
+    new Error(supabaseConfigError ?? 'Supabase is not configured for this environment')
+
   useEffect(() => {
-    // Get initial session
-    const getInitialSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession()
+    if (!supabase) {
       setAuthState({
-        user: session?.user ?? null,
-        session,
+        user: null,
+        session: null,
         loading: false
       })
+      return
+    }
+
+    // Get initial session
+    const getInitialSession = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        setAuthState({
+          user: session?.user ?? null,
+          session,
+          loading: false
+        })
+      } catch (error) {
+        console.error('Error loading auth session:', error)
+        setAuthState({
+          user: null,
+          session: null,
+          loading: false
+        })
+      }
     }
 
     getInitialSession()
@@ -57,6 +78,8 @@ export const useAuth = () => {
   }, [])
 
   const createOrUpdateCustomer = async (user: User) => {
+    if (!supabase) return
+
     try {
       const { data: existingCustomer } = await supabase
         .from('customers')
@@ -92,6 +115,10 @@ export const useAuth = () => {
   }
 
   const signUp = async (data: SignUpData) => {
+    if (!supabase) {
+      return { data: null, error: missingConfigError() }
+    }
+
     try {
       const { data: authData, error } = await supabase.auth.signUp({
         email: data.email,
@@ -115,6 +142,10 @@ export const useAuth = () => {
   }
 
   const signIn = async (email: string, password: string) => {
+    if (!supabase) {
+      return { data: null, error: missingConfigError() }
+    }
+
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
@@ -131,6 +162,10 @@ export const useAuth = () => {
   }
 
   const signOut = async () => {
+    if (!supabase) {
+      return { error: missingConfigError() }
+    }
+
     try {
       const { error } = await supabase.auth.signOut()
       if (error) throw error
@@ -142,6 +177,10 @@ export const useAuth = () => {
   }
 
   const resetPassword = async (email: string) => {
+    if (!supabase) {
+      return { error: missingConfigError() }
+    }
+
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: `${window.location.origin}/reset-password`
@@ -157,6 +196,10 @@ export const useAuth = () => {
   }
 
   const updatePassword = async (password: string) => {
+    if (!supabase) {
+      return { error: missingConfigError() }
+    }
+
     try {
       const { error } = await supabase.auth.updateUser({
         password
@@ -176,6 +219,10 @@ export const useAuth = () => {
     last_name?: string
     company?: string
   }) => {
+    if (!supabase) {
+      return { data: null, error: missingConfigError() }
+    }
+
     try {
       const { data, error } = await supabase.auth.updateUser({
         data: updates
@@ -207,6 +254,8 @@ export const useAuth = () => {
     user: authState.user,
     session: authState.session,
     loading: authState.loading,
+    isConfigured: isSupabaseConfigured,
+    configError: supabaseConfigError,
     signUp,
     signIn,
     signOut,

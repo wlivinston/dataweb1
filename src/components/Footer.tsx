@@ -1,12 +1,36 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Mail, Phone, MapPin, Linkedin, Github } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { getFlagEmoji } from '@/lib/utils';
+import { toast } from 'sonner';
+import { PUBLIC_CONFIG } from '@/lib/publicConfig';
+import { subscribeToNewsletter } from '@/lib/newsletter';
 
 const Footer: React.FC = () => {
   const currentYear = new Date().getFullYear();
+  const [email, setEmail] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleNewsletterSubmit = async () => {
+    if (!email.trim()) {
+      toast.error('Please enter your email.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await subscribeToNewsletter({ email, source: 'footer' });
+      toast.success('You are subscribed. Check your inbox for confirmation.');
+      setEmail('');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to subscribe.';
+      toast.error(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
     <footer className="bg-gray-900 text-white">
@@ -15,28 +39,32 @@ const Footer: React.FC = () => {
           {/* Company Info */}
           <div>
             <h3 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent mb-4">
-              DataAfrik
+              {PUBLIC_CONFIG.brandName}
             </h3>
             <p className="text-gray-300 mb-4">
               Transforming businesses through innovative data science solutions and actionable insights.
             </p>
             <div className="flex space-x-4">
-              <a
-                href="https://www.linkedin.com/in/senyo-tsedze-4877"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-gray-300 hover:text-white transition"
-              >
-                <Linkedin className="h-5 w-5" />
-              </a>
-              <a
-                href="https://github.com/wlivinston"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-gray-300 hover:text-white transition"
-              >
-                <Github className="h-5 w-5" />
-              </a>
+              {PUBLIC_CONFIG.linkedinUrl && (
+                <a
+                  href={PUBLIC_CONFIG.linkedinUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-gray-300 hover:text-white transition"
+                >
+                  <Linkedin className="h-5 w-5" />
+                </a>
+              )}
+              {PUBLIC_CONFIG.githubUrl && (
+                <a
+                  href={PUBLIC_CONFIG.githubUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-gray-300 hover:text-white transition"
+                >
+                  <Github className="h-5 w-5" />
+                </a>
+              )}
             </div>
           </div>
 
@@ -55,29 +83,37 @@ const Footer: React.FC = () => {
           <div>
             <h4 className="text-lg font-semibold mb-4">Contact</h4>
             <div className="space-y-3 text-gray-300">
-              <div className="flex items-center">
-                <Mail className="h-4 w-4 mr-2" />
-                <span className="text-sm">senyo@diaspora-n.com</span>
-              </div>
-              <div className="flex items-center">
-                <Phone className="h-4 w-4 mr-2" />
-                <span className="text-sm">{getFlagEmoji('GH')} +233 534 787 731</span>
-              </div>
-              <div className="flex items-center">
-                <Phone className="h-4 w-4 mr-2" />
-                <span className="text-sm">{getFlagEmoji('US')} +1 914 433 7155</span>
-              </div>
-              <div className="flex items-center">
-                <MapPin className="h-4 w-4 mr-2" />
-                <span className="text-sm">
-                  {getFlagEmoji('GH')} Accra, Ghana & {getFlagEmoji('US')} New York, USA
-                </span>
-              </div>
+              {PUBLIC_CONFIG.supportEmail && (
+                <div className="flex items-center">
+                  <Mail className="h-4 w-4 mr-2" />
+                  <a className="text-sm hover:text-white" href={`mailto:${PUBLIC_CONFIG.supportEmail}`}>
+                    {PUBLIC_CONFIG.supportEmail}
+                  </a>
+                </div>
+              )}
+              {PUBLIC_CONFIG.phoneGh && (
+                <div className="flex items-center">
+                  <Phone className="h-4 w-4 mr-2" />
+                  <span className="text-sm">{getFlagEmoji('GH')} {PUBLIC_CONFIG.phoneGh}</span>
+                </div>
+              )}
+              {PUBLIC_CONFIG.phoneUs && (
+                <div className="flex items-center">
+                  <Phone className="h-4 w-4 mr-2" />
+                  <span className="text-sm">{getFlagEmoji('US')} {PUBLIC_CONFIG.phoneUs}</span>
+                </div>
+              )}
+              {PUBLIC_CONFIG.locationText && (
+                <div className="flex items-center">
+                  <MapPin className="h-4 w-4 mr-2" />
+                  <span className="text-sm">{PUBLIC_CONFIG.locationText}</span>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Newsletter */}
-          <div>
+          <div id="newsletter">
             <h4 className="text-lg font-semibold mb-4">Newsletter</h4>
             <p className="text-gray-300 text-sm mb-4">
               Subscribe to get the latest insights and updates.
@@ -86,10 +122,23 @@ const Footer: React.FC = () => {
               <Input
                 type="email"
                 placeholder="Enter your email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleNewsletterSubmit();
+                  }
+                }}
                 className="bg-gray-800 border-gray-700 text-white placeholder-gray-400"
               />
-              <Button size="sm" className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700">
-                Subscribe
+              <Button
+                size="sm"
+                disabled={isSubmitting}
+                onClick={handleNewsletterSubmit}
+                className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
+              >
+                {isSubmitting ? 'Subscribing...' : 'Subscribe'}
               </Button>
             </div>
           </div>
@@ -97,7 +146,7 @@ const Footer: React.FC = () => {
 
         <div className="border-t border-gray-800 mt-8 pt-8 text-center">
           <p className="text-gray-400 text-sm">
-            &copy; {currentYear} DataAfrik. All rights reserved.
+            &copy; {currentYear} {PUBLIC_CONFIG.brandName}. All rights reserved.
           </p>
         </div>
       </div>

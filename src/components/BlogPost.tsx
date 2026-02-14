@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "react-router-dom";
 import RequestReportCTA from "./RequestReportCTA";
+import { Input } from "@/components/ui/input";
+import { subscribeToNewsletter } from "@/lib/newsletter";
+import { toast } from "sonner";
 
 export interface BlogPostLayoutData {
   title: string;
@@ -42,6 +45,8 @@ function extractHeadings(markdown: string): { id: string; text: string; level: n
 
 const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post }) => {
   const [likes, setLikes] = useState(0);
+  const [newsletterEmail, setNewsletterEmail] = useState("");
+  const [isSubscribing, setIsSubscribing] = useState(false);
 
   const headings = useMemo(() => extractHeadings(post.content), [post.content]);
 
@@ -68,6 +73,28 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post }) => {
     };
 
     window.open(shareUrls[platform], '_blank');
+  };
+
+  const handleNewsletterSubscribe = async () => {
+    if (!newsletterEmail.trim()) {
+      toast.error("Please enter your email.");
+      return;
+    }
+
+    setIsSubscribing(true);
+    try {
+      await subscribeToNewsletter({
+        email: newsletterEmail,
+        source: "blog-sidebar",
+      });
+      toast.success("You are subscribed. Check your inbox for confirmation.");
+      setNewsletterEmail("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to subscribe.";
+      toast.error(message);
+    } finally {
+      setIsSubscribing(false);
+    }
   };
 
   return (
@@ -130,6 +157,38 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post }) => {
                     const text = typeof children === 'string' ? children : String(children);
                     const id = text.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
                     return <h3 id={id} {...props}>{children}</h3>;
+                  },
+                  pre: ({ children, ...props }) => {
+                    const firstChild = React.Children.toArray(children)[0] as
+                      | React.ReactElement<{ className?: string }>
+                      | undefined;
+                    const codeClassName = firstChild?.props?.className ?? "";
+                    const isDiagramBlock =
+                      codeClassName.includes("language-text") ||
+                      codeClassName.includes("language-diagram");
+
+                    return (
+                      <pre
+                        {...props}
+                        className={isDiagramBlock ? "markdown-diagram" : undefined}
+                      >
+                        {children}
+                      </pre>
+                    );
+                  },
+                  img: ({ node, src, alt, ...props }) => {
+                    if (!src) return null;
+                    return (
+                      <a href={src} target="_blank" rel="noopener noreferrer" className="block">
+                        <img
+                          src={src}
+                          alt={alt || "Article image"}
+                          {...props}
+                          className={`cursor-zoom-in ${props.className || ""}`.trim()}
+                          loading="lazy"
+                        />
+                      </a>
+                    );
                   },
                 }}
               >
@@ -230,9 +289,30 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post }) => {
                 <p className="text-sm mb-4 opacity-90">
                   Get the latest insights on data science and analytics delivered to your inbox.
                 </p>
-                <Button variant="secondary" size="sm" className="w-full">
-                  Subscribe to Newsletter
-                </Button>
+                <div className="space-y-2">
+                  <Input
+                    type="email"
+                    value={newsletterEmail}
+                    onChange={(e) => setNewsletterEmail(e.target.value)}
+                    placeholder="Enter your email"
+                    className="bg-white/90 text-gray-900 placeholder:text-gray-600"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleNewsletterSubscribe();
+                      }
+                    }}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="w-full"
+                    disabled={isSubscribing}
+                    onClick={handleNewsletterSubscribe}
+                  >
+                    {isSubscribing ? "Subscribing..." : "Subscribe to Newsletter"}
+                  </Button>
+                </div>
               </div>
             </div>
           </aside>

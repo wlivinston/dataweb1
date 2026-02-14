@@ -1,11 +1,13 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Check, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { getApiUrl } from '@/lib/publicConfig';
 
 interface PricingTier {
+  code?: string;
   name: string;
   price: string;
   period: string;
@@ -72,12 +74,78 @@ const tiers: PricingTier[] = [
   },
 ];
 
+function formatPrice(price: number): string {
+  if (price === 0) return '$0';
+  return `$${price.toFixed(0)}`;
+}
+
+function formatPeriod(billingCycle: string): string {
+  switch (billingCycle) {
+    case 'forever':
+      return 'forever';
+    case 'one_time':
+      return 'per report';
+    case 'monthly':
+      return 'per month';
+    case 'quarterly':
+      return 'per quarter';
+    case 'yearly':
+      return 'per year';
+    case 'custom':
+      return 'per project';
+    default:
+      return billingCycle;
+  }
+}
+
+function mapPlanToTier(plan: any): PricingTier {
+  const features = Array.isArray(plan.features) ? plan.features : [];
+  return {
+    code: plan.code,
+    name: plan.name,
+    price: plan.billing_cycle === 'custom' ? 'Custom' : formatPrice(Number(plan.price || 0)),
+    period: formatPeriod(plan.billing_cycle || 'monthly'),
+    description: plan.description || '',
+    features: features.map((item: unknown) => String(item)),
+    cta: plan.cta_label || 'Get Started',
+    ctaLink: plan.cta_link || '/pricing',
+    highlighted: Boolean(plan.is_highlighted),
+  };
+}
+
 const PricingCards: React.FC = () => {
+  const [displayTiers, setDisplayTiers] = useState<PricingTier[]>(tiers);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadPlans = async () => {
+      try {
+        const response = await fetch(getApiUrl('/api/subscriptions/plans'));
+        if (!response.ok) return;
+
+        const payload = await response.json();
+        const plans = Array.isArray(payload?.plans) ? payload.plans : [];
+        if (!plans.length) return;
+
+        const mapped = plans.map(mapPlanToTier);
+        if (mounted) setDisplayTiers(mapped);
+      } catch {
+        // Fallback to static tiers for resiliency.
+      }
+    };
+
+    loadPlans();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl mx-auto">
-      {tiers.map((tier) => (
+      {displayTiers.map((tier) => (
         <Card
-          key={tier.name}
+          key={tier.code || tier.name}
           className={`relative flex flex-col ${
             tier.highlighted
               ? 'border-2 border-blue-600 shadow-xl scale-[1.02]'

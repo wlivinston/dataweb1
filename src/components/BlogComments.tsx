@@ -5,7 +5,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { MessageCircle, Reply, Heart, User, LogIn, AlertCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { supabase } from '@/lib/supabase';
+import { isSupabaseConfigured, supabase, supabaseConfigError } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
 
 interface Comment {
@@ -39,13 +39,20 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const { user, loading: authLoading } = useAuth();
+  const { user } = useAuth();
 
   useEffect(() => {
+    if (!supabase) {
+      setComments([]);
+      return;
+    }
+
     fetchComments();
   }, [postId]);
 
   const fetchComments = async () => {
+    if (!supabase) return;
+
     try {
       const { data, error } = await supabase
         .from('blog_comments')
@@ -87,8 +94,13 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
     }
   };
 
-    const handleSubmitComment = async (e: React.FormEvent) => {
+  const handleSubmitComment = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (!supabase) {
+      setError(supabaseConfigError ?? 'Comments are unavailable right now.');
+      return;
+    }
 
     if (!user) {
       setError('You must be logged in to post comments. Please create an account or log in.');
@@ -132,7 +144,12 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
     }
   };
 
-    const handleSubmitReply = async (parentId: number) => {
+  const handleSubmitReply = async (parentId: number) => {
+    if (!supabase) {
+      setError(supabaseConfigError ?? 'Comments are unavailable right now.');
+      return;
+    }
+
     if (!user) {
       setError('You must be logged in to reply to comments.');
       return;
@@ -301,9 +318,22 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
         </Alert>
       )}
 
+      {!isSupabaseConfigured && (
+        <Alert className="mb-6 border-amber-200 bg-amber-50">
+          <AlertCircle className="h-4 w-4 text-amber-700" />
+          <AlertDescription className="text-amber-900">
+            {supabaseConfigError}. Commenting is disabled until Supabase is configured.
+          </AlertDescription>
+        </Alert>
+      )}
+
                         {/* Comment Form */}
                   <div className="bg-gray-50 rounded-lg p-6 mb-8">
-                    {user ? (
+                    {!isSupabaseConfigured ? (
+                      <div className="text-center py-4 text-sm text-gray-700">
+                        Comments are currently unavailable.
+                      </div>
+                    ) : user ? (
                       <>
                         <h4 className="font-semibold text-gray-900 mb-4">Leave a Comment</h4>
                         <form onSubmit={handleSubmitComment} className="space-y-4">

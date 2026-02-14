@@ -12,6 +12,7 @@ import BlogPostPage from "./pages/BlogPostPage";
 import PricingPage from "./pages/Pricing";
 import RequestReportPage from "./pages/RequestReport";
 import Login from "./pages/Login";
+import FinancePage from "./pages/Finance";
 
 const queryClient = new QueryClient();
 
@@ -29,6 +30,7 @@ const App = () => (
             <Route path="/blog/:slug" element={<BlogPostPage />} />
             <Route path="/pricing" element={<PricingPage />} />
             <Route path="/request-report" element={<RequestReportPage />} />
+            <Route path="/finance" element={<FinancePage />} />
             <Route path="/login" element={<Login />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

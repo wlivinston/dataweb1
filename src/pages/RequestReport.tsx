@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Upload, FileText, BarChart3, Send, CheckCircle, Clock, Users } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
+import { createSupportMailto, getApiUrl } from '@/lib/publicConfig';
 
 const RequestReportPage: React.FC = () => {
   const { user } = useAuth();
@@ -32,8 +33,7 @@ const RequestReportPage: React.FC = () => {
     }
 
     try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
-      const response = await fetch(`${backendUrl}/api/reports/request`, {
+      const response = await fetch(getApiUrl('/api/reports/request'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
@@ -43,16 +43,16 @@ const RequestReportPage: React.FC = () => {
         setSubmitted(true);
       } else {
         // Fallback: open mailto
-        window.location.href = `mailto:senyo@diaspora-n.com?subject=Report Request: ${formData.reportType}&body=${encodeURIComponent(
+        window.location.href = createSupportMailto(`Report Request: ${formData.reportType}`,
           `Name: ${formData.name}\nEmail: ${formData.email}\nCompany: ${formData.company}\nReport Type: ${formData.reportType}\nTimeline: ${formData.timeline}\nBudget: ${formData.budget}\n\nDescription:\n${formData.description}`
-        )}`;
+        );
         setSubmitted(true);
       }
     } catch {
       // Fallback: open mailto
-      window.location.href = `mailto:senyo@diaspora-n.com?subject=Report Request: ${formData.reportType}&body=${encodeURIComponent(
+      window.location.href = createSupportMailto(`Report Request: ${formData.reportType}`,
         `Name: ${formData.name}\nEmail: ${formData.email}\nCompany: ${formData.company}\nReport Type: ${formData.reportType}\nTimeline: ${formData.timeline}\nBudget: ${formData.budget}\n\nDescription:\n${formData.description}`
-      )}`;
+      );
       setSubmitted(true);
     }
   };

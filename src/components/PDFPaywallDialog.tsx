@@ -2,20 +2,34 @@ import React from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Check, FileText, Mail, ArrowRight } from 'lucide-react';
+import { Check, FileText, Mail, ArrowRight, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { createSupportMailto } from '@/lib/publicConfig';
 
 interface PDFPaywallDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onContactClick?: () => void;
+  onStripeCheckout?: (plan: 'single' | 'monthly') => Promise<void> | void;
+  onPaystackCheckout?: (plan: 'single' | 'monthly') => Promise<void> | void;
+  checkoutLoadingProvider?: 'stripe' | 'paystack' | null;
 }
 
-const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({ open, onOpenChange, onContactClick }) => {
+const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
+  open,
+  onOpenChange,
+  onContactClick,
+  onStripeCheckout,
+  onPaystackCheckout,
+  checkoutLoadingProvider = null,
+}) => {
+  const showDirectCheckout = Boolean(onStripeCheckout || onPaystackCheckout);
+  const isBusy = checkoutLoadingProvider !== null;
+
   const handleContact = (subject: string) => {
-    window.location.href = `mailto:senyo@diaspora-n.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(
+    window.location.href = createSupportMailto(subject,
       'Hi DataAfrik team,\n\nI would like to purchase a PDF report of my data analysis.\n\nPlease send me the details.\n\nThank you.'
-    )}`;
+    );
     onContactClick?.();
     onOpenChange(false);
   };
@@ -58,13 +72,40 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({ open, onOpenChange,
                 <Check className="h-3.5 w-3.5 text-green-500 mr-2" /> AI insights & recommendations
               </li>
             </ul>
-            <Button
-              className="w-full mt-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
-              onClick={() => handleContact('PDF Report Purchase - Single Report ($29)')}
-            >
-              <Mail className="h-4 w-4 mr-2" />
-              Get This Report &mdash; $29
-            </Button>
+            {showDirectCheckout ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-4">
+                <Button
+                  className="bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700"
+                  disabled={isBusy || !onStripeCheckout}
+                  onClick={() => onStripeCheckout?.('single')}
+                >
+                  {checkoutLoadingProvider === 'stripe' ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
+                  ) : (
+                    'Pay with Stripe'
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={isBusy || !onPaystackCheckout}
+                  onClick={() => onPaystackCheckout?.('single')}
+                >
+                  {checkoutLoadingProvider === 'paystack' ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
+                  ) : (
+                    'Pay with Paystack'
+                  )}
+                </Button>
+              </div>
+            ) : (
+              <Button
+                className="w-full mt-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
+                onClick={() => handleContact('PDF Report Purchase - Single Report ($29)')}
+              >
+                <Mail className="h-4 w-4 mr-2" />
+                Get This Report &mdash; $29
+              </Button>
+            )}
           </div>
 
           {/* Monthly option */}
@@ -79,13 +120,40 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({ open, onOpenChange,
                 <span className="text-gray-500 text-sm block">per month</span>
               </div>
             </div>
-            <Button
-              variant="outline"
-              className="w-full mt-4"
-              onClick={() => handleContact('PDF Report Subscription - Monthly Plan ($49/mo)')}
-            >
-              Subscribe for Unlimited Reports
-            </Button>
+            {showDirectCheckout ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-4">
+                <Button
+                  className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
+                  disabled={isBusy || !onStripeCheckout}
+                  onClick={() => onStripeCheckout?.('monthly')}
+                >
+                  {checkoutLoadingProvider === 'stripe' ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
+                  ) : (
+                    'Stripe Monthly'
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={isBusy || !onPaystackCheckout}
+                  onClick={() => onPaystackCheckout?.('monthly')}
+                >
+                  {checkoutLoadingProvider === 'paystack' ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
+                  ) : (
+                    'Paystack Monthly'
+                  )}
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                className="w-full mt-4"
+                onClick={() => handleContact('PDF Report Subscription - Monthly Plan ($49/mo)')}
+              >
+                Subscribe for Unlimited Reports
+              </Button>
+            )}
           </div>
 
           {/* Expert option */}

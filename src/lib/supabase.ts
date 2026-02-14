@@ -1,13 +1,23 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
-const supabaseUrl = 'https://wjeqwwilkbpqwuffiuio.supabase.co'
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndqZXF3d2lsa2JwcXd1ZmZpdWlvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM0Njg1MDYsImV4cCI6MjA2OTA0NDUwNn0.Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8Ej8'
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables')
+const MISSING_SUPABASE_ENV_MESSAGE =
+  'Missing Supabase env vars: VITE_SUPABASE_URL and/or VITE_SUPABASE_ANON_KEY'
+
+export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey)
+export const supabaseConfigError = isSupabaseConfigured
+  ? null
+  : MISSING_SUPABASE_ENV_MESSAGE
+
+if (!isSupabaseConfigured) {
+  console.warn(`${MISSING_SUPABASE_ENV_MESSAGE}. Auth and comments will be disabled.`)
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+export const supabase: SupabaseClient<Database> | null = isSupabaseConfigured
+  ? createClient<Database>(supabaseUrl as string, supabaseAnonKey as string)
+  : null
 
 // Database types based on your schema
 export interface Database {
@@ -194,4 +204,4 @@ export interface Database {
 }
 
 // Typed Supabase client
-export type TypedSupabaseClient = ReturnType<typeof createClient<Database>>
+export type TypedSupabaseClient = SupabaseClient<Database>

@@ -10,6 +10,7 @@ const authRoutes = require('./routes/auth');
 const commentRoutes = require('./routes/comments');
 const blogRoutes = require('./routes/blog');
 const reportRoutes = require('./routes/reports');
+const subscriptionsRoutes = require('./routes/subscriptions');
 
 // Supabase-based DB helpers (no localhost:5432)
 const { connectDB } = require('./config/database');
@@ -29,13 +30,21 @@ const toOrigin = (u) => {
   catch { return (u || '').replace(/\/$/, ''); }
 };
 
+const configuredOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+if (process.env.FRONTEND_URL) {
+  configuredOrigins.push(process.env.FRONTEND_URL.trim());
+}
+
+if ((process.env.NODE_ENV || 'development') !== 'production') {
+  configuredOrigins.push('http://localhost:5173', 'http://localhost:3000');
+}
+
 const allowedOrigins = new Set(
-  [
-    process.env.FRONTEND_URL,     // e.g. https://www.dataafrik.com (set in DO)
-    'https://dataafrik.com',
-    'https://www.dataafrik.com',
-    'http://localhost:5173',      // Vite dev
-  ].filter(Boolean).map(toOrigin)
+  configuredOrigins.map(toOrigin)
 );
 
 app.use(
@@ -59,8 +68,19 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 /* -------------------- Parsers -------------------- */
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+const isWebhookRequest = (req) =>
+  req.path.startsWith('/api/subscriptions/webhooks/stripe') ||
+  req.path.startsWith('/api/subscriptions/webhooks/paystack');
+
+app.use((req, res, next) => {
+  if (isWebhookRequest(req)) return next();
+  return express.json({ limit: '10mb' })(req, res, next);
+});
+
+app.use((req, res, next) => {
+  if (isWebhookRequest(req)) return next();
+  return express.urlencoded({ extended: true })(req, res, next);
+});
 
 /* -------------------- Health -------------------- */
 app.get('/health', (_req, res) => {
@@ -79,6 +99,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/comments', commentRoutes);
 app.use('/api/blog', blogRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/subscriptions', subscriptionsRoutes);
 
 /* -------------------- Error handling -------------------- */
 app.use((err, _req, res, _next) => {

@@ -2,6 +2,9 @@ const express = require('express');
 const router = express.Router();
 const nodemailer = require('nodemailer');
 
+const supportEmail = process.env.ADMIN_EMAIL || process.env.SUPPORT_EMAIL || 'support@example.com';
+const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER || 'noreply@example.com';
+
 // Create transporter for sending notification emails
 const createTransporter = () => {
   return nodemailer.createTransport({
@@ -76,8 +79,8 @@ router.post('/request', async (req, res) => {
       };
 
       const mailOptions = {
-        from: `"DataAfrik" <${process.env.SMTP_USER || 'noreply@dataafrik.com'}>`,
-        to: process.env.ADMIN_EMAIL || 'senyo@diaspora-n.com',
+        from: `"DataAfrik" <${fromEmail}>`,
+        to: supportEmail,
         subject: `New Report Request: ${reportTypeLabels[reportType] || reportType}`,
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -128,7 +131,7 @@ router.post('/request', async (req, res) => {
     console.error('Error processing report request:', error);
     res.status(500).json({
       error: 'Failed to submit report request',
-      message: 'Please try again or contact us directly at senyo@diaspora-n.com'
+      message: `Please try again or contact us directly at ${supportEmail}`
     });
   }
 });

@@ -1,10 +1,17 @@
 // Resizable Visualization Container Component
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Visualization } from '@/lib/types';
-import { renderVisualization } from '@/lib/visualizationRenderer';
+import { renderVisualization, type SupportedVisualizationType } from '@/lib/visualizationRenderer';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Maximize2, Minimize2, X, ZoomIn, ZoomOut, RotateCcw, Move } from 'lucide-react';
 
 interface ResizableVisualizationProps {
@@ -14,12 +21,48 @@ interface ResizableVisualizationProps {
   minSize?: number;
 }
 
+const getSwitchableVisualizationTypes = (baseType: Visualization['type']): SupportedVisualizationType[] => {
+  switch (baseType) {
+    case 'bar':
+      return ['bar', 'line', 'area'];
+    case 'line':
+      return ['line', 'bar', 'area'];
+    case 'area':
+      return ['area', 'line', 'bar'];
+    case 'pie':
+      return ['pie', 'bar', 'line'];
+    case 'scatter':
+      return ['scatter', 'line', 'bar'];
+    case 'table':
+      return ['table', 'bar', 'line'];
+    case 'gauge':
+    default:
+      return ['bar', 'line', 'area'];
+  }
+};
+
+const visualizationTypeLabel: Record<SupportedVisualizationType, string> = {
+  bar: 'Bar',
+  line: 'Line',
+  area: 'Area',
+  pie: 'Pie',
+  scatter: 'Scatter',
+  table: 'Table',
+};
+
 const ResizableVisualization: React.FC<ResizableVisualizationProps> = ({
   visualization,
   onRemove,
   defaultSize = 33.33,
   minSize = 20
 }) => {
+  const visualizationTypeOptions = useMemo(
+    () => getSwitchableVisualizationTypes(visualization.type),
+    [visualization.type]
+  );
+  const [selectedVisualizationType, setSelectedVisualizationType] = useState<SupportedVisualizationType>(
+    () => getSwitchableVisualizationTypes(visualization.type)[0]
+  );
   const [isExpanded, setIsExpanded] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
@@ -29,6 +72,10 @@ const ResizableVisualization: React.FC<ResizableVisualizationProps> = ({
   const minZoom = 0.5;
   const maxZoom = 3;
   const zoomStep = 0.25;
+
+  useEffect(() => {
+    setSelectedVisualizationType(visualizationTypeOptions[0]);
+  }, [visualization.id, visualizationTypeOptions]);
 
   const handleZoomIn = () => {
     setZoomLevel(prev => Math.min(prev + zoomStep, maxZoom));
@@ -79,6 +126,21 @@ const ResizableVisualization: React.FC<ResizableVisualizationProps> = ({
             <div className="flex items-center gap-2">
               <CardTitle className="text-sm font-medium">DATA VISUALIZATION</CardTitle>
               <Badge variant="outline" className="text-xs">RENDITION</Badge>
+              <Select
+                value={selectedVisualizationType}
+                onValueChange={(value) => setSelectedVisualizationType(value as SupportedVisualizationType)}
+              >
+                <SelectTrigger className="h-7 w-[110px] text-xs">
+                  <SelectValue placeholder="Chart type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {visualizationTypeOptions.map(option => (
+                    <SelectItem key={option} value={option} className="text-xs">
+                      {visualizationTypeLabel[option]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="flex items-center gap-1">
               {/* Zoom Controls */}
@@ -177,7 +239,7 @@ const ResizableVisualization: React.FC<ResizableVisualizationProps> = ({
               }}
             >
               <div style={{ width: '100%' }}>
-                {renderVisualization(visualization)}
+                {renderVisualization(visualization, selectedVisualizationType)}
               </div>
             </div>
           </div>
