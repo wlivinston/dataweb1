@@ -7,21 +7,29 @@ import { getFlagEmoji } from '@/lib/utils';
 import { toast } from 'sonner';
 import { PUBLIC_CONFIG } from '@/lib/publicConfig';
 import { subscribeToNewsletter } from '@/lib/newsletter';
+import { useAuth } from '@/hooks/useAuth';
 
 const Footer: React.FC = () => {
   const currentYear = new Date().getFullYear();
   const [email, setEmail] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const { user } = useAuth();
 
   const handleNewsletterSubmit = async () => {
-    if (!email.trim()) {
-      toast.error('Please enter your email.');
+    if (!user) {
+      toast.error('Please create an account or log in to subscribe to the newsletter.');
+      return;
+    }
+
+    const emailToUse = email.trim() || user.email || '';
+    if (!emailToUse) {
+      toast.error('Unable to determine your account email.');
       return;
     }
 
     setIsSubmitting(true);
     try {
-      await subscribeToNewsletter({ email, source: 'footer' });
+      await subscribeToNewsletter({ email: emailToUse, source: 'footer' });
       toast.success('You are subscribed. Check your inbox for confirmation.');
       setEmail('');
     } catch (error) {
@@ -121,7 +129,7 @@ const Footer: React.FC = () => {
             <div className="flex flex-col space-y-2">
               <Input
                 type="email"
-                placeholder="Enter your email"
+                placeholder={user ? 'Enter your email' : 'Log in to subscribe'}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 onKeyDown={(e) => {
@@ -130,15 +138,16 @@ const Footer: React.FC = () => {
                     handleNewsletterSubmit();
                   }
                 }}
+                disabled={!user}
                 className="bg-gray-800 border-gray-700 text-white placeholder-gray-400"
               />
               <Button
                 size="sm"
-                disabled={isSubmitting}
+                disabled={isSubmitting || !user}
                 onClick={handleNewsletterSubmit}
                 className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
               >
-                {isSubmitting ? 'Subscribing...' : 'Subscribe'}
+                {isSubmitting ? 'Subscribing...' : user ? 'Subscribe' : 'Login to Subscribe'}
               </Button>
             </div>
           </div>

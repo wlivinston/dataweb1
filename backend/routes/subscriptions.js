@@ -155,9 +155,8 @@ function verifyPaystackSignature(rawBodyBuffer, signatureHeader, secretKey) {
     : { valid: false, reason: 'Paystack signature mismatch' };
 }
 
-// Subscribe to newsletter (public endpoint)
-router.post('/newsletter', [
-  body('email').isEmail().normalizeEmail(),
+// Subscribe to newsletter (authenticated users only)
+router.post('/newsletter', authenticateToken, [
   body('first_name').optional().trim(),
   body('last_name').optional().trim(),
   body('source').optional().trim()
@@ -168,7 +167,14 @@ router.post('/newsletter', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { email, first_name, last_name, source } = req.body;
+    const { first_name, last_name, source } = req.body;
+    const email = String(req.user?.email || '').trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ error: 'Authenticated user email is required for newsletter subscription' });
+    }
+
+    const resolvedFirstName = String(req.user?.first_name || first_name || 'Subscriber').trim();
+    const resolvedLastName = String(req.user?.last_name || last_name || '').trim();
 
     // Check if already subscribed
     const existingSubscriber = await query(
@@ -188,7 +194,7 @@ router.post('/newsletter', [
           [source, subscriber.id]
         );
         
-        await sendSubscriptionEmail(email, first_name || 'Subscriber');
+        await sendSubscriptionEmail(email, resolvedFirstName || 'Subscriber');
         
         return res.json({ message: 'Newsletter subscription reactivated successfully' });
       }
@@ -199,13 +205,13 @@ router.post('/newsletter', [
       `INSERT INTO newsletter_subscribers (email, first_name, last_name, source)
        VALUES ($1, $2, $3, $4)
        RETURNING id, email, first_name, last_name`,
-      [email, first_name, last_name, source]
+      [email, resolvedFirstName, resolvedLastName || null, source]
     );
 
     const subscriber = result.rows[0];
 
     // Send welcome email
-    await sendSubscriptionEmail(email, first_name || 'Subscriber');
+    await sendSubscriptionEmail(email, resolvedFirstName || 'Subscriber');
 
     res.status(201).json({
       message: 'Newsletter subscription successful',

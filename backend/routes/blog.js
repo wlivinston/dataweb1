@@ -1,8 +1,106 @@
 const express = require('express');
 const { supabase } = require('../config/supabase');
+const { query } = require('../config/database');
 const { optionalAuth } = require('../middleware/auth');
+const fs = require('fs');
+const path = require('path');
+const matter = require('gray-matter');
 
 const router = express.Router();
+const BLOGS_DIR = path.join(__dirname, '../../src/blogs');
+
+function parseFrontmatter(md) {
+  const normalized = String(md || '').replace(/^\uFEFF/, '');
+  const match = normalized.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/);
+
+  if (!match) {
+    return { data: {}, content: normalized };
+  }
+
+  const raw = match[1];
+  const content = match[2];
+  const data = {};
+
+  raw.split(/\r?\n/).forEach((line) => {
+    const idx = line.indexOf(':');
+    if (idx === -1) return;
+
+    const key = line.slice(0, idx).trim();
+    let value = line.slice(idx + 1).trim();
+
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    if (value === 'true') data[key] = true;
+    else if (value === 'false') data[key] = false;
+    else data[key] = value;
+  });
+
+  return { data, content };
+}
+
+function findMarkdownFileBySlug(slugInput) {
+  if (!fs.existsSync(BLOGS_DIR)) return null;
+
+  const target = String(slugInput || '').trim().toLowerCase();
+  if (!target) return null;
+
+  const files = fs.readdirSync(BLOGS_DIR).filter((file) => file.endsWith('.md'));
+  const match = files.find((file) => file.replace(/\.md$/i, '').toLowerCase() === target);
+  if (!match) return null;
+
+  return path.join(BLOGS_DIR, match);
+}
+
+function normalizeTags(tags) {
+  if (Array.isArray(tags)) return tags.map((tag) => String(tag).trim()).filter(Boolean);
+  if (typeof tags === 'string') {
+    return tags
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+async function syncMarkdownPostBySlug(slugInput) {
+  const filePath = findMarkdownFileBySlug(slugInput);
+  if (!filePath) return null;
+
+  const fileName = path.basename(filePath);
+  const slug = fileName.replace(/\.md$/i, '');
+  const fileContent = fs.readFileSync(filePath, 'utf8');
+  const { data, content } = parseFrontmatter(fileContent);
+
+  const payload = {
+    slug,
+    title: data.title || slug,
+    excerpt: data.excerpt || '',
+    content,
+    author: data.author || 'DataWeb Team',
+    category: data.category || 'General',
+    tags: normalizeTags(data.tags),
+    featured: data.featured === true,
+    published: true,
+    published_at: data.date || new Date().toISOString(),
+  };
+
+  const { data: upserted, error } = await supabase
+    .from('blog_posts')
+    .upsert(payload, { onConflict: 'slug' })
+    .select('id, slug, title')
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return upserted;
+}
 
 // Get all blog posts
 router.get('/posts', optionalAuth, async (req, res) => {
@@ -62,6 +160,60 @@ router.get('/posts', optionalAuth, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch blog posts' });
   }
 });
+
+async function handleMarkdownSync(req, res) {
+  try {
+    if (!fs.existsSync(BLOGS_DIR)) {
+      return res.status(404).json({ error: 'Blogs directory not found' });
+    }
+
+    const bodySlugs = Array.isArray(req.body?.slugs)
+      ? req.body.slugs.map((s) => String(s || '').trim()).filter(Boolean)
+      : [];
+    const querySlugs = typeof req.query?.slugs === 'string'
+      ? req.query.slugs
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+    const requestedSlugs = bodySlugs.length > 0 ? bodySlugs : querySlugs;
+
+    const files = fs.readdirSync(BLOGS_DIR).filter((file) => file.endsWith('.md'));
+    const allSlugs = files.map((file) => file.replace(/\.md$/i, ''));
+    const slugsToSync = requestedSlugs.length > 0 ? requestedSlugs : allSlugs;
+
+    const synced = [];
+    const errors = [];
+
+    for (const slug of slugsToSync) {
+      try {
+        const post = await syncMarkdownPostBySlug(slug);
+        if (post) {
+          synced.push(post);
+        } else {
+          errors.push({ slug, error: 'Markdown file not found' });
+        }
+      } catch (error) {
+        errors.push({ slug, error: error.message });
+      }
+    }
+
+    res.json({
+      message: 'Markdown sync completed',
+      synced_count: synced.length,
+      error_count: errors.length,
+      posts: synced,
+      errors,
+    });
+  } catch (error) {
+    console.error('Sync markdown posts error:', error);
+    res.status(500).json({ error: 'Failed to sync markdown posts' });
+  }
+}
+
+// Sync markdown posts into backend table (supports all posts or specific slugs)
+router.post('/sync/markdown', optionalAuth, handleMarkdownSync);
+router.get('/sync/markdown', optionalAuth, handleMarkdownSync);
 
 // Get a single blog post by slug
 router.get('/posts/:slug', optionalAuth, async (req, res) => {

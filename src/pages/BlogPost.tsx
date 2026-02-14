@@ -2,19 +2,25 @@ import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import BlogPostLayout, { type BlogPostLayoutData } from "@/components/BlogPost";
 import { loadPostBySlug } from "@/lib/loadPosts";
+import { getApiUrl } from "@/lib/publicConfig";
 
 const BlogPostView: React.FC = () => {
   const { slug } = useParams();
   const [post, setPost] = useState<BlogPostLayoutData | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [backendPostId, setBackendPostId] = useState<number | null>(null);
 
   useEffect(() => {
     const loadPost = async () => {
       if (!slug) return;
 
+      setNotFound(false);
+      setBackendPostId(null);
+
       const mdPost = await loadPostBySlug(slug);
       if (mdPost) {
         setPost({
+          slug: mdPost.slug,
           title: mdPost.title,
           excerpt: mdPost.excerpt,
           content: mdPost.content,
@@ -25,6 +31,50 @@ const BlogPostView: React.FC = () => {
           featured: mdPost.featured,
           qualification: mdPost.qualification,
         });
+
+        try {
+          const response = await fetch(
+            getApiUrl(`/api/blog/posts/${encodeURIComponent(mdPost.slug)}`)
+          );
+
+          let resolvedPostId: number | null = null;
+          if (response.ok) {
+            const payload = await response.json();
+            const id = payload?.post?.id;
+            if (typeof id === "number") {
+              resolvedPostId = id;
+            }
+          }
+
+          if (resolvedPostId !== null) {
+            setBackendPostId(resolvedPostId);
+            return;
+          }
+
+          if (!response.ok || resolvedPostId === null) {
+            const syncResponse = await fetch(getApiUrl("/api/blog/sync/markdown"), {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ slugs: [mdPost.slug] }),
+            });
+
+            if (syncResponse.ok) {
+              const syncPayload = await syncResponse.json();
+              const syncedPost = Array.isArray(syncPayload?.posts)
+                ? syncPayload.posts.find((item: any) => item?.slug === mdPost.slug)
+                : null;
+
+              if (typeof syncedPost?.id === "number") {
+                setBackendPostId(syncedPost.id);
+              }
+            }
+          }
+        } catch (error) {
+          // Non-fatal: article still renders, comments stay disabled.
+          console.warn("Unable to resolve backend post id for comments:", error);
+        }
       } else {
         setNotFound(true);
       }
@@ -55,7 +105,7 @@ const BlogPostView: React.FC = () => {
     );
   }
 
-  return <BlogPostLayout post={post} />;
+  return <BlogPostLayout post={post} backendPostId={backendPostId} />;
 };
 
 export default BlogPostView;

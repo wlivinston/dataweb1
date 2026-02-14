@@ -10,8 +10,11 @@ import RequestReportCTA from "./RequestReportCTA";
 import { Input } from "@/components/ui/input";
 import { subscribeToNewsletter } from "@/lib/newsletter";
 import { toast } from "sonner";
+import BlogComments from "@/components/BlogComments";
+import { useAuth } from "@/hooks/useAuth";
 
 export interface BlogPostLayoutData {
+  slug?: string;
   title: string;
   excerpt?: string;
   content: string;
@@ -25,6 +28,7 @@ export interface BlogPostLayoutData {
 
 interface BlogPostLayoutProps {
   post: BlogPostLayoutData;
+  backendPostId?: number | null;
 }
 
 function extractHeadings(markdown: string): { id: string; text: string; level: number }[] {
@@ -43,7 +47,8 @@ function extractHeadings(markdown: string): { id: string; text: string; level: n
   return headings;
 }
 
-const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post }) => {
+const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = null }) => {
+  const { user } = useAuth();
   const [likes, setLikes] = useState(0);
   const [newsletterEmail, setNewsletterEmail] = useState("");
   const [isSubscribing, setIsSubscribing] = useState(false);
@@ -76,15 +81,21 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post }) => {
   };
 
   const handleNewsletterSubscribe = async () => {
-    if (!newsletterEmail.trim()) {
-      toast.error("Please enter your email.");
+    if (!user) {
+      toast.error("Please create an account or log in to subscribe to the newsletter.");
+      return;
+    }
+
+    const emailToUse = newsletterEmail.trim() || user.email || "";
+    if (!emailToUse) {
+      toast.error("Unable to determine your account email.");
       return;
     }
 
     setIsSubscribing(true);
     try {
       await subscribeToNewsletter({
-        email: newsletterEmail,
+        email: emailToUse,
         source: "blog-sidebar",
       });
       toast.success("You are subscribed. Check your inbox for confirmation.");
@@ -239,6 +250,17 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post }) => {
             <div className="mt-8">
               <RequestReportCTA />
             </div>
+
+            {/* Comments */}
+            <div className="mt-12 pt-8 border-t border-gray-200">
+              {backendPostId ? (
+                <BlogComments postId={backendPostId} postSlug={post.slug || ""} />
+              ) : (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                  Comments are unavailable for this article until it is synced in the backend `blog_posts` table.
+                </div>
+              )}
+            </div>
           </article>
 
           {/* Sidebar */}
@@ -294,8 +316,9 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post }) => {
                     type="email"
                     value={newsletterEmail}
                     onChange={(e) => setNewsletterEmail(e.target.value)}
-                    placeholder="Enter your email"
+                    placeholder={user ? "Enter your email" : "Log in to subscribe"}
                     className="bg-white/90 text-gray-900 placeholder:text-gray-600"
+                    disabled={!user}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -307,10 +330,14 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post }) => {
                     variant="secondary"
                     size="sm"
                     className="w-full"
-                    disabled={isSubscribing}
+                    disabled={isSubscribing || !user}
                     onClick={handleNewsletterSubscribe}
                   >
-                    {isSubscribing ? "Subscribing..." : "Subscribe to Newsletter"}
+                    {isSubscribing
+                      ? "Subscribing..."
+                      : user
+                      ? "Subscribe to Newsletter"
+                      : "Login to Subscribe"}
                   </Button>
                 </div>
               </div>
