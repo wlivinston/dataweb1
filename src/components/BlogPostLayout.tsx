@@ -28,7 +28,7 @@ export interface BlogPostLayoutData {
 
 interface BlogPostLayoutProps {
   post: BlogPostLayoutData;
-  backendPostId?: number | null;
+  backendPostId?: string | number | null;
 }
 
 function extractHeadings(markdown: string): { id: string; text: string; level: number }[] {
@@ -86,7 +86,7 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
       return;
     }
 
-    const emailToUse = newsletterEmail.trim() || user.email || "";
+    const emailToUse = user.email || "";
     if (!emailToUse) {
       toast.error("Unable to determine your account email.");
       return;
@@ -94,11 +94,15 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
 
     setIsSubscribing(true);
     try {
-      await subscribeToNewsletter({
+      const result = await subscribeToNewsletter({
         email: emailToUse,
         source: "blog-sidebar",
       });
-      toast.success("You are subscribed. Check your inbox for confirmation.");
+      if (result.emailSent === false) {
+        toast.success("Subscribed successfully, but confirmation email could not be sent yet.");
+      } else {
+        toast.success(result.message || "You are subscribed. Check your inbox for confirmation.");
+      }
       setNewsletterEmail("");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to subscribe.";
@@ -253,7 +257,7 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
 
             {/* Comments */}
             <div className="mt-12 pt-8 border-t border-gray-200">
-              {backendPostId ? (
+              {backendPostId !== null && String(backendPostId).trim() !== "" ? (
                 <BlogComments postId={backendPostId} postSlug={post.slug || ""} />
               ) : (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
@@ -314,11 +318,14 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
                 <div className="space-y-2">
                   <Input
                     type="email"
-                    value={newsletterEmail}
-                    onChange={(e) => setNewsletterEmail(e.target.value)}
-                    placeholder={user ? "Enter your email" : "Log in to subscribe"}
+                    value={user?.email ?? newsletterEmail}
+                    onChange={(e) => {
+                      if (!user) setNewsletterEmail(e.target.value);
+                    }}
+                    placeholder={user ? "Logged in account email" : "Log in to subscribe"}
                     className="bg-white/90 text-gray-900 placeholder:text-gray-600"
                     disabled={!user}
+                    readOnly={Boolean(user)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
