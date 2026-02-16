@@ -7,11 +7,12 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { getApiUrl } from '@/lib/publicConfig';
 import { useAuth } from '@/hooks/useAuth';
+import { useNavigate } from 'react-router-dom';
 
 interface Comment {
-  id: number;
-  post_id: number;
-  parent_id: number | null;
+  id: string;
+  post_id: string;
+  parent_id: string | null;
   author_name: string;
   author_email: string;
   author_website: string | null;
@@ -25,7 +26,7 @@ interface Comment {
 }
 
 interface BlogCommentsProps {
-  postId: number;
+  postId?: string | number | null;
   postSlug: string;
 }
 
@@ -38,9 +39,9 @@ const normalizeComment = (raw: Partial<Comment> & { replies?: unknown }): Commen
   const rawReplies = Array.isArray(raw.replies) ? raw.replies : [];
 
   return {
-    id: Number(raw.id ?? 0),
-    post_id: Number(raw.post_id ?? 0),
-    parent_id: raw.parent_id == null ? null : Number(raw.parent_id),
+    id: raw.id == null ? '' : String(raw.id),
+    post_id: raw.post_id == null ? '' : String(raw.post_id),
+    parent_id: raw.parent_id == null ? null : String(raw.parent_id),
     author_name: String(raw.author_name ?? 'Anonymous'),
     author_email: String(raw.author_email ?? ''),
     author_website: raw.author_website == null ? null : String(raw.author_website),
@@ -78,14 +79,23 @@ const extractErrorMessage = async (response: Response, fallback: string): Promis
 const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState({ content: '' });
-  const [replyTo, setReplyTo] = useState<number | null>(null);
+  const [replyTo, setReplyTo] = useState<string | null>(null);
   const [replyContent, setReplyContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [resolvedPostId, setResolvedPostId] = useState<string | null>(() =>
+    postId == null ? null : String(postId).trim() || null
+  );
+  const [isResolvingPostId, setIsResolvingPostId] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const { user, session } = useAuth();
+  const { user, session, loading } = useAuth();
+  const navigate = useNavigate();
+  const encodedRedirect = useMemo(
+    () => encodeURIComponent(`${window.location.pathname}${window.location.search}${window.location.hash}`),
+    []
+  );
 
   const authHeader = useMemo(() => {
     if (!session?.access_token) {
@@ -97,11 +107,78 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
     };
   }, [session?.access_token]);
 
+  const resolveBackendPostId = useCallback(async (): Promise<string | null> => {
+    const direct = postId == null ? '' : String(postId).trim();
+    if (direct) {
+      setResolvedPostId(direct);
+      return direct;
+    }
+
+    const slug = String(postSlug || '').trim();
+    if (!slug) {
+      setResolvedPostId(null);
+      return null;
+    }
+
+    setIsResolvingPostId(true);
+    try {
+      const lookupResponse = await fetch(
+        getApiUrl(`/api/blog/posts/${encodeURIComponent(slug)}`),
+        {
+          headers: { ...authHeader },
+        }
+      );
+
+      if (lookupResponse.ok) {
+        const payload = await lookupResponse.json();
+        const id = payload?.post?.id;
+        const normalizedId = id == null ? '' : String(id).trim();
+        if (normalizedId) {
+          setResolvedPostId(normalizedId);
+          return normalizedId;
+        }
+      }
+
+      const ensureResponse = await fetch(getApiUrl('/api/blog/posts/ensure'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeader,
+        },
+        body: JSON.stringify({ slug }),
+      });
+
+      if (ensureResponse.ok) {
+        const ensurePayload = await ensureResponse.json();
+        const ensuredId = ensurePayload?.post?.id;
+        const normalizedEnsuredId = ensuredId == null ? '' : String(ensuredId).trim();
+        if (normalizedEnsuredId) {
+          setResolvedPostId(normalizedEnsuredId);
+          return normalizedEnsuredId;
+        }
+      }
+    } catch (resolveError) {
+      console.error('Error resolving backend post id:', resolveError);
+    } finally {
+      setIsResolvingPostId(false);
+    }
+
+    setResolvedPostId(null);
+    return null;
+  }, [authHeader, postId, postSlug]);
+
   const fetchComments = useCallback(async () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch(getApiUrl(`/api/comments/post/${postId}?limit=200`), {
+      const effectivePostId = await resolveBackendPostId();
+      if (!effectivePostId) {
+        setComments([]);
+        setError('Comments are unavailable for this article until it is synced in the backend `blog_posts` table.');
+        return;
+      }
+
+      const response = await fetch(getApiUrl(`/api/comments/post/${encodeURIComponent(effectivePostId)}?limit=200`), {
         headers: {
           ...authHeader,
         },
@@ -128,7 +205,7 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
     } finally {
       setIsLoading(false);
     }
-  }, [authHeader, postId]);
+  }, [authHeader, resolveBackendPostId]);
 
   useEffect(() => {
     fetchComments();
@@ -147,6 +224,11 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
       return;
     }
 
+    if (!resolvedPostId) {
+      setError('Comments are still syncing for this article. Please refresh and try again.');
+      return;
+    }
+
     setIsSubmitting(true);
     setError(null);
     setSuccess(null);
@@ -159,7 +241,7 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
           ...authHeader,
         },
         body: JSON.stringify({
-          post_id: postId,
+          post_id: resolvedPostId,
           content: newComment.content.trim(),
         }),
       });
@@ -181,7 +263,7 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
     }
   };
 
-  const handleSubmitReply = async (parentId: number) => {
+  const handleSubmitReply = async (parentId: string) => {
     if (!session?.access_token) {
       setError('You must be logged in to reply to comments.');
       return;
@@ -189,6 +271,11 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
 
     if (!replyContent.trim()) {
       setError('Please enter a reply.');
+      return;
+    }
+
+    if (!resolvedPostId) {
+      setError('Comments are still syncing for this article. Please refresh and try again.');
       return;
     }
 
@@ -204,7 +291,7 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
           ...authHeader,
         },
         body: JSON.stringify({
-          post_id: postId,
+          post_id: resolvedPostId,
           parent_id: parentId,
           content: replyContent.trim(),
         }),
@@ -228,9 +315,9 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
     }
   };
 
-  const handleLike = async (commentId: number) => {
+  const handleLike = async (commentId: string) => {
     try {
-      const response = await fetch(getApiUrl(`/api/comments/${commentId}/like`), {
+      const response = await fetch(getApiUrl(`/api/comments/${encodeURIComponent(commentId)}/like`), {
         method: 'POST',
         headers: {
           ...authHeader,
@@ -363,7 +450,11 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
       )}
 
       <div className="bg-gray-50 rounded-lg p-6 mb-8">
-        {user ? (
+        {loading ? (
+          <div className="text-center py-8 text-gray-600">Checking your login status...</div>
+        ) : isResolvingPostId ? (
+          <div className="text-center py-8 text-gray-600">Preparing comments...</div>
+        ) : user ? (
           <>
             <h4 className="font-semibold text-gray-900 mb-4">Leave a Comment</h4>
             <form onSubmit={handleSubmitComment} className="space-y-4">
@@ -388,11 +479,11 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
             <h4 className="text-lg font-semibold text-gray-900 mb-2">Join the Conversation</h4>
             <p className="text-gray-600 mb-4">You need to create an account or log in to post comments.</p>
             <div className="flex gap-3 justify-center">
-              <Button onClick={() => (window.location.href = '/login')}>
+              <Button onClick={() => navigate(`/login?action=signup&redirect=${encodedRedirect}`)}>
                 <LogIn className="h-4 w-4 mr-2" />
                 Create Account
               </Button>
-              <Button variant="outline" onClick={() => (window.location.href = '/login')}>
+              <Button variant="outline" onClick={() => navigate(`/login?redirect=${encodedRedirect}`)}>
                 Log In
               </Button>
             </div>

@@ -257,13 +257,7 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
 
             {/* Comments */}
             <div className="mt-12 pt-8 border-t border-gray-200">
-              {backendPostId !== null && String(backendPostId).trim() !== "" ? (
-                <BlogComments postId={backendPostId} postSlug={post.slug || ""} />
-              ) : (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                  Comments are unavailable for this article until it is synced in the backend `blog_posts` table.
-                </div>
-              )}
+              <BlogComments postId={backendPostId} postSlug={post.slug || ""} />
             </div>
           </article>
 
