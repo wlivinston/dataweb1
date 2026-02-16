@@ -93,6 +93,82 @@ function parseReadTimeMinutes(input) {
   return 5;
 }
 
+function isMissingUniqueOnSlugError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  const code = String(error?.code || '');
+  return (
+    code === '42P10' ||
+    message.includes('no unique or exclusion constraint matching the on conflict specification')
+  );
+}
+
+function tryExtractMissingColumn(error) {
+  const message = String(error?.message || '');
+  const match = message.match(/column "([^"]+)"/i);
+  return match?.[1] || null;
+}
+
+async function writeBlogPostBySlug(payload) {
+  let mutablePayload = { ...payload };
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    // Preferred path when slug unique index exists.
+    const upsertResponse = await supabase
+      .from('blog_posts')
+      .upsert(mutablePayload, { onConflict: 'slug' });
+
+    if (!upsertResponse.error) {
+      return mutablePayload;
+    }
+
+    // If schema differs (missing column), drop the missing key and retry.
+    const missingColumn = tryExtractMissingColumn(upsertResponse.error);
+    if (missingColumn && Object.prototype.hasOwnProperty.call(mutablePayload, missingColumn)) {
+      const nextPayload = { ...mutablePayload };
+      delete nextPayload[missingColumn];
+      mutablePayload = nextPayload;
+      continue;
+    }
+
+    // Fallback path when slug unique constraint is missing.
+    if (isMissingUniqueOnSlugError(upsertResponse.error)) {
+      const lookup = await supabase
+        .from('blog_posts')
+        .select('id')
+        .eq('slug', String(mutablePayload.slug || ''))
+        .limit(1)
+        .maybeSingle();
+
+      if (lookup.error) {
+        throw lookup.error;
+      }
+
+      if (lookup.data?.id) {
+        const updateResult = await supabase
+          .from('blog_posts')
+          .update(mutablePayload)
+          .eq('id', lookup.data.id);
+        if (updateResult.error) {
+          throw updateResult.error;
+        }
+      } else {
+        const insertResult = await supabase
+          .from('blog_posts')
+          .insert(mutablePayload);
+        if (insertResult.error) {
+          throw insertResult.error;
+        }
+      }
+
+      return mutablePayload;
+    }
+
+    throw upsertResponse.error;
+  }
+
+  return mutablePayload;
+}
+
 async function syncMarkdownPostBySlug(slugInput) {
   const filePath = findMarkdownFileBySlug(slugInput);
   if (!filePath) return null;
@@ -115,13 +191,7 @@ async function syncMarkdownPostBySlug(slugInput) {
     published_at: data.date || new Date().toISOString(),
   };
 
-  const { error: upsertError } = await supabase
-    .from('blog_posts')
-    .upsert(payload, { onConflict: 'slug' });
-
-  if (upsertError) {
-    throw upsertError;
-  }
+  await writeBlogPostBySlug(payload);
 
   const { data: upserted, error: fetchError } = await supabase
     .from('blog_posts')
@@ -322,13 +392,7 @@ router.post('/posts/ensure', optionalAuth, async (req, res) => {
       read_time: parseReadTimeMinutes(incoming.read_time ?? incoming.readTime),
     };
 
-    const { error: upsertError } = await supabase
-      .from('blog_posts')
-      .upsert(payload, { onConflict: 'slug' });
-
-    if (upsertError) {
-      throw upsertError;
-    }
+    await writeBlogPostBySlug(payload);
 
     const { data: ensuredPost, error: fetchError } = await supabase
       .from('blog_posts')
