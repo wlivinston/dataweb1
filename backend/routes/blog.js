@@ -67,6 +67,32 @@ function normalizeTags(tags) {
   return [];
 }
 
+function normalizeSlug(slugInput) {
+  return String(slugInput || '')
+    .trim()
+    .toLowerCase()
+    .replace(/%20/g, ' ')
+    .replace(/[\s_]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function parseReadTimeMinutes(input) {
+  if (typeof input === 'number' && Number.isFinite(input)) {
+    return Math.min(240, Math.max(1, Math.round(input)));
+  }
+
+  if (typeof input === 'string') {
+    const parsed = Number.parseInt(input.replace(/[^0-9]/g, ''), 10);
+    if (Number.isFinite(parsed)) {
+      return Math.min(240, Math.max(1, parsed));
+    }
+  }
+
+  return 5;
+}
+
 async function syncMarkdownPostBySlug(slugInput) {
   const filePath = findMarkdownFileBySlug(slugInput);
   if (!filePath) return null;
@@ -89,17 +115,64 @@ async function syncMarkdownPostBySlug(slugInput) {
     published_at: data.date || new Date().toISOString(),
   };
 
-  const { data: upserted, error } = await supabase
+  const { error: upsertError } = await supabase
     .from('blog_posts')
-    .upsert(payload, { onConflict: 'slug' })
-    .select('id, slug, title')
-    .single();
+    .upsert(payload, { onConflict: 'slug' });
 
-  if (error) {
-    throw error;
+  if (upsertError) {
+    throw upsertError;
+  }
+
+  const { data: upserted, error: fetchError } = await supabase
+    .from('blog_posts')
+    .select('id, slug, title')
+    .eq('slug', slug)
+    .maybeSingle();
+
+  if (fetchError) {
+    throw fetchError;
+  }
+
+  if (!upserted) {
+    throw new Error(`Markdown sync completed but no row found for slug "${slug}"`);
   }
 
   return upserted;
+}
+
+async function getPublishedPostBySlug(slugInput) {
+  const slug = String(slugInput || '').trim();
+  if (!slug) return null;
+
+  let response = await supabase
+    .from('blog_posts')
+    .select('*')
+    .eq('slug', slug)
+    .eq('published', true)
+    .maybeSingle();
+
+  if (response.error) {
+    throw response.error;
+  }
+
+  if (response.data) {
+    return response.data;
+  }
+
+  // Fallback to case-insensitive match for historical rows.
+  response = await supabase
+    .from('blog_posts')
+    .select('*')
+    .ilike('slug', slug)
+    .eq('published', true)
+    .limit(1)
+    .maybeSingle();
+
+  if (response.error) {
+    throw response.error;
+  }
+
+  return response.data || null;
 }
 
 // Get all blog posts
@@ -215,21 +288,92 @@ async function handleMarkdownSync(req, res) {
 router.post('/sync/markdown', optionalAuth, handleMarkdownSync);
 router.get('/sync/markdown', optionalAuth, handleMarkdownSync);
 
+// Ensure a blog post row exists for a slug (useful when backend cannot read markdown files at runtime).
+router.post('/posts/ensure', optionalAuth, async (req, res) => {
+  try {
+    const incoming = req.body || {};
+    const slug = normalizeSlug(incoming.slug);
+
+    if (!slug) {
+      return res.status(400).json({ error: 'Valid slug is required' });
+    }
+
+    const title = String(incoming.title || slug).trim() || slug;
+    const excerpt = String(incoming.excerpt || '').trim();
+    const content = String(incoming.content || '').trim();
+    const author = String(incoming.author || 'DataWeb Team').trim() || 'DataWeb Team';
+    const category = String(incoming.category || 'General').trim() || 'General';
+    const publishedAt =
+      typeof incoming.date === 'string' && incoming.date.trim()
+        ? incoming.date.trim()
+        : new Date().toISOString();
+
+    const payload = {
+      slug,
+      title,
+      excerpt,
+      content,
+      author,
+      category,
+      tags: normalizeTags(incoming.tags),
+      featured: incoming.featured === true,
+      published: true,
+      published_at: publishedAt,
+      read_time: parseReadTimeMinutes(incoming.read_time ?? incoming.readTime),
+    };
+
+    const { error: upsertError } = await supabase
+      .from('blog_posts')
+      .upsert(payload, { onConflict: 'slug' });
+
+    if (upsertError) {
+      throw upsertError;
+    }
+
+    const { data: ensuredPost, error: fetchError } = await supabase
+      .from('blog_posts')
+      .select('id, slug, title')
+      .eq('slug', slug)
+      .maybeSingle();
+
+    if (fetchError) {
+      throw fetchError;
+    }
+
+    if (!ensuredPost) {
+      return res.status(500).json({ error: 'Unable to ensure blog post row' });
+    }
+
+    return res.json({
+      message: 'Blog post row ensured',
+      post: ensuredPost,
+    });
+  } catch (error) {
+    console.error('Ensure blog post row error:', error);
+    return res.status(500).json({ error: 'Failed to ensure blog post row' });
+  }
+});
+
 // Get a single blog post by slug
 router.get('/posts/:slug', optionalAuth, async (req, res) => {
   try {
-    const { slug } = req.params;
+    const slug = String(req.params.slug || '').trim();
+    let post = await getPublishedPostBySlug(slug);
 
-    // Get post from database
-    const { data: post, error: postError } = await supabase
-      .from('blog_posts')
-      .select('*')
-      .eq('slug', slug)
-      .eq('published', true)
-      .single();
+    // Auto-sync this markdown file when row is missing from blog_posts.
+    if (!post) {
+      const synced = await syncMarkdownPostBySlug(slug).catch((error) => {
+        console.warn(`Auto-sync skipped for slug "${slug}":`, error?.message || error);
+        return null;
+      });
 
-    if (postError || !post) {
-      return res.status(404).json({ error: 'Blog post not found' });
+      if (synced) {
+        post = await getPublishedPostBySlug(synced.slug);
+      }
+    }
+
+    if (!post) {
+      return res.status(404).json({ error: 'Blog post not found', slug });
     }
 
     // Increment view count
