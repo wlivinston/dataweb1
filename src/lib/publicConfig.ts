@@ -3,6 +3,8 @@ const normalizeUrl = (value: string | undefined): string => {
   return trimmed.replace(/\/+$/, "");
 };
 
+let hasWarnedMissingBackendUrl = false;
+
 export const PUBLIC_CONFIG = {
   brandName: (import.meta.env.VITE_BRAND_NAME || "DataAfrik").trim(),
   logoUrl: (import.meta.env.VITE_LOGO_URL || "").trim(),
@@ -17,7 +19,19 @@ export const PUBLIC_CONFIG = {
 
 export function getApiUrl(path: string): string {
   if (!path.startsWith("/")) return path;
-  if (!PUBLIC_CONFIG.backendUrl) return path;
+  if (!PUBLIC_CONFIG.backendUrl) {
+    if (
+      !hasWarnedMissingBackendUrl &&
+      typeof window !== "undefined" &&
+      !["localhost", "127.0.0.1"].includes(window.location.hostname)
+    ) {
+      hasWarnedMissingBackendUrl = true;
+      console.error(
+        "[publicConfig] Missing VITE_BACKEND_URL in frontend env. API calls will hit the frontend origin and may return HTML instead of JSON."
+      );
+    }
+    return path;
+  }
   return `${PUBLIC_CONFIG.backendUrl}${path}`;
 }
 

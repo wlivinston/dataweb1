@@ -6,6 +6,21 @@ import BlogPostLayout from "@/components/BlogPostLayout";
 import { loadPostBySlug, type PostData } from "@/lib/loadPosts";
 import { getApiUrl } from "@/lib/publicConfig";
 
+const isJsonResponse = (response: Response): boolean =>
+  (response.headers.get("content-type") || "").toLowerCase().includes("application/json");
+
+async function parseJsonStrict<T>(response: Response, context: string): Promise<T> {
+  if (isJsonResponse(response)) {
+    return (await response.json()) as T;
+  }
+
+  const text = await response.text();
+  const preview = text.slice(0, 120).replace(/\s+/g, " ").trim();
+  throw new Error(
+    `${context}: expected JSON but received ${response.status} ${response.statusText} from ${response.url}. Preview: ${preview}`
+  );
+}
+
 const normalizeSlug = (value: string): string =>
   String(value || "")
     .toLowerCase()
@@ -46,7 +61,10 @@ const BlogPostPage: React.FC = () => {
 
           let resolvedPostId: string | number | null = null;
           if (response.ok) {
-            const payload = await response.json();
+            const payload = await parseJsonStrict<{ post?: { id?: string | number } }>(
+              response,
+              "Resolve backend post id"
+            );
             const id = payload?.post?.id;
             if (typeof id === "number") {
               resolvedPostId = id;
@@ -79,7 +97,10 @@ const BlogPostPage: React.FC = () => {
           });
 
           if (ensureResponse.ok) {
-            const ensurePayload = await ensureResponse.json();
+            const ensurePayload = await parseJsonStrict<{ post?: { id?: string | number } }>(
+              ensureResponse,
+              "Ensure backend post id"
+            );
             const ensuredId = ensurePayload?.post?.id;
 
             if (mounted && typeof ensuredId === "number") {
@@ -102,7 +123,10 @@ const BlogPostPage: React.FC = () => {
           });
 
           if (syncResponse.ok) {
-            const syncPayload = await syncResponse.json();
+            const syncPayload = await parseJsonStrict<{ posts?: Array<{ id?: string | number; slug?: string }> }>(
+              syncResponse,
+              "Sync markdown fallback"
+            );
             const syncedPost = Array.isArray(syncPayload?.posts)
               ? syncPayload.posts.find((item: any) => normalizeSlug(item?.slug) === normalizedSlug)
               : null;

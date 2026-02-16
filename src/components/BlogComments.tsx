@@ -35,6 +35,21 @@ interface ApiErrorResponse {
   errors?: Array<{ msg?: string }>;
 }
 
+const isJsonResponse = (response: Response): boolean =>
+  (response.headers.get("content-type") || "").toLowerCase().includes("application/json");
+
+async function parseJsonStrict<T>(response: Response, context: string): Promise<T> {
+  if (isJsonResponse(response)) {
+    return (await response.json()) as T;
+  }
+
+  const text = await response.text();
+  const preview = text.slice(0, 120).replace(/\s+/g, " ").trim();
+  throw new Error(
+    `${context}: expected JSON but received ${response.status} ${response.statusText} from ${response.url}. Preview: ${preview}`
+  );
+}
+
 const normalizeSlug = (value: string): string =>
   String(value || "")
     .toLowerCase()
@@ -140,7 +155,10 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
       );
 
       if (lookupResponse.ok) {
-        const payload = await lookupResponse.json();
+        const payload = await parseJsonStrict<{ post?: { id?: string | number } }>(
+          lookupResponse,
+          "Lookup post by slug failed"
+        );
         const id = payload?.post?.id;
         const normalizedId = id == null ? '' : String(id).trim();
         if (normalizedId) {
@@ -159,7 +177,10 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
       });
 
       if (ensureResponse.ok) {
-        const ensurePayload = await ensureResponse.json();
+        const ensurePayload = await parseJsonStrict<{ post?: { id?: string | number } }>(
+          ensureResponse,
+          "Ensure post row failed"
+        );
         const ensuredId = ensurePayload?.post?.id;
         const normalizedEnsuredId = ensuredId == null ? '' : String(ensuredId).trim();
         if (normalizedEnsuredId) {
@@ -177,7 +198,10 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
       );
 
       if (listResponse.ok) {
-        const listPayload = await listResponse.json();
+        const listPayload = await parseJsonStrict<{ posts?: Array<{ id?: string | number; slug?: string }> }>(
+          listResponse,
+          "List post fallback failed"
+        );
         const matchedPost = Array.isArray(listPayload?.posts)
           ? listPayload.posts.find((candidate: any) => normalizeSlug(candidate?.slug) === slug)
           : null;
