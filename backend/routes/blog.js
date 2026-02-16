@@ -108,7 +108,127 @@ function tryExtractMissingColumn(error) {
   return match?.[1] || null;
 }
 
+function sanitizeIdentifier(identifier) {
+  const value = String(identifier || '').trim();
+  if (!/^[a-z_][a-z0-9_]*$/i.test(value)) {
+    throw new Error(`Invalid SQL identifier: ${value}`);
+  }
+  return value;
+}
+
+async function getBlogPostColumnsFromSql() {
+  const result = await query(
+    `SELECT column_name
+     FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'blog_posts'`,
+    []
+  );
+
+  return new Set(
+    (result.rows || [])
+      .map((row) => String(row.column_name || '').trim())
+      .filter(Boolean)
+  );
+}
+
+function filterPayloadToKnownColumns(payload, knownColumns) {
+  return Object.entries(payload || {}).reduce((acc, [key, value]) => {
+    if (!knownColumns.has(key)) return acc;
+    if (value === undefined) return acc;
+    acc[key] = value;
+    return acc;
+  }, {});
+}
+
+async function writeBlogPostBySlugSql(payload) {
+  let mutablePayload = { ...payload };
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const knownColumns = await getBlogPostColumnsFromSql();
+      const filteredPayload = filterPayloadToKnownColumns(mutablePayload, knownColumns);
+
+      if (!filteredPayload.slug) {
+        throw new Error('blog_posts.slug is required');
+      }
+
+      const existing = await query(
+        'SELECT id FROM blog_posts WHERE slug = $1 LIMIT 1',
+        [String(filteredPayload.slug)]
+      );
+
+      const existingRow = existing.rows?.[0] || null;
+
+      if (existingRow?.id) {
+        const updateEntries = Object.entries(filteredPayload).filter(([key]) => key !== 'id' && key !== 'slug');
+        if (updateEntries.length > 0) {
+          const setClause = updateEntries
+            .map(([column], index) => `${sanitizeIdentifier(column)} = $${index + 1}`)
+            .join(', ');
+          const updateValues = updateEntries.map(([, value]) => value);
+
+          await query(
+            `UPDATE blog_posts SET ${setClause} WHERE id = $${updateValues.length + 1}`,
+            [...updateValues, existingRow.id]
+          );
+        }
+      } else {
+        const insertEntries = Object.entries(filteredPayload).filter(([key]) => key !== 'id');
+        const columns = insertEntries.map(([column]) => sanitizeIdentifier(column));
+        const placeholders = insertEntries.map((_, index) => `$${index + 1}`);
+        const values = insertEntries.map(([, value]) => value);
+
+        await query(
+          `INSERT INTO blog_posts (${columns.join(', ')}) VALUES (${placeholders.join(', ')})`,
+          values
+        );
+      }
+
+      return filteredPayload;
+    } catch (error) {
+      const missingColumn = tryExtractMissingColumn(error);
+      if (missingColumn && Object.prototype.hasOwnProperty.call(mutablePayload, missingColumn)) {
+        const nextPayload = { ...mutablePayload };
+        delete nextPayload[missingColumn];
+        mutablePayload = nextPayload;
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return mutablePayload;
+}
+
+async function fetchBlogPostIdentityBySlug(slug) {
+  const normalizedSlug = String(slug || '').trim();
+  if (!normalizedSlug) return null;
+
+  if (supabase) {
+    const { data: post, error } = await supabase
+      .from('blog_posts')
+      .select('id, slug, title')
+      .eq('slug', normalizedSlug)
+      .maybeSingle();
+
+    if (!error && post) {
+      return post;
+    }
+  }
+
+  const sqlResult = await query(
+    'SELECT id, slug, title FROM blog_posts WHERE slug = $1 LIMIT 1',
+    [normalizedSlug]
+  );
+
+  return sqlResult.rows?.[0] || null;
+}
+
 async function writeBlogPostBySlug(payload) {
+  if (!supabase) {
+    return writeBlogPostBySlugSql(payload);
+  }
+
   let mutablePayload = { ...payload };
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -163,6 +283,13 @@ async function writeBlogPostBySlug(payload) {
       return mutablePayload;
     }
 
+    // Last fallback: write directly via SQL when Supabase upsert path fails.
+    try {
+      return await writeBlogPostBySlugSql(mutablePayload);
+    } catch (_sqlFallbackError) {
+      // Preserve original Supabase error below for clearer debugging signal.
+    }
+
     throw upsertResponse.error;
   }
 
@@ -193,15 +320,7 @@ async function syncMarkdownPostBySlug(slugInput) {
 
   await writeBlogPostBySlug(payload);
 
-  const { data: upserted, error: fetchError } = await supabase
-    .from('blog_posts')
-    .select('id, slug, title')
-    .eq('slug', slug)
-    .maybeSingle();
-
-  if (fetchError) {
-    throw fetchError;
-  }
+  const upserted = await fetchBlogPostIdentityBySlug(slug);
 
   if (!upserted) {
     throw new Error(`Markdown sync completed but no row found for slug "${slug}"`);
@@ -214,35 +333,50 @@ async function getPublishedPostBySlug(slugInput) {
   const slug = String(slugInput || '').trim();
   if (!slug) return null;
 
-  let response = await supabase
-    .from('blog_posts')
-    .select('*')
-    .eq('slug', slug)
-    .eq('published', true)
-    .maybeSingle();
+  if (supabase) {
+    let response = await supabase
+      .from('blog_posts')
+      .select('*')
+      .eq('slug', slug)
+      .eq('published', true)
+      .maybeSingle();
 
-  if (response.error) {
-    throw response.error;
+    if (!response.error && response.data) {
+      return response.data;
+    }
+
+    // Fallback to case-insensitive match for historical rows.
+    response = await supabase
+      .from('blog_posts')
+      .select('*')
+      .ilike('slug', slug)
+      .eq('published', true)
+      .limit(1)
+      .maybeSingle();
+
+    if (!response.error) {
+      return response.data || null;
+    }
   }
 
-  if (response.data) {
-    return response.data;
+  try {
+    const exact = await query(
+      'SELECT * FROM blog_posts WHERE slug = $1 AND published = true LIMIT 1',
+      [slug]
+    );
+
+    if (exact.rows?.[0]) {
+      return exact.rows[0];
+    }
+
+    const fallback = await query(
+      'SELECT * FROM blog_posts WHERE lower(slug) = lower($1) AND published = true LIMIT 1',
+      [slug]
+    );
+    return fallback.rows?.[0] || null;
+  } catch {
+    return null;
   }
-
-  // Fallback to case-insensitive match for historical rows.
-  response = await supabase
-    .from('blog_posts')
-    .select('*')
-    .ilike('slug', slug)
-    .eq('published', true)
-    .limit(1)
-    .maybeSingle();
-
-  if (response.error) {
-    throw response.error;
-  }
-
-  return response.data || null;
 }
 
 // Get all blog posts
@@ -394,15 +528,7 @@ router.post('/posts/ensure', optionalAuth, async (req, res) => {
 
     await writeBlogPostBySlug(payload);
 
-    const { data: ensuredPost, error: fetchError } = await supabase
-      .from('blog_posts')
-      .select('id, slug, title')
-      .eq('slug', slug)
-      .maybeSingle();
-
-    if (fetchError) {
-      throw fetchError;
-    }
+    const ensuredPost = await fetchBlogPostIdentityBySlug(slug);
 
     if (!ensuredPost) {
       return res.status(500).json({ error: 'Unable to ensure blog post row' });
