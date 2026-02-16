@@ -35,6 +35,16 @@ interface ApiErrorResponse {
   errors?: Array<{ msg?: string }>;
 }
 
+const normalizeSlug = (value: string): string =>
+  String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/%20/g, " ")
+    .replace(/[\s_]+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
 const normalizeComment = (raw: Partial<Comment> & { replies?: unknown }): Comment => {
   const rawReplies = Array.isArray(raw.replies) ? raw.replies : [];
 
@@ -114,7 +124,7 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
       return direct;
     }
 
-    const slug = String(postSlug || '').trim();
+    const slug = normalizeSlug(postSlug);
     if (!slug) {
       setResolvedPostId(null);
       return null;
@@ -155,6 +165,27 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
         if (normalizedEnsuredId) {
           setResolvedPostId(normalizedEnsuredId);
           return normalizedEnsuredId;
+        }
+      }
+
+      // Final fallback: query list endpoint and match slug client-side.
+      const listResponse = await fetch(
+        getApiUrl(`/api/blog/posts?limit=50&search=${encodeURIComponent(slug)}`),
+        {
+          headers: { ...authHeader },
+        }
+      );
+
+      if (listResponse.ok) {
+        const listPayload = await listResponse.json();
+        const matchedPost = Array.isArray(listPayload?.posts)
+          ? listPayload.posts.find((candidate: any) => normalizeSlug(candidate?.slug) === slug)
+          : null;
+
+        const matchedId = matchedPost?.id == null ? '' : String(matchedPost.id).trim();
+        if (matchedId) {
+          setResolvedPostId(matchedId);
+          return matchedId;
         }
       }
     } catch (resolveError) {

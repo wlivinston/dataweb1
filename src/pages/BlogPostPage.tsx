@@ -6,6 +6,16 @@ import BlogPostLayout from "@/components/BlogPostLayout";
 import { loadPostBySlug, type PostData } from "@/lib/loadPosts";
 import { getApiUrl } from "@/lib/publicConfig";
 
+const normalizeSlug = (value: string): string =>
+  String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/%20/g, " ")
+    .replace(/[\s_]+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
 const BlogPostPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
   const [post, setPost] = useState<PostData | null>(null);
@@ -27,9 +37,11 @@ const BlogPostPage: React.FC = () => {
 
         if (!found) return;
 
+        const normalizedSlug = normalizeSlug(found.slug);
+
         try {
           const response = await fetch(
-            getApiUrl(`/api/blog/posts/${encodeURIComponent(found.slug)}`)
+            getApiUrl(`/api/blog/posts/${encodeURIComponent(normalizedSlug)}`)
           );
 
           let resolvedPostId: string | number | null = null;
@@ -54,7 +66,7 @@ const BlogPostPage: React.FC = () => {
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
-              slug: found.slug,
+              slug: normalizedSlug,
               title: found.title,
               excerpt: found.excerpt,
               content: found.content,
@@ -86,13 +98,13 @@ const BlogPostPage: React.FC = () => {
             headers: {
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({ slugs: [found.slug] }),
+            body: JSON.stringify({ slugs: [normalizedSlug] }),
           });
 
           if (syncResponse.ok) {
             const syncPayload = await syncResponse.json();
             const syncedPost = Array.isArray(syncPayload?.posts)
-              ? syncPayload.posts.find((item: any) => item?.slug === found.slug)
+              ? syncPayload.posts.find((item: any) => normalizeSlug(item?.slug) === normalizedSlug)
               : null;
 
             if (mounted && typeof syncedPost?.id === "number") {
