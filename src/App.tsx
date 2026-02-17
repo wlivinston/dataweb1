@@ -14,6 +14,8 @@ import PricingPage from "./pages/Pricing";
 import RequestReportPage from "./pages/RequestReport";
 import Login from "./pages/Login";
 import FinancePage from "./pages/Finance";
+import CookiePolicyPage from "./pages/CookiePolicy";
+import CookieConsentBanner from "@/components/CookieConsentBanner";
 
 const queryClient = new QueryClient();
 
@@ -34,8 +36,10 @@ const App = () => (
               <Route path="/request-report" element={<RequestReportPage />} />
               <Route path="/finance" element={<FinancePage />} />
               <Route path="/login" element={<Login />} />
+              <Route path="/cookie-policy" element={<CookiePolicyPage />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
+            <CookieConsentBanner />
           </BrowserRouter>
         </TooltipProvider>
       </AuthProvider>
