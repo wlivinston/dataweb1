@@ -2,7 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const crypto = require('crypto');
 const { query } = require('../config/database');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, optionalAuth } = require('../middleware/auth');
 const { supabase } = require('../config/supabase');
 const { sendSubscriptionEmail, sendUnsubscribeEmail } = require('../services/emailService');
 
@@ -13,6 +13,14 @@ const SUPPORTED_PDF_PLANS = new Set(['single', 'monthly']);
 
 function normalizeBaseUrl(url) {
   return (url || '').replace(/\/+$/, '');
+}
+
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isLikelyEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
 }
 
 function getPdfPlanConfig(plan) {
@@ -155,8 +163,8 @@ function verifyPaystackSignature(rawBodyBuffer, signatureHeader, secretKey) {
     : { valid: false, reason: 'Paystack signature mismatch' };
 }
 
-// Subscribe to newsletter (authenticated users only)
-router.post('/newsletter', authenticateToken, [
+// Subscribe to newsletter (public, with optional auth context)
+router.post('/newsletter', optionalAuth, [
   body('first_name').optional().trim(),
   body('last_name').optional().trim(),
   body('source').optional().trim()
@@ -167,18 +175,25 @@ router.post('/newsletter', authenticateToken, [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { first_name, last_name, source } = req.body;
-    const email = String(req.user?.email || '').trim().toLowerCase();
-    if (!email) {
-      return res.status(400).json({ error: 'Authenticated user email is required for newsletter subscription' });
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const requestedEmail =
+      payload.email ||
+      payload?.subscriber?.email ||
+      payload?.newsletterEmail ||
+      req.query?.email;
+    const email = normalizeEmail(requestedEmail || req.user?.email);
+
+    if (!email || !isLikelyEmail(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
     }
 
-    const resolvedFirstName = String(req.user?.first_name || first_name || 'Subscriber').trim();
-    const resolvedLastName = String(req.user?.last_name || last_name || '').trim();
+    const resolvedFirstName = String(payload.first_name || req.user?.first_name || 'Subscriber').trim();
+    const resolvedLastName = String(payload.last_name || req.user?.last_name || '').trim();
+    const resolvedSource = String(payload.source || 'website').trim();
 
     // Check if already subscribed
     const existingSubscriber = await query(
-      'SELECT id, is_active FROM newsletter_subscribers WHERE email = $1',
+      'SELECT id, is_active FROM newsletter_subscribers WHERE lower(email) = lower($1)',
       [email]
     );
 
@@ -186,17 +201,31 @@ router.post('/newsletter', authenticateToken, [
       const subscriber = existingSubscriber.rows[0];
       
       if (subscriber.is_active) {
-        return res.status(400).json({ error: 'Email is already subscribed to the newsletter' });
+        return res.json({
+          message: 'You are already subscribed to the newsletter.',
+          email_sent: false,
+          already_subscribed: true,
+        });
       } else {
         // Reactivate subscription
         await query(
-          'UPDATE newsletter_subscribers SET is_active = true, unsubscribed_at = NULL, source = COALESCE($1, source) WHERE id = $2',
-          [source, subscriber.id]
+          `UPDATE newsletter_subscribers
+           SET
+             is_active = true,
+             unsubscribed_at = NULL,
+             source = COALESCE($1, source),
+             first_name = COALESCE(NULLIF($2, ''), first_name),
+             last_name = COALESCE(NULLIF($3, ''), last_name)
+           WHERE id = $4`,
+          [resolvedSource, resolvedFirstName, resolvedLastName, subscriber.id]
         );
         
-        await sendSubscriptionEmail(email, resolvedFirstName || 'Subscriber');
+        const emailSent = await sendSubscriptionEmail(email, resolvedFirstName || 'Subscriber');
         
-        return res.json({ message: 'Newsletter subscription reactivated successfully' });
+        return res.json({
+          message: 'Newsletter subscription reactivated successfully',
+          email_sent: emailSent
+        });
       }
     }
 
@@ -205,16 +234,17 @@ router.post('/newsletter', authenticateToken, [
       `INSERT INTO newsletter_subscribers (email, first_name, last_name, source)
        VALUES ($1, $2, $3, $4)
        RETURNING id, email, first_name, last_name`,
-      [email, resolvedFirstName, resolvedLastName || null, source]
+      [email, resolvedFirstName, resolvedLastName || null, resolvedSource]
     );
 
     const subscriber = result.rows[0];
 
     // Send welcome email
-    await sendSubscriptionEmail(email, resolvedFirstName || 'Subscriber');
+    const emailSent = await sendSubscriptionEmail(email, resolvedFirstName || 'Subscriber');
 
     res.status(201).json({
       message: 'Newsletter subscription successful',
+      email_sent: emailSent,
       subscriber: {
         id: subscriber.id,
         email: subscriber.email,
@@ -224,8 +254,17 @@ router.post('/newsletter', authenticateToken, [
     });
 
   } catch (error) {
+    if (error?.code === '23505') {
+      return res.json({
+        message: 'You are already subscribed to the newsletter.',
+        email_sent: false,
+        already_subscribed: true,
+      });
+    }
+
     console.error('Newsletter subscription error:', error);
-    res.status(500).json({ error: 'Failed to subscribe to newsletter' });
+    const details = process.env.NODE_ENV === 'development' ? error?.message : undefined;
+    res.status(500).json({ error: 'Failed to subscribe to newsletter', details });
   }
 });
 
