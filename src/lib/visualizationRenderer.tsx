@@ -5,6 +5,7 @@ import { Visualization } from './types';
 import { Table } from '@/components/ui/table';
 import { optimizeVisualizationData, RENDERING_LIMITS } from './dataOptimization';
 import PaginatedTable from '@/components/PaginatedTable';
+import { SHARED_CHART_PALETTE } from './chartColors';
 
 export type SupportedVisualizationType = 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'table';
 
@@ -19,10 +20,20 @@ const toCategoryValueData = (data: any[]): { category: string; value: number }[]
     if (entry && typeof entry === 'object') {
       const categoryRaw = entry.category ?? entry.name ?? entry.label ?? entry.x ?? entry.date ?? entry.month ?? `Item ${index + 1}`;
       const valueRaw = entry.value ?? entry.y ?? entry.amount ?? entry.total ?? entry.count ?? getFirstNumericValue(entry);
-      return {
+      const normalizedEntry: Record<string, any> = {
         category: String(categoryRaw),
         value: Number(valueRaw) || 0,
       };
+
+      // Preserve extra numeric series so line/area charts can use full palettes.
+      Object.entries(entry).forEach(([key, value]) => {
+        if (key === 'category') return;
+        if (typeof value === 'number' && Number.isFinite(value) && !(key in normalizedEntry)) {
+          normalizedEntry[key] = Number(value) || 0;
+        }
+      });
+
+      return normalizedEntry as { category: string; value: number };
     }
     return {
       category: `Item ${index + 1}`,
@@ -58,6 +69,43 @@ const toScatterData = (data: any[]): { x: number; y: number; name?: string }[] =
       return null;
     })
     .filter((point): point is { x: number; y: number; name?: string } => point !== null);
+};
+
+const getPalette = (viz: Visualization): string[] => {
+  if (Array.isArray(viz.colors) && viz.colors.length > 0) {
+    return viz.colors;
+  }
+  return SHARED_CHART_PALETTE;
+};
+
+const getStableColorStart = (viz: Visualization, paletteLength: number): number => {
+  if (paletteLength <= 0) return 0;
+  const seed = `${viz.id}-${viz.title}`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) % 2147483647;
+  }
+  return Math.abs(hash) % paletteLength;
+};
+
+const getSeriesKeys = (data: Record<string, any>[]): string[] => {
+  if (!Array.isArray(data) || data.length === 0) return ['value'];
+
+  const excluded = new Set(['category', 'name', 'label', 'x', 'y']);
+  const keys = Object.keys(data[0]).filter((key) => {
+    if (excluded.has(key)) return false;
+    return data.some((row) => typeof row[key] === 'number' && Number.isFinite(row[key]));
+  });
+
+  if (keys.length === 0) return ['value'];
+
+  keys.sort((a, b) => {
+    if (a === 'value') return -1;
+    if (b === 'value') return 1;
+    return a.localeCompare(b);
+  });
+
+  return keys;
 };
 
 export const renderVisualization = (viz: Visualization, overrideType?: SupportedVisualizationType) => {
@@ -125,6 +173,10 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
     normalizedData,
     effectiveType === 'scatter' ? 'scatter' : effectiveType
   );
+  const palette = getPalette(viz);
+  const baseColorIndex = getStableColorStart(viz, palette.length);
+  const getColor = (offset: number): string =>
+    palette[(baseColorIndex + offset) % palette.length];
   
   // Show warning if data was sampled
   const wasSampled = normalizedData.length > chartData.length;
@@ -157,7 +209,11 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
             />
             <YAxis tick={{ fontSize: 10 }} />
             <Tooltip />
-            <Bar dataKey="value" fill={viz.colors[0]} />
+            <Bar dataKey="value">
+              {chartData.map((_, index) => (
+                <Cell key={`bar-cell-${index}`} fill={getColor(index)} />
+              ))}
+            </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>
@@ -252,7 +308,7 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
               label={chartData.length <= 8 ? renderCustomLabel : false}
               outerRadius={typeof window !== 'undefined' && window.innerWidth > 768 ? 70 : 55}
               innerRadius={0}
-              fill="#8884d8"
+              fill={getColor(0)}
               dataKey="value"
               nameKey="category"
               paddingAngle={isSingleCategory ? 0 : 3}
@@ -261,7 +317,7 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
               activeShape={renderActiveShape}
             >
               {chartData.map((entry, index) => (
-                <Cell key={`cell-${index}`} fill={viz.colors[index % viz.colors.length]} />
+                <Cell key={`cell-${index}`} fill={getColor(index)} />
               ))}
             </Pie>
           <Tooltip
@@ -314,6 +370,8 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
   }
 
   if (effectiveType === 'line') {
+    const seriesKeys = getSeriesKeys(chartData as Record<string, any>[]).slice(0, Math.max(1, palette.length));
+
     return (
       <div className="space-y-2">
         {wasSampled && (
@@ -327,7 +385,19 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
             <XAxis dataKey="category" tick={{ fontSize: 10 }} />
             <YAxis tick={{ fontSize: 10 }} />
             <Tooltip />
-            <Line type="monotone" dataKey="value" stroke={viz.colors[0]} strokeWidth={2} />
+            <Legend />
+            {seriesKeys.map((seriesKey, index) => (
+              <Line
+                key={`line-${seriesKey}`}
+                type="monotone"
+                dataKey={seriesKey}
+                stroke={getColor(index)}
+                strokeWidth={2}
+                dot={false}
+                name={seriesKey}
+                strokeDasharray={index === 0 ? undefined : '6 4'}
+              />
+            ))}
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -335,6 +405,8 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
   }
   
   if (effectiveType === 'area') {
+    const seriesKeys = getSeriesKeys(chartData as Record<string, any>[]).slice(0, Math.max(1, palette.length));
+
     return (
       <div className="space-y-2">
         {wasSampled && (
@@ -348,7 +420,18 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
             <XAxis dataKey="category" tick={{ fontSize: 10 }} />
             <YAxis tick={{ fontSize: 10 }} />
             <Tooltip />
-            <Area type="monotone" dataKey="value" stroke={viz.colors[0]} fill={viz.colors[0]} fillOpacity={0.6} />
+            <Legend />
+            {seriesKeys.map((seriesKey, index) => (
+              <Area
+                key={`area-${seriesKey}`}
+                type="monotone"
+                dataKey={seriesKey}
+                stroke={getColor(index)}
+                fill={getColor(index)}
+                fillOpacity={Math.max(0.18, 0.45 - index * 0.06)}
+                name={seriesKey}
+              />
+            ))}
           </AreaChart>
         </ResponsiveContainer>
       </div>
@@ -371,7 +454,11 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
             <YAxis dataKey="y" name="Y" tick={{ fontSize: 10 }} type="number" />
             <ZAxis range={[40, 200]} />
             <Tooltip cursor={{ strokeDasharray: '3 3' }} />
-            <Scatter data={scatterData} fill={viz.colors[0]} />
+            <Scatter data={scatterData}>
+              {scatterData.map((_, index) => (
+                <Cell key={`scatter-cell-${index}`} fill={getColor(index)} />
+              ))}
+            </Scatter>
           </ScatterChart>
         </ResponsiveContainer>
       </div>

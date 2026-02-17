@@ -35,6 +35,8 @@ import { Download } from 'lucide-react';
 import PDFPaywallDialog from './PDFPaywallDialog';
 import RequestReportCTA from './RequestReportCTA';
 import { useAuth } from '@/hooks/useAuth';
+import { getApiUrl } from '@/lib/publicConfig';
+import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 // New AI-powered components
 import AIInsightsPanel from './AIInsightsPanel';
 import NaturalLanguageQuery from './NaturalLanguageQuery';
@@ -55,6 +57,7 @@ import {
   optimizeVisualizationData,
   RENDERING_LIMITS
 } from '@/lib/dataOptimization';
+import { CHART_COLOR_SCHEMES, SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATIVE_CHART_COLOR } from '@/lib/chartColors';
 
 interface DAXCalculation {
   id: string;
@@ -103,7 +106,8 @@ const FunctionalDataUpload: React.FC = () => {
   const [dateTableInfos, setDateTableInfos] = useState<DateTableInfo[]>([]);
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
-  const { user } = useAuth();
+  const [checkoutLoadingProvider, setCheckoutLoadingProvider] = useState<'stripe' | 'paystack' | null>(null);
+  const { user, session } = useAuth();
   // Loading states for file processing
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -113,12 +117,90 @@ const FunctionalDataUpload: React.FC = () => {
   const [autoDetectedSchema, setAutoDetectedSchema] = useState<SchemaDetectionResult | null>(null);
   const prevDatasetCount = useRef(0);
 
-  const colorSchemes = [
-    { name: 'professional', colors: ['#3B82F6', '#1E40AF', '#1E3A8A', '#1D4ED8'] },
-    { name: 'vibrant', colors: ['#EF4444', '#F59E0B', '#10B981', '#8B5CF6'] },
-    { name: 'pastel', colors: ['#FBBF24', '#F472B6', '#34D399', '#60A5FA'] },
-    { name: 'monochrome', colors: ['#374151', '#6B7280', '#9CA3AF', '#D1D5DB'] }
-  ];
+  const colorSchemes = CHART_COLOR_SCHEMES;
+
+  const getAccessToken = async (): Promise<string | null> => {
+    if (session?.access_token) return session.access_token;
+    if (!supabase) return null;
+
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token || null;
+  };
+
+  const hasPaidPDFAccess = async (): Promise<boolean> => {
+    if (!user?.email) return false;
+    if (!isSupabaseConfigured || !supabase) return false;
+
+    try {
+      const { data, error } = await supabase
+        .from('customers')
+        .select('subscription_status')
+        .eq('email', user.email)
+        .single();
+
+      if (error || !data?.subscription_status) return false;
+
+      const paidStatuses = new Set([
+        'professional',
+        'enterprise',
+        'admin',
+        'paid',
+        'premium',
+        'pro',
+        'monthly',
+        'annual',
+      ]);
+
+      const status = String(data.subscription_status).toLowerCase().trim();
+      return paidStatuses.has(status);
+    } catch (error) {
+      console.error('Subscription status lookup failed:', error);
+      return false;
+    }
+  };
+
+  const startProviderCheckout = async (
+    provider: 'stripe' | 'paystack',
+    plan: 'single' | 'monthly'
+  ) => {
+    if (!user) {
+      toast.error('Please sign in first to complete payment.');
+      return;
+    }
+
+    const token = await getAccessToken();
+    if (!token) {
+      toast.error('Authentication session expired. Please sign in again.');
+      return;
+    }
+
+    setCheckoutLoadingProvider(provider);
+    try {
+      const response = await fetch(getApiUrl('/api/subscriptions/pdf-checkout'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          provider,
+          plan,
+        }),
+      });
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.checkout_url) {
+        throw new Error(payload?.error || 'Failed to initialize checkout.');
+      }
+
+      setShowPaywall(false);
+      window.location.href = payload.checkout_url;
+    } catch (error: any) {
+      console.error('Checkout initialization error:', error);
+      toast.error(error?.message || 'Could not start payment checkout.');
+      setCheckoutLoadingProvider(null);
+    }
+  };
 
   // File Format Detection
   const getFileFormat = (fileName: string): 'csv' | 'excel' | 'json' => {
@@ -1675,8 +1757,14 @@ const FunctionalDataUpload: React.FC = () => {
                 onClick={async () => {
                   if (isGeneratingPDF) return;
 
-                  // Check if user is authenticated - show paywall if not
+                  // Require authentication for paid PDF checkout.
                   if (!user) {
+                    setShowPaywall(true);
+                    return;
+                  }
+
+                  const hasAccess = await hasPaidPDFAccess();
+                  if (!hasAccess) {
                     setShowPaywall(true);
                     return;
                   }
@@ -1899,8 +1987,8 @@ const FunctionalDataUpload: React.FC = () => {
                               <YAxis tick={{ fontSize: 10 }} />
                               <Tooltip />
                               <Legend />
-                              <Line type="monotone" dataKey="trend" stroke="#3B82F6" dot={false} name="Trend" />
-                              <Line type="monotone" dataKey="movingAvg" stroke="#10B981" dot={false} name="Moving Avg" strokeDasharray="5 5" />
+                              <Line type="monotone" dataKey="trend" stroke={SHARED_CHART_PALETTE[0]} dot={false} name="Trend" />
+                              <Line type="monotone" dataKey="movingAvg" stroke={SHARED_CHART_PALETTE[1]} dot={false} name="Moving Avg" strokeDasharray="5 5" />
                             </LineChart>
                           </ResponsiveContainer>
                         </div>
@@ -1921,9 +2009,9 @@ const FunctionalDataUpload: React.FC = () => {
                                 <YAxis tick={{ fontSize: 10 }} />
                                 <Tooltip />
                                 <Legend />
-                                <Area type="monotone" dataKey="upper" stroke="transparent" fill="#3B82F6" fillOpacity={0.1} name="Upper Bound" />
-                                <Area type="monotone" dataKey="lower" stroke="transparent" fill="#3B82F6" fillOpacity={0.1} name="Lower Bound" />
-                                <Line type="monotone" dataKey="forecast" stroke="#EF4444" strokeWidth={2} name="Forecast" />
+                                <Area type="monotone" dataKey="upper" stroke="transparent" fill={SHARED_CHART_PALETTE[0]} fillOpacity={0.1} name="Upper Bound" />
+                                <Area type="monotone" dataKey="lower" stroke="transparent" fill={SHARED_CHART_PALETTE[0]} fillOpacity={0.1} name="Lower Bound" />
+                                <Line type="monotone" dataKey="forecast" stroke={SHARED_CHART_PALETTE[3]} strokeWidth={2} name="Forecast" />
                               </AreaChart>
                             </ResponsiveContainer>
                           </div>
@@ -1942,9 +2030,9 @@ const FunctionalDataUpload: React.FC = () => {
                                 <XAxis dataKey="period" tick={{ fontSize: 9 }} angle={-30} textAnchor="end" height={60} />
                                 <YAxis tick={{ fontSize: 10 }} />
                                 <Tooltip formatter={(value: any) => `${value}%`} />
-                                <Bar dataKey="change" name="Growth %" fill="#8B5CF6">
+                                <Bar dataKey="change" name="Growth %" fill={SHARED_CHART_PALETTE[4]}>
                                   {ts.growthRates.slice(0, 20).map((gr, i) => (
-                                    <Cell key={i} fill={gr.percentageChange >= 0 ? '#10B981' : '#EF4444'} />
+                                    <Cell key={i} fill={gr.percentageChange >= 0 ? POSITIVE_CHART_COLOR : NEGATIVE_CHART_COLOR} />
                                   ))}
                                 </Bar>
                               </BarChart>
@@ -2039,12 +2127,12 @@ const FunctionalDataUpload: React.FC = () => {
                                 <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} domain={[0, 100]} />
                                 <Tooltip />
                                 <Legend />
-                                <Bar yAxisId="left" dataKey="value" fill="#F59E0B" name="Value">
+                                <Bar yAxisId="left" dataKey="value" fill={SHARED_CHART_PALETTE[2]} name="Value">
                                   {p.items.slice(0, 15).map((item: any, i: number) => (
-                                    <Cell key={i} fill={item.isVital ? '#F59E0B' : '#D1D5DB'} />
+                                    <Cell key={i} fill={item.isVital ? SHARED_CHART_PALETTE[2] : '#D1D5DB'} />
                                   ))}
                                 </Bar>
-                                <Line yAxisId="right" type="monotone" dataKey="cumPercent" stroke="#EF4444" strokeWidth={2} name="Cumulative %" />
+                                <Line yAxisId="right" type="monotone" dataKey="cumPercent" stroke={SHARED_CHART_PALETTE[3]} strokeWidth={2} name="Cumulative %" />
                               </BarChart>
                             </ResponsiveContainer>
                           </div>
@@ -2701,7 +2789,16 @@ const FunctionalDataUpload: React.FC = () => {
       </div>
 
       {/* PDF Paywall Dialog */}
-      <PDFPaywallDialog open={showPaywall} onOpenChange={setShowPaywall} />
+      <PDFPaywallDialog
+        open={showPaywall}
+        onOpenChange={(open) => {
+          setShowPaywall(open);
+          if (!open) setCheckoutLoadingProvider(null);
+        }}
+        onStripeCheckout={async (plan) => startProviderCheckout('stripe', plan)}
+        onPaystackCheckout={async (plan) => startProviderCheckout('paystack', plan)}
+        checkoutLoadingProvider={checkoutLoadingProvider}
+      />
     </ErrorBoundary>
   );
 };
