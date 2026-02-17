@@ -371,6 +371,11 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
   };
 
   const handleLike = async (commentId: string) => {
+    if (!session?.access_token) {
+      setError('You must create an account and log in to like comments.');
+      return;
+    }
+
     try {
       const response = await fetch(getApiUrl(`/api/comments/${encodeURIComponent(commentId)}/like`), {
         method: 'POST',
@@ -432,9 +437,11 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
           <div className="flex items-center gap-4">
             <button
               onClick={() => handleLike(comment.id)}
+              disabled={!session?.access_token}
+              title={!session?.access_token ? 'Log in to like comments' : undefined}
               className={`flex items-center gap-1 text-sm transition-colors ${
                 comment.user_liked ? 'text-red-500' : 'text-gray-500 hover:text-red-500'
-              }`}
+              } ${!session?.access_token ? 'cursor-not-allowed opacity-60' : ''}`}
             >
               <Heart className={`h-4 w-4 ${comment.user_liked ? 'fill-current' : ''}`} />
               {comment.like_count}
@@ -504,6 +511,24 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
         </Alert>
       )}
 
+      {!loading && !user && (
+        <Alert className="mb-6 border-amber-200 bg-amber-50">
+          <AlertCircle className="h-4 w-4 text-amber-600" />
+          <AlertDescription className="text-amber-800">
+            Create an account and sign in before posting or liking comments.
+            <div className="mt-3 flex gap-3">
+              <Button size="sm" onClick={() => navigate(`/login?action=signup&redirect=${encodedRedirect}`)}>
+                <LogIn className="h-4 w-4 mr-2" />
+                Create Account
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => navigate(`/login?redirect=${encodedRedirect}`)}>
+                Log In
+              </Button>
+            </div>
+          </AlertDescription>
+        </Alert>
+      )}
+
       <div className="bg-gray-50 rounded-lg p-6 mb-8">
         {loading ? (
           <div className="text-center py-8 text-gray-600">Checking your login status...</div>
@@ -532,7 +557,7 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
           <div className="text-center py-8">
             <User className="h-12 w-12 text-gray-400 mx-auto mb-4" />
             <h4 className="text-lg font-semibold text-gray-900 mb-2">Join the Conversation</h4>
-            <p className="text-gray-600 mb-4">You need to create an account or log in to post comments.</p>
+            <p className="text-gray-600 mb-4">You need to create an account or log in to post and like comments.</p>
             <div className="flex gap-3 justify-center">
               <Button onClick={() => navigate(`/login?action=signup&redirect=${encodedRedirect}`)}>
                 <LogIn className="h-4 w-4 mr-2" />
