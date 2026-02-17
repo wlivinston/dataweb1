@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { isSupabaseConfigured, supabase, supabaseConfigError } from '@/lib/supabase';
 import { LogIn, Mail, Lock, AlertCircle, User, MapPin, UserPlus } from 'lucide-react';
+import SeoMeta from '@/components/SeoMeta';
 
 type AuthMode = 'signin' | 'signup';
 
@@ -159,6 +160,12 @@ const Login: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+      <SeoMeta
+        title={authMode === 'signin' ? 'Sign In | DataAfrik' : 'Create Account | DataAfrik'}
+        description="Sign in or create a DataAfrik account."
+        path="/login"
+        noindex
+      />
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-bold">Welcome to DataAfrik</CardTitle>

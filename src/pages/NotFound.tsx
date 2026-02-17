@@ -1,5 +1,6 @@
 import { useLocation } from "react-router-dom";
 import { useEffect } from "react";
+import SeoMeta from "@/components/SeoMeta";
 
 const NotFound = () => {
   const location = useLocation();
@@ -13,6 +14,12 @@ const NotFound = () => {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">
+      <SeoMeta
+        title="Page Not Found | DataAfrik"
+        description="The page you requested could not be found."
+        path={location.pathname}
+        noindex
+      />
       <div className="text-center p-8 rounded-lg border border-border bg-card shadow-md animate-slide-in">
         <h1 className="text-5xl font-bold mb-6 text-primary">404</h1>
         <p className="text-xl text-card-foreground mb-6">Page not found</p>

@@ -5,6 +5,7 @@ import Footer from "@/components/Footer";
 import BlogPostLayout from "@/components/BlogPostLayout";
 import { loadPostBySlug, type PostData } from "@/lib/loadPosts";
 import { getApiUrl } from "@/lib/publicConfig";
+import SeoMeta from "@/components/SeoMeta";
 
 const isJsonResponse = (response: Response): boolean =>
   (response.headers.get("content-type") || "").toLowerCase().includes("application/json");
@@ -31,11 +32,36 @@ const normalizeSlug = (value: string): string =>
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
 
+const SITE_URL = (import.meta.env.VITE_SITE_URL || "https://www.dataafrik.com").replace(/\/+$/, "");
+
 const BlogPostPage: React.FC = () => {
   const { slug } = useParams<{ slug: string }>();
   const [post, setPost] = useState<PostData | null>(null);
   const [backendPostId, setBackendPostId] = useState<string | number | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const canonicalSlug = post?.slug || slug || "";
+  const canonicalPath = canonicalSlug ? `/blog/${encodeURIComponent(canonicalSlug)}` : "/blog";
+  const articleJsonLd = post
+    ? {
+        "@context": "https://schema.org",
+        "@type": "Article",
+        headline: post.title,
+        description: post.excerpt,
+        author: {
+          "@type": "Person",
+          name: post.author || "DataAfrik Team",
+        },
+        publisher: {
+          "@type": "Organization",
+          name: "DataAfrik",
+          url: SITE_URL,
+        },
+        mainEntityOfPage: `${SITE_URL}${canonicalPath}`,
+        datePublished: post.date,
+        dateModified: post.date,
+      }
+    : null;
 
   useEffect(() => {
     let mounted = true;
@@ -155,6 +181,14 @@ const BlogPostPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-white">
+      <SeoMeta
+        title={post ? `${post.title} | DataAfrik Blog` : "Blog Post | DataAfrik"}
+        description={post?.excerpt || "Read the latest data and AI insights from DataAfrik."}
+        path={canonicalPath}
+        type="article"
+        noindex={!loading && !post}
+        jsonLd={articleJsonLd}
+      />
       <Navbar />
       <main className="pt-16">
         {loading ? (

@@ -2,10 +2,16 @@ import React from 'react';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import PricingCards from '@/components/PricingCards';
+import SeoMeta from '@/components/SeoMeta';
 
 const PricingPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-white">
+      <SeoMeta
+        title="Pricing | DataAfrik"
+        description="Explore transparent pricing for DataAfrik analytics, finance intelligence, and report generation tools."
+        path="/pricing"
+      />
       <Navbar />
       <main className="pt-16">
         <section className="py-20 bg-gradient-to-br from-gray-50 to-blue-50">

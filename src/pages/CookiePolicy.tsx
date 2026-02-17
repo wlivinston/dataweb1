@@ -1,10 +1,16 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
+import SeoMeta from "@/components/SeoMeta";
 
 const CookiePolicyPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-50 py-12">
+      <SeoMeta
+        title="Cookie Policy | DataAfrik"
+        description="Read the DataAfrik cookie policy and how cookies are used on the site."
+        path="/cookie-policy"
+      />
       <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8">
         <Link to="/" className="mb-6 inline-flex items-center text-sm text-blue-600 hover:text-blue-700">
           <ArrowLeft className="mr-1 h-4 w-4" />

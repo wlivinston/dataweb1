@@ -11,6 +11,7 @@ import { Upload, FileText, BarChart3, Send, CheckCircle, Clock, Users } from 'lu
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import { createSupportMailto, getApiUrl } from '@/lib/publicConfig';
+import SeoMeta from '@/components/SeoMeta';
 
 const RequestReportPage: React.FC = () => {
   const { user } = useAuth();
@@ -60,6 +61,12 @@ const RequestReportPage: React.FC = () => {
   if (submitted) {
     return (
       <div className="min-h-screen bg-white">
+        <SeoMeta
+          title="Report Request Submitted | DataAfrik"
+          description="Your report request has been received. The DataAfrik team will respond shortly."
+          path="/request-report"
+          noindex
+        />
         <Navbar />
         <main className="pt-16">
           <section className="py-20">
@@ -82,6 +89,11 @@ const RequestReportPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-white">
+      <SeoMeta
+        title="Request a Custom Report | DataAfrik"
+        description="Request a tailored data or finance report from the DataAfrik team."
+        path="/request-report"
+      />
       <Navbar />
       <main className="pt-16">
         {/* Hero */}
