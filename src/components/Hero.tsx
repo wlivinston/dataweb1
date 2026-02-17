@@ -34,7 +34,7 @@ const Hero: React.FC<HeroProps> = ({ setActiveSection }) => {
             Upload your datasets and get instant AI-powered insights with our advanced analytics platform.
             From multi-dataset relationships to dynamic visualizations, transform your data into actionable strategies.
           </p>
-          <div className="flex flex-col sm:flex-row gap-4 justify-center mb-16">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap gap-4 justify-center mb-16">
             <Button
               size="lg"
               onClick={() => setActiveSection('services')}
@@ -57,6 +57,14 @@ const Hero: React.FC<HeroProps> = ({ setActiveSection }) => {
             >
               <DollarSign className="mr-2 h-4 w-4" />
               See Pricing
+            </Button>
+            <Button
+              size="lg"
+              onClick={() => navigate('/finance')}
+              className="bg-gradient-to-r from-blue-600 to-purple-600 text-white hover:from-blue-700 hover:to-purple-700"
+            >
+              <BarChart3 className="mr-2 h-4 w-4" />
+              Finance Engine
             </Button>
           </div>
         </div>
