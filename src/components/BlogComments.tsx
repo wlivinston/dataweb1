@@ -511,24 +511,6 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
         </Alert>
       )}
 
-      {!loading && !user && (
-        <Alert className="mb-6 border-amber-200 bg-amber-50">
-          <AlertCircle className="h-4 w-4 text-amber-600" />
-          <AlertDescription className="text-amber-800">
-            Create an account and sign in before posting or liking comments.
-            <div className="mt-3 flex gap-3">
-              <Button size="sm" onClick={() => navigate(`/login?action=signup&redirect=${encodedRedirect}`)}>
-                <LogIn className="h-4 w-4 mr-2" />
-                Create Account
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => navigate(`/login?redirect=${encodedRedirect}`)}>
-                Log In
-              </Button>
-            </div>
-          </AlertDescription>
-        </Alert>
-      )}
-
       <div className="bg-gray-50 rounded-lg p-6 mb-8">
         {loading ? (
           <div className="text-center py-8 text-gray-600">Checking your login status...</div>
