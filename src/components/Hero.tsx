@@ -44,18 +44,16 @@ const Hero: React.FC<HeroProps> = ({ setActiveSection }) => {
             </Button>
             <Button
               size="lg"
-              variant="outline"
               onClick={() => navigate('/analyze')}
-              className="border-white/30 text-white hover:bg-white/10"
+              className="bg-gradient-to-r from-blue-600 to-purple-600 text-white hover:from-blue-700 hover:to-purple-700"
             >
               <Upload className="mr-2 h-4 w-4" />
               Analyze Your Data
             </Button>
             <Button
               size="lg"
-              variant="outline"
               onClick={() => navigate('/pricing')}
-              className="border-white/30 text-white hover:bg-white/10"
+              className="bg-gradient-to-r from-blue-600 to-purple-600 text-white hover:from-blue-700 hover:to-purple-700"
             >
               <DollarSign className="mr-2 h-4 w-4" />
               See Pricing
