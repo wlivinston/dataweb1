@@ -10,6 +10,16 @@ const router = express.Router();
 
 const SUPPORTED_PAYMENT_PROVIDERS = new Set(['stripe', 'paystack']);
 const SUPPORTED_PDF_PLANS = new Set(['single', 'monthly']);
+const PAID_PDF_STATUSES = new Set([
+  'professional',
+  'enterprise',
+  'admin',
+  'paid',
+  'premium',
+  'pro',
+  'monthly',
+  'annual',
+]);
 
 function normalizeBaseUrl(url) {
   return (url || '').replace(/\/+$/, '');
@@ -17,6 +27,13 @@ function normalizeBaseUrl(url) {
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function normalizeReturnPath(value) {
+  const raw = String(value || '').trim();
+  if (!raw || !raw.startsWith('/')) return '/finance';
+  if (raw.startsWith('//')) return '/finance';
+  return raw;
 }
 
 function isLikelyEmail(value) {
@@ -492,6 +509,7 @@ router.post('/webhooks/paystack', express.raw({ type: 'application/json' }), asy
 router.post('/pdf-checkout', authenticateToken, [
   body('provider').isIn(['stripe', 'paystack']),
   body('plan').optional().isIn(['single', 'monthly']),
+  body('return_path').optional().isString(),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -521,6 +539,7 @@ router.post('/pdf-checkout', authenticateToken, [
 
     const plan = getPdfPlanConfig(requestedPlan);
     const frontendBase = normalizeBaseUrl(process.env.FRONTEND_URL || 'http://localhost:5173');
+    const returnPath = normalizeReturnPath(req.body.return_path);
 
     if (provider === 'stripe') {
       const stripeSecretKey = (process.env.STRIPE_SECRET_KEY || '').trim();
@@ -532,8 +551,8 @@ router.post('/pdf-checkout', authenticateToken, [
       const stripeSinglePriceId = (process.env.STRIPE_PDF_SINGLE_PRICE_ID || '').trim();
       const stripeMonthlyPriceId = (process.env.STRIPE_PDF_MONTHLY_PRICE_ID || '').trim();
       const mode = requestedPlan === 'monthly' ? 'subscription' : 'payment';
-      const successUrl = `${frontendBase}/finance?pdfPayment=success&provider=stripe&session_id={CHECKOUT_SESSION_ID}`;
-      const cancelUrl = `${frontendBase}/finance?pdfPayment=cancel&provider=stripe`;
+      const successUrl = `${frontendBase}${returnPath}?pdfPayment=success&provider=stripe&session_id={CHECKOUT_SESSION_ID}`;
+      const cancelUrl = `${frontendBase}${returnPath}?pdfPayment=cancel&provider=stripe`;
 
       const form = new URLSearchParams();
       form.append('mode', mode);
@@ -593,7 +612,7 @@ router.post('/pdf-checkout', authenticateToken, [
     const paystackSingleAmount = Number(process.env.PAYSTACK_PDF_SINGLE_AMOUNT || plan.amount);
     const paystackMonthlyAmount = Number(process.env.PAYSTACK_PDF_MONTHLY_AMOUNT || plan.amount);
     const amount = requestedPlan === 'monthly' ? paystackMonthlyAmount : paystackSingleAmount;
-    const callbackUrl = `${frontendBase}/finance?pdfPayment=success&provider=paystack`;
+    const callbackUrl = `${frontendBase}${returnPath}?pdfPayment=success&provider=paystack`;
     const referenceIdentity =
       customerIdentity ? String(customerIdentity).replace(/[^a-zA-Z0-9_-]/g, '') : 'guest';
     const reference = `pdf_${requestedPlan}_${referenceIdentity}_${Date.now()}`;
@@ -750,6 +769,64 @@ router.get('/pdf-verify', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Verify PDF payment error:', error);
     res.status(500).json({ error: 'Failed to verify PDF payment' });
+  }
+});
+
+// Get authenticated user's PDF access entitlement
+router.get('/pdf-access', authenticateToken, async (req, res) => {
+  try {
+    const statusFromAuthContext = String(req.user?.subscription_status || '').toLowerCase().trim();
+    if (statusFromAuthContext) {
+      return res.json({
+        has_access: PAID_PDF_STATUSES.has(statusFromAuthContext),
+        subscription_status: statusFromAuthContext,
+      });
+    }
+
+    const identityId = String(req.user?.customer_id || req.user?.id || '').trim();
+    const identityEmail = normalizeEmail(req.user?.email || '');
+
+    let customerStatus = '';
+
+    if (identityId || identityEmail) {
+      try {
+        const result = await query(
+          `SELECT subscription_status
+           FROM customers
+           WHERE ($1 <> '' AND id::text = $1)
+              OR ($1 <> '' AND auth_user_id::text = $1)
+              OR ($2 <> '' AND lower(email) = lower($2))
+           ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+           LIMIT 1`,
+          [identityId, identityEmail]
+        );
+        customerStatus = String(result?.rows?.[0]?.subscription_status || '').toLowerCase().trim();
+      } catch (identityLookupError) {
+        if (identityLookupError?.code !== '42703') {
+          throw identityLookupError;
+        }
+
+        const fallbackResult = await query(
+          `SELECT subscription_status
+           FROM customers
+           WHERE ($1 <> '' AND id::text = $1)
+              OR ($2 <> '' AND lower(email) = lower($2))
+           ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+           LIMIT 1`,
+          [identityId, identityEmail]
+        );
+        customerStatus = String(fallbackResult?.rows?.[0]?.subscription_status || '').toLowerCase().trim();
+      }
+    }
+
+    return res.json({
+      has_access: PAID_PDF_STATUSES.has(customerStatus),
+      subscription_status: customerStatus || null,
+    });
+  } catch (error) {
+    console.error('Get PDF access status error:', error);
+    const details = process.env.NODE_ENV === 'development' ? error?.message : undefined;
+    return res.status(500).json({ error: 'Failed to check PDF access status', details });
   }
 });
 

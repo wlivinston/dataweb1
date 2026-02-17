@@ -107,6 +107,7 @@ const FunctionalDataUpload: React.FC = () => {
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
   const [checkoutLoadingProvider, setCheckoutLoadingProvider] = useState<'stripe' | 'paystack' | null>(null);
+  const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
   const { user, session } = useAuth();
   // Loading states for file processing
   const [isUploading, setIsUploading] = useState(false);
@@ -128,8 +129,31 @@ const FunctionalDataUpload: React.FC = () => {
   };
 
   const hasPaidPDFAccess = async (): Promise<boolean> => {
-    if (!user?.email) return false;
-    if (!isSupabaseConfigured || !supabase) return false;
+    const token = await getAccessToken();
+    if (!token) return false;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+      const response = await fetch(getApiUrl('/api/subscriptions/pdf-access'), {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        signal: controller.signal,
+      });
+      window.clearTimeout(timeoutId);
+
+      const payload = await response.json().catch(() => null);
+      if (response.ok && typeof payload?.has_access === 'boolean') {
+        return payload.has_access;
+      }
+    } catch (apiError) {
+      console.error('PDF access check via backend failed:', apiError);
+    }
+
+    // Fallback to direct Supabase lookup if backend access check is unavailable.
+    if (!user?.email || !isSupabaseConfigured || !supabase) return false;
 
     try {
       const { data, error } = await supabase
@@ -140,21 +164,10 @@ const FunctionalDataUpload: React.FC = () => {
 
       if (error || !data?.subscription_status) return false;
 
-      const paidStatuses = new Set([
-        'professional',
-        'enterprise',
-        'admin',
-        'paid',
-        'premium',
-        'pro',
-        'monthly',
-        'annual',
-      ]);
-
       const status = String(data.subscription_status).toLowerCase().trim();
-      return paidStatuses.has(status);
-    } catch (error) {
-      console.error('Subscription status lookup failed:', error);
+      return ['professional', 'enterprise', 'admin', 'paid', 'premium', 'pro', 'monthly', 'annual'].includes(status);
+    } catch (fallbackError) {
+      console.error('Subscription status fallback lookup failed:', fallbackError);
       return false;
     }
   };
@@ -185,6 +198,7 @@ const FunctionalDataUpload: React.FC = () => {
         body: JSON.stringify({
           provider,
           plan,
+          return_path: window.location.pathname || '/analyze',
         }),
       });
 
@@ -201,6 +215,67 @@ const FunctionalDataUpload: React.FC = () => {
       setCheckoutLoadingProvider(null);
     }
   };
+
+  const verifyPaymentReturn = async () => {
+    if (isVerifyingPayment) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const paymentState = params.get('pdfPayment');
+    const provider = (params.get('provider') || '').toLowerCase();
+
+    if (paymentState === 'cancel') {
+      toast.info('Payment was canceled.');
+      const nextUrl = `${window.location.pathname}${window.location.hash || ''}`;
+      window.history.replaceState({}, document.title, nextUrl);
+      return;
+    }
+
+    if (paymentState !== 'success') return;
+    if (provider !== 'stripe' && provider !== 'paystack') return;
+    if (!user) return;
+
+    const token = await getAccessToken();
+    if (!token) return;
+
+    const sessionId = params.get('session_id');
+    const reference = params.get('reference');
+    if (provider === 'stripe' && !sessionId) return;
+    if (provider === 'paystack' && !reference) return;
+
+    setIsVerifyingPayment(true);
+    try {
+      const verifyQuery = new URLSearchParams({ provider });
+      if (sessionId) verifyQuery.set('session_id', sessionId);
+      if (reference) verifyQuery.set('reference', reference);
+
+      const response = await fetch(getApiUrl(`/api/subscriptions/pdf-verify?${verifyQuery.toString()}`), {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.verified) {
+        throw new Error(payload?.error || 'Payment verification failed.');
+      }
+
+      toast.success(`Payment verified via ${provider}. PDF access unlocked.`);
+      const nextUrl = `${window.location.pathname}${window.location.hash || ''}`;
+      window.history.replaceState({}, document.title, nextUrl);
+    } catch (error: any) {
+      console.error('Payment verification error:', error);
+      toast.error(error?.message || 'Could not verify payment yet. Please retry shortly.');
+    } finally {
+      setIsVerifyingPayment(false);
+      setCheckoutLoadingProvider(null);
+    }
+  };
+
+  useEffect(() => {
+    verifyPaymentReturn();
+    // Intentionally depends on authenticated user/session after payment redirects.
+  }, [user, session]);
 
   // File Format Detection
   const getFileFormat = (fileName: string): 'csv' | 'excel' | 'json' => {

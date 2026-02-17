@@ -1544,8 +1544,31 @@ const FinanceDashboard: React.FC = () => {
   };
 
   const hasPaidPDFAccess = async (): Promise<boolean> => {
-    if (!user?.email) return false;
-    if (!isSupabaseConfigured || !supabase) return false;
+    const token = await getAccessToken();
+    if (!token) return false;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+      const response = await fetch(getApiUrl('/api/subscriptions/pdf-access'), {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        signal: controller.signal,
+      });
+      window.clearTimeout(timeoutId);
+
+      const payload = await response.json().catch(() => null);
+      if (response.ok && typeof payload?.has_access === 'boolean') {
+        return payload.has_access;
+      }
+    } catch (apiError) {
+      console.error('PDF access check via backend failed:', apiError);
+    }
+
+    // Fallback to direct Supabase lookup if backend access check is unavailable.
+    if (!user?.email || !isSupabaseConfigured || !supabase) return false;
 
     try {
       const { data, error } = await supabase
@@ -1556,21 +1579,10 @@ const FinanceDashboard: React.FC = () => {
 
       if (error || !data?.subscription_status) return false;
 
-      const paidStatuses = new Set([
-        'professional',
-        'enterprise',
-        'admin',
-        'paid',
-        'premium',
-        'pro',
-        'monthly',
-        'annual',
-      ]);
-
       const status = String(data.subscription_status).toLowerCase().trim();
-      return paidStatuses.has(status);
-    } catch (error) {
-      console.error('Subscription status lookup failed:', error);
+      return ['professional', 'enterprise', 'admin', 'paid', 'premium', 'pro', 'monthly', 'annual'].includes(status);
+    } catch (fallbackError) {
+      console.error('Subscription status fallback lookup failed:', fallbackError);
       return false;
     }
   };
@@ -1601,6 +1613,7 @@ const FinanceDashboard: React.FC = () => {
         body: JSON.stringify({
           provider,
           plan,
+          return_path: window.location.pathname || '/finance',
         }),
       });
 
