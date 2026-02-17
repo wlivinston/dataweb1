@@ -44,6 +44,11 @@ export interface EnhancedPDFExportData {
   };
 }
 
+const MAX_VISUALIZATIONS_IN_PDF = 6;
+const MAX_CAPTURED_VISUALIZATIONS = 3;
+const CHART_CAPTURE_TIMEOUT_MS = 3500;
+const CHART_CAPTURE_ROW_THRESHOLD = 25000;
+
 /**
  * Generate AI-powered insights for a visualization
  */
@@ -220,17 +225,17 @@ const generateVisualizationInsight = (viz: Visualization, dataset?: Dataset): st
 /**
  * Capture a chart element as an image with retry
  */
-const captureWithRetry = async (element: HTMLElement, retries = 2): Promise<string | null> => {
+const captureWithRetry = async (element: HTMLElement, retries = 1): Promise<string | null> => {
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
       const canvas = await html2canvas(element, {
         backgroundColor: '#ffffff',
-        scale: 1.5,
+        scale: 1,
         logging: false,
         useCORS: true,
         allowTaint: true,
-        windowWidth: Math.min(element.scrollWidth || 800, 1200),
-        windowHeight: Math.min(element.scrollHeight || 400, 800),
+        windowWidth: Math.min(element.scrollWidth || 800, 1000),
+        windowHeight: Math.min(element.scrollHeight || 400, 700),
         onclone: (clonedDoc) => {
           const svgs = clonedDoc.querySelectorAll('svg');
           svgs.forEach(svg => {
@@ -675,6 +680,10 @@ export const generateEnhancedPDF = async (
     }
   }
 
+  const shouldAttemptChartCapture =
+    Boolean(chartElements && chartElements.size > 0) &&
+    totalRows <= CHART_CAPTURE_ROW_THRESHOLD;
+
   // Visualizations with Images and Insights
   if (data.visualizations && data.visualizations.length > 0) {
     doc.setFontSize(14);
@@ -682,8 +691,8 @@ export const generateEnhancedPDF = async (
     doc.text('Data Visualizations & Insights', margin, yPosition);
     yPosition += 15;
 
-    // Limit visualizations for PDF (max 10 to prevent crashes)
-    const vizToInclude = data.visualizations.slice(0, 10);
+    // Limit visualizations to keep generation responsive.
+    const vizToInclude = data.visualizations.slice(0, MAX_VISUALIZATIONS_IN_PDF);
     
     for (let i = 0; i < vizToInclude.length; i++) {
       const viz = vizToInclude[i];
@@ -711,15 +720,15 @@ export const generateEnhancedPDF = async (
       doc.setTextColor(0, 0, 0);
       yPosition += 8;
 
-      // Try to capture chart image if element exists (with retry)
+      // Try to capture only the first few charts and fall back for the rest.
       let chartImage: string | null = null;
-      if (chartElements && chartElements.size > 0) {
+      if (shouldAttemptChartCapture && i < MAX_CAPTURED_VISUALIZATIONS) {
         try {
           const capturePromise = new Promise<string | null>((resolve) => {
             const timeout = setTimeout(() => {
               console.warn('Chart capture timeout');
               resolve(null);
-            }, 15000);
+            }, CHART_CAPTURE_TIMEOUT_MS);
 
             (async () => {
               try {
@@ -748,7 +757,7 @@ export const generateEnhancedPDF = async (
 
                 if (chartElement) {
                   // Use retry-enabled capture
-                  const result = await captureWithRetry(chartElement, 2);
+                  const result = await captureWithRetry(chartElement, 1);
                   clearTimeout(timeout);
                   resolve(result);
                 } else {

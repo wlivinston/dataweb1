@@ -1790,9 +1790,9 @@ const FunctionalDataUpload: React.FC = () => {
                       { title: 'AI Insights', value: aiInsights ? aiInsights.totalInsights.toString() : '0' }
                     ] : [];
                     
-                    // Collect visualization elements for image capture (limit to first 10)
+                    // Collect visualization elements for image capture (limit to first 6 for speed/reliability)
                     const chartElements = new Map<string, HTMLElement>();
-                    visualizations.slice(0, 10).forEach((viz, index) => {
+                    visualizations.slice(0, 6).forEach((viz, index) => {
                       const possibleIds = [
                         `viz-${viz.id}`,
                         `chart-${viz.id}`,
@@ -1813,7 +1813,7 @@ const FunctionalDataUpload: React.FC = () => {
                     
                     toast.info('Generating PDF with visualizations and AI insights...');
                     
-                    // Limit data for PDF to prevent crashes
+                    // Limit data and visualization count for faster, more reliable PDF generation.
                     await generateEnhancedPDF({
                       datasets: datasets.map(ds => ({
                         name: ds.name,
@@ -1824,7 +1824,7 @@ const FunctionalDataUpload: React.FC = () => {
                         )
                       })),
                       kpis,
-                      visualizations: visualizations.slice(0, 10), // Limit to 10 visualizations
+                      visualizations: visualizations.slice(0, 6),
                       daxCalculations: [...daxCalculations, ...customDAXCalculations].slice(0, 20).map(c => ({
                         name: c.name,
                         formula: c.formula,
