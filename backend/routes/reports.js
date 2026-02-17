@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const nodemailer = require('nodemailer');
 
-const supportEmail = process.env.ADMIN_EMAIL || process.env.SUPPORT_EMAIL || 'support@example.com';
+const supportEmail = process.env.ADMIN_EMAIL || process.env.SUPPORT_EMAIL || 'senyo@diaspora-n.com';
 const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER || 'noreply@example.com';
 
 // Create transporter for sending notification emails
