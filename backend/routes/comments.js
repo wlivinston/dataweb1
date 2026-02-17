@@ -1,47 +1,176 @@
 const express = require('express');
+const net = require('net');
 const { body, validationResult } = require('express-validator');
 const { query } = require('../config/database');
 const { authenticateToken, optionalAuth } = require('../middleware/auth');
 
 const router = express.Router();
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const isNumericId = (value) => /^\d+$/.test(String(value || '').trim());
+const isUuidId = (value) => UUID_REGEX.test(String(value || '').trim());
+const isSupportedId = (value) => isNumericId(value) || isUuidId(value);
+const normalizeId = (value) => String(value ?? '').trim();
+
+function normalizeInetCandidate(rawValue) {
+  if (!rawValue) return null;
+
+  const first = String(rawValue)
+    .split(',')[0]
+    .trim()
+    .replace(/^\[|\]$/g, '');
+
+  if (!first) return null;
+
+  const v4WithPort = first.match(/^(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?$/);
+  if (v4WithPort) {
+    const ip = v4WithPort[1];
+    return net.isIP(ip) ? ip : null;
+  }
+
+  const normalized = first.replace(/^::ffff:/i, '');
+  return net.isIP(normalized) ? normalized : null;
+}
+
+function getClientInet(req) {
+  const candidates = [
+    req.ip,
+    req.headers['x-forwarded-for'],
+    req.socket?.remoteAddress,
+    req.connection?.remoteAddress,
+  ];
+
+  for (const candidate of candidates) {
+    const ip = normalizeInetCandidate(candidate);
+    if (ip) return ip;
+  }
+
+  return null;
+}
+
+async function getTableColumns(tableName) {
+  const result = await query(
+    `SELECT column_name
+     FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = $1`,
+    [tableName]
+  );
+
+  return new Set(result.rows.map((row) => String(row.column_name || '').trim()));
+}
+
+async function tableExists(tableName) {
+  const result = await query(
+    `SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = $1
+    ) AS exists`,
+    [tableName]
+  );
+
+  return Boolean(result.rows?.[0]?.exists);
+}
+
+function buildVisibleCommentsWhereClause(alias, blogCommentColumns) {
+  const column = (name) => (alias ? `${alias}.${name}` : name);
+  const clauses = [`${column('post_id')} = $1`];
+
+  if (blogCommentColumns.has('is_approved')) {
+    clauses.push(`${column('is_approved')} = true`);
+  }
+
+  if (blogCommentColumns.has('is_spam')) {
+    clauses.push(`COALESCE(${column('is_spam')}, false) = false`);
+  }
+
+  return clauses.join(' AND ');
+}
 
 // Get comments for a blog post
 router.get('/post/:postId', optionalAuth, async (req, res) => {
   try {
-    const { postId } = req.params;
-    const { page = 1, limit = 10 } = req.query;
+    const postId = normalizeId(req.params.postId);
+    if (!isSupportedId(postId)) {
+      return res.status(400).json({ error: 'Invalid post identifier' });
+    }
+
+    const parsedPage = Number.parseInt(String(req.query.page ?? '1'), 10);
+    const parsedLimit = Number.parseInt(String(req.query.limit ?? '10'), 10);
+    const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 200) : 10;
     const offset = (page - 1) * limit;
+    const requesterIp = getClientInet(req);
+
+    const blogCommentColumns = await getTableColumns('blog_comments');
+    const hasCommentLikesTable = await tableExists('comment_likes');
+
+    const visibleWhereClause = buildVisibleCommentsWhereClause('', blogCommentColumns);
+    const visibleWhereClauseForAlias = buildVisibleCommentsWhereClause('c', blogCommentColumns);
 
     // Get total count
     const countResult = await query(
-      'SELECT COUNT(*) FROM blog_comments WHERE post_id = $1 AND is_approved = true AND is_spam = false',
+      `SELECT COUNT(*) FROM blog_comments WHERE ${visibleWhereClause}`,
       [postId]
     );
     const totalComments = parseInt(countResult.rows[0].count);
 
-    // Get comments with replies
-    const result = await query(
-      `SELECT 
-        c.id, c.post_id, c.parent_id, c.author_name, c.author_email, c.author_website, 
-        c.content, c.is_approved, c.created_at, c.updated_at,
-        COUNT(cl.id) as like_count,
-        CASE WHEN $2::int IS NOT NULL THEN 
-          EXISTS(SELECT 1 FROM comment_likes WHERE comment_id = c.id AND ip_address = $3)
-        ELSE false END as user_liked
-       FROM blog_comments c
-       LEFT JOIN comment_likes cl ON c.id = cl.comment_id
-       WHERE c.post_id = $1 AND c.is_approved = true AND c.is_spam = false
-       GROUP BY c.id
-       ORDER BY c.created_at DESC
-       LIMIT $4 OFFSET $5`,
-      [postId, req.user?.id || null, req.ip, limit, offset]
-    );
+    const baseSelectFields = [
+      'c.id',
+      'c.post_id',
+      blogCommentColumns.has('parent_id') ? 'c.parent_id' : 'NULL AS parent_id',
+      'c.author_name',
+      'c.author_email',
+      blogCommentColumns.has('author_website') ? 'c.author_website' : 'NULL AS author_website',
+      'c.content',
+      blogCommentColumns.has('is_approved') ? 'c.is_approved' : 'true AS is_approved',
+      'c.created_at',
+      blogCommentColumns.has('updated_at') ? 'c.updated_at' : 'c.created_at AS updated_at',
+    ];
 
-    const comments = result.rows;
+    const likesSelectField = hasCommentLikesTable
+      ? 'COUNT(cl.id) AS like_count'
+      : '0::bigint AS like_count';
+    const userLikedSelectField = hasCommentLikesTable
+      ? 'EXISTS(SELECT 1 FROM comment_likes WHERE comment_id = c.id AND ip_address = $2) AS user_liked'
+      : 'false AS user_liked';
+
+    const commentsSql = hasCommentLikesTable
+      ? `SELECT
+          ${baseSelectFields.join(',\n          ')},
+          ${likesSelectField},
+          ${userLikedSelectField}
+         FROM blog_comments c
+         LEFT JOIN comment_likes cl ON c.id = cl.comment_id
+         WHERE ${visibleWhereClauseForAlias}
+         GROUP BY c.id
+         ORDER BY c.created_at DESC
+         LIMIT $3 OFFSET $4`
+      : `SELECT
+          ${baseSelectFields.join(',\n          ')},
+          ${likesSelectField},
+          ${userLikedSelectField}
+         FROM blog_comments c
+         WHERE ${visibleWhereClauseForAlias}
+         ORDER BY c.created_at DESC
+         LIMIT $2 OFFSET $3`;
+
+    const commentQueryParams = hasCommentLikesTable
+      ? [postId, requesterIp, limit, offset]
+      : [postId, limit, offset];
+
+    // Get comments with replies
+    const result = await query(commentsSql, commentQueryParams);
+    const comments = result.rows.map((row) => ({
+      ...row,
+      like_count: Number(row.like_count || 0),
+      user_liked: Boolean(row.user_liked),
+    }));
 
     // Organize comments into parent-child structure
     const commentMap = new Map();
     const topLevelComments = [];
+    const hasParentId = blogCommentColumns.has('parent_id');
 
     comments.forEach(comment => {
       comment.replies = [];
@@ -49,7 +178,7 @@ router.get('/post/:postId', optionalAuth, async (req, res) => {
     });
 
     comments.forEach(comment => {
-      if (comment.parent_id) {
+      if (hasParentId && comment.parent_id) {
         const parent = commentMap.get(comment.parent_id);
         if (parent) {
           parent.replies.push(comment);
@@ -62,8 +191,8 @@ router.get('/post/:postId', optionalAuth, async (req, res) => {
     res.json({
       comments: topLevelComments,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page,
+        limit,
         total: totalComments,
         pages: Math.ceil(totalComments / limit)
       }
@@ -71,15 +200,32 @@ router.get('/post/:postId', optionalAuth, async (req, res) => {
 
   } catch (error) {
     console.error('Get comments error:', error);
-    res.status(500).json({ error: 'Failed to fetch comments' });
+    res.status(500).json({
+      error:
+        process.env.NODE_ENV === 'development'
+          ? `Failed to fetch comments: ${error.message}`
+          : 'Failed to fetch comments',
+    });
   }
 });
 
 // Create a new comment (requires authentication)
 router.post('/', authenticateToken, [
-  body('post_id').isInt({ min: 1 }),
+  body('post_id').custom((value) => {
+    if (!isSupportedId(value)) {
+      throw new Error('post_id must be a numeric id or UUID');
+    }
+    return true;
+  }),
   body('content').trim().isLength({ min: 1, max: 2000 }),
-  body('parent_id').optional().isInt({ min: 1 })
+  body('parent_id')
+    .optional({ nullable: true })
+    .custom((value) => {
+      if (!isSupportedId(value)) {
+        throw new Error('parent_id must be a numeric id or UUID');
+      }
+      return true;
+    })
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -87,7 +233,10 @@ router.post('/', authenticateToken, [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { post_id, content, parent_id } = req.body;
+    const post_id = normalizeId(req.body.post_id);
+    const content = req.body.content;
+    const parent_id = req.body.parent_id == null ? null : normalizeId(req.body.parent_id);
+    const requesterIp = getClientInet(req);
 
     // Check if post exists
     const postResult = await query(
@@ -122,7 +271,7 @@ router.post('/', authenticateToken, [
         `${req.user.first_name} ${req.user.last_name}`,
         req.user.email,
         content,
-        req.ip,
+        requesterIp,
         req.get('User-Agent'),
         true // Auto-approve authenticated users
       ]
@@ -247,6 +396,11 @@ router.delete('/:commentId', authenticateToken, async (req, res) => {
 router.post('/:commentId/like', optionalAuth, async (req, res) => {
   try {
     const { commentId } = req.params;
+    const requesterIp = getClientInet(req);
+
+    if (!requesterIp) {
+      return res.status(400).json({ error: 'Unable to determine client IP address' });
+    }
 
     // Check if comment exists
     const commentResult = await query(
@@ -261,14 +415,14 @@ router.post('/:commentId/like', optionalAuth, async (req, res) => {
     // Check if user already liked this comment
     const existingLike = await query(
       'SELECT id FROM comment_likes WHERE comment_id = $1 AND ip_address = $2',
-      [commentId, req.ip]
+      [commentId, requesterIp]
     );
 
     if (existingLike.rows.length > 0) {
       // Unlike
       await query(
         'DELETE FROM comment_likes WHERE comment_id = $1 AND ip_address = $2',
-        [commentId, req.ip]
+        [commentId, requesterIp]
       );
 
       res.json({ message: 'Comment unliked', liked: false });
@@ -276,7 +430,7 @@ router.post('/:commentId/like', optionalAuth, async (req, res) => {
       // Like
       await query(
         'INSERT INTO comment_likes (comment_id, ip_address) VALUES ($1, $2)',
-        [commentId, req.ip]
+        [commentId, requesterIp]
       );
 
       res.json({ message: 'Comment liked', liked: true });
@@ -291,7 +445,10 @@ router.post('/:commentId/like', optionalAuth, async (req, res) => {
 // Get comment statistics for a post
 router.get('/stats/:postId', async (req, res) => {
   try {
-    const { postId } = req.params;
+    const postId = normalizeId(req.params.postId);
+    if (!isSupportedId(postId)) {
+      return res.status(400).json({ error: 'Invalid post identifier' });
+    }
 
     const result = await query(
       `SELECT 

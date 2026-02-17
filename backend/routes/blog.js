@@ -46,11 +46,11 @@ function parseFrontmatter(md) {
 function findMarkdownFileBySlug(slugInput) {
   if (!fs.existsSync(BLOGS_DIR)) return null;
 
-  const target = String(slugInput || '').trim().toLowerCase();
+  const target = normalizeSlug(slugInput);
   if (!target) return null;
 
   const files = fs.readdirSync(BLOGS_DIR).filter((file) => file.endsWith('.md'));
-  const match = files.find((file) => file.replace(/\.md$/i, '').toLowerCase() === target);
+  const match = files.find((file) => normalizeSlug(file.replace(/\.md$/i, '')) === target);
   if (!match) return null;
 
   return path.join(BLOGS_DIR, match);
@@ -301,7 +301,7 @@ async function syncMarkdownPostBySlug(slugInput) {
   if (!filePath) return null;
 
   const fileName = path.basename(filePath);
-  const slug = fileName.replace(/\.md$/i, '');
+  const slug = normalizeSlug(fileName.replace(/\.md$/i, ''));
   const fileContent = fs.readFileSync(filePath, 'utf8');
   const { data, content } = parseFrontmatter(fileContent);
 
@@ -330,7 +330,8 @@ async function syncMarkdownPostBySlug(slugInput) {
 }
 
 async function getPublishedPostBySlug(slugInput) {
-  const slug = String(slugInput || '').trim();
+  const slugRaw = String(slugInput || '').trim();
+  const slug = normalizeSlug(slugRaw);
   if (!slug) return null;
 
   if (supabase) {
@@ -343,6 +344,19 @@ async function getPublishedPostBySlug(slugInput) {
 
     if (!response.error && response.data) {
       return response.data;
+    }
+
+    if (slugRaw && slugRaw !== slug) {
+      response = await supabase
+        .from('blog_posts')
+        .select('*')
+        .eq('slug', slugRaw)
+        .eq('published', true)
+        .maybeSingle();
+
+      if (!response.error && response.data) {
+        return response.data;
+      }
     }
 
     // Fallback to case-insensitive match for historical rows.
@@ -547,7 +561,10 @@ router.post('/posts/ensure', optionalAuth, async (req, res) => {
 // Get a single blog post by slug
 router.get('/posts/:slug', optionalAuth, async (req, res) => {
   try {
-    const slug = String(req.params.slug || '').trim();
+    const slug = normalizeSlug(req.params.slug);
+    if (!slug) {
+      return res.status(400).json({ error: 'Invalid slug' });
+    }
     let post = await getPublishedPostBySlug(slug);
 
     // Auto-sync this markdown file when row is missing from blog_posts.
