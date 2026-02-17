@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Mail, Phone, MapPin, Linkedin, Github } from 'lucide-react';
@@ -15,23 +15,29 @@ const Footer: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { user } = useAuth();
 
-  const handleNewsletterSubmit = async () => {
-    if (!user) {
-      toast.error('Please create an account or log in to subscribe to the newsletter.');
-      return;
-    }
+  useEffect(() => {
+    if (!user?.email) return;
+    setEmail((currentEmail) => currentEmail || user.email);
+  }, [user?.email]);
 
-    const emailToUse = email.trim() || user.email || '';
+  const handleNewsletterSubmit = async () => {
+    const emailToUse = (email || user?.email || '').trim();
     if (!emailToUse) {
-      toast.error('Unable to determine your account email.');
+      toast.error('Please enter a valid email address.');
       return;
     }
 
     setIsSubmitting(true);
     try {
-      await subscribeToNewsletter({ email: emailToUse, source: 'footer' });
-      toast.success('You are subscribed. Check your inbox for confirmation.');
-      setEmail('');
+      const result = await subscribeToNewsletter({ email: emailToUse, source: 'footer' });
+      if (result.alreadySubscribed) {
+        toast.info(result.message || 'This email is already subscribed to the newsletter.');
+      } else if (result.emailSent === false) {
+        toast.success('Subscribed successfully, but confirmation email could not be sent yet.');
+      } else {
+        toast.success(result.message || 'You are subscribed. Check your inbox for confirmation.');
+      }
+      setEmail(user?.email || '');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to subscribe.';
       toast.error(message);
@@ -129,7 +135,7 @@ const Footer: React.FC = () => {
             <div className="flex flex-col space-y-2">
               <Input
                 type="email"
-                placeholder={user ? 'Enter your email' : 'Log in to subscribe'}
+                placeholder="Enter your email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 onKeyDown={(e) => {
@@ -138,16 +144,15 @@ const Footer: React.FC = () => {
                     handleNewsletterSubmit();
                   }
                 }}
-                disabled={!user}
                 className="bg-gray-800 border-gray-700 text-white placeholder-gray-400"
               />
               <Button
                 size="sm"
-                disabled={isSubmitting || !user}
+                disabled={isSubmitting || !email.trim()}
                 onClick={handleNewsletterSubmit}
                 className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
               >
-                {isSubmitting ? 'Subscribing...' : user ? 'Subscribe' : 'Login to Subscribe'}
+                {isSubmitting ? 'Subscribing...' : 'Subscribe'}
               </Button>
             </div>
           </div>

@@ -1,6 +1,7 @@
 //import { loadPosts } from "@/lib/loadPosts";
 import React, { useEffect, useState, useMemo } from "react";
 import { loadPosts, type PostData } from "@/lib/loadPosts";
+import { getApiUrl } from "@/lib/publicConfig";
 //import type { PostData } from "@/lib/loadPosts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +45,19 @@ const Blog: React.FC = () => {
   
     (async () => {
       try {
+        // Keep backend blog_posts synced with markdown source files.
+        try {
+          const syncResponse = await fetch(getApiUrl("/api/blog/sync/markdown"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+          if (!syncResponse.ok) {
+            console.warn("Markdown bulk sync returned non-OK status:", syncResponse.status);
+          }
+        } catch (syncError) {
+          console.warn("Markdown bulk sync skipped:", syncError);
+        }
+
         const mdPosts = await loadPosts();
         if (mounted) setPosts(mdPosts);
       } catch (e) {

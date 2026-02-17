@@ -305,10 +305,73 @@ router.post('/newsletter/unsubscribe', [
 // Get subscription plans (public endpoint)
 router.get('/plans', async (req, res) => {
   try {
-    const result = await query(
-      'SELECT id, name, description, price, billing_cycle, features, is_active FROM subscription_plans WHERE is_active = true ORDER BY price ASC',
-      []
-    );
+    let result;
+
+    try {
+      result = await query(
+        `SELECT
+          id,
+          code,
+          name,
+          description,
+          price,
+          currency,
+          billing_cycle,
+          features,
+          cta_label,
+          cta_link,
+          sort_order,
+          is_highlighted,
+          is_checkout_enabled,
+          is_active,
+          is_public
+        FROM subscription_plans
+        WHERE is_active = true
+          AND is_public = true
+        ORDER BY sort_order ASC, price ASC`,
+        []
+      );
+    } catch (extendedQueryError) {
+      // Backward-compatible fallback for older schemas missing new pricing columns.
+      if (extendedQueryError?.code !== '42703') {
+        throw extendedQueryError;
+      }
+
+      const fallbackResult = await query(
+        `SELECT
+          id,
+          name,
+          description,
+          price,
+          billing_cycle,
+          features,
+          is_active
+        FROM subscription_plans
+        WHERE is_active = true
+        ORDER BY price ASC`,
+        []
+      );
+
+      const plans = fallbackResult.rows.map((plan) => {
+        const name = String(plan.name || '');
+        const normalizedName = name.trim().toLowerCase();
+        const isEnterprise = normalizedName.includes('enterprise');
+        const isProfessional = normalizedName.includes('professional');
+
+        return {
+          ...plan,
+          code: normalizedName.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
+          cta_label: isEnterprise ? 'Request a Report' : 'Get Started',
+          cta_link: isEnterprise ? '/request-report' : '/analyze',
+          sort_order: isProfessional ? 20 : 100,
+          is_highlighted: isProfessional,
+          is_checkout_enabled: !isEnterprise,
+          is_public: true,
+        };
+      });
+
+      return res.json({ plans });
+    }
 
     res.json({ plans: result.rows });
 
@@ -447,9 +510,14 @@ router.post('/pdf-checkout', authenticateToken, [
       return res.status(400).json({ error: 'Unsupported PDF plan' });
     }
 
-    if (!req.user?.email || !req.user?.customer_id) {
+    if (!req.user?.email) {
       return res.status(400).json({ error: 'User account is missing required billing fields' });
     }
+
+    const customerIdentity =
+      (req.user?.customer_id && String(req.user.customer_id).trim()) ||
+      (req.user?.id && String(req.user.id).trim()) ||
+      null;
 
     const plan = getPdfPlanConfig(requestedPlan);
     const frontendBase = normalizeBaseUrl(process.env.FRONTEND_URL || 'http://localhost:5173');
@@ -473,7 +541,9 @@ router.post('/pdf-checkout', authenticateToken, [
       form.append('cancel_url', cancelUrl);
       form.append('line_items[0][quantity]', '1');
       form.append('customer_email', req.user.email);
-      form.append('metadata[customer_id]', String(req.user.customer_id));
+      if (customerIdentity) {
+        form.append('metadata[customer_id]', String(customerIdentity));
+      }
       form.append('metadata[email]', req.user.email);
       form.append('metadata[pdf_plan]', requestedPlan);
 
@@ -524,7 +594,9 @@ router.post('/pdf-checkout', authenticateToken, [
     const paystackMonthlyAmount = Number(process.env.PAYSTACK_PDF_MONTHLY_AMOUNT || plan.amount);
     const amount = requestedPlan === 'monthly' ? paystackMonthlyAmount : paystackSingleAmount;
     const callbackUrl = `${frontendBase}/finance?pdfPayment=success&provider=paystack`;
-    const reference = `pdf_${requestedPlan}_${req.user.customer_id}_${Date.now()}`;
+    const referenceIdentity =
+      customerIdentity ? String(customerIdentity).replace(/[^a-zA-Z0-9_-]/g, '') : 'guest';
+    const reference = `pdf_${requestedPlan}_${referenceIdentity}_${Date.now()}`;
 
     const paystackResponse = await fetch('https://api.paystack.co/transaction/initialize', {
       method: 'POST',
@@ -539,7 +611,7 @@ router.post('/pdf-checkout', authenticateToken, [
         callback_url: callbackUrl,
         reference,
         metadata: {
-          customer_id: req.user.customer_id,
+          ...(customerIdentity ? { customer_id: customerIdentity } : {}),
           email: req.user.email,
           pdf_plan: requestedPlan,
         },
@@ -573,7 +645,7 @@ router.get('/pdf-verify', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Unsupported payment provider' });
     }
 
-    if (!req.user?.customer_id) {
+    if (!req.user?.email) {
       return res.status(400).json({ error: 'Invalid authenticated user context' });
     }
 
@@ -613,7 +685,13 @@ router.get('/pdf-verify', authenticateToken, async (req, res) => {
 
       const requestedPlan = String(stripePayload?.metadata?.pdf_plan || 'single').toLowerCase();
       const plan = getPdfPlanConfig(requestedPlan);
-      await updateCustomerSubscriptionStatus(req.user.customer_id, plan.statusOnSuccess);
+      await updateCustomerSubscriptionStatusByIdentity(
+        {
+          customerId: req.user?.customer_id || req.user?.id || null,
+          email: req.user?.email || null,
+        },
+        plan.statusOnSuccess
+      );
 
       return res.json({
         verified: true,
@@ -655,7 +733,13 @@ router.get('/pdf-verify', authenticateToken, async (req, res) => {
 
     const requestedPlan = String(paystackPayload?.data?.metadata?.pdf_plan || 'single').toLowerCase();
     const plan = getPdfPlanConfig(requestedPlan);
-    await updateCustomerSubscriptionStatus(req.user.customer_id, plan.statusOnSuccess);
+    await updateCustomerSubscriptionStatusByIdentity(
+      {
+        customerId: req.user?.customer_id || req.user?.id || null,
+        email: req.user?.email || null,
+      },
+      plan.statusOnSuccess
+    );
 
     return res.json({
       verified: true,

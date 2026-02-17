@@ -16,6 +16,7 @@ interface PricingTier {
   cta: string;
   ctaLink: string;
   highlighted?: boolean;
+  sortOrder?: number;
 }
 
 const tiers: PricingTier[] = [
@@ -100,16 +101,27 @@ function formatPeriod(billingCycle: string): string {
 
 function mapPlanToTier(plan: any): PricingTier {
   const features = Array.isArray(plan.features) ? plan.features : [];
+  const code = String(plan.code || '').trim();
+  const name = String(plan.name || '').trim();
+  const normalizedCode = code.toLowerCase();
+  const normalizedName = name.toLowerCase();
+  const explicitHighlight = plan.is_highlighted ?? plan.isHighlighted ?? plan.highlighted;
+  const inferredHighlight =
+    explicitHighlight !== undefined && explicitHighlight !== null
+      ? Boolean(explicitHighlight)
+      : normalizedCode.includes('professional') || normalizedName.includes('professional');
+
   return {
-    code: plan.code,
-    name: plan.name,
+    code,
+    name,
     price: plan.billing_cycle === 'custom' ? 'Custom' : formatPrice(Number(plan.price || 0)),
     period: formatPeriod(plan.billing_cycle || 'monthly'),
     description: plan.description || '',
     features: features.map((item: unknown) => String(item)),
-    cta: plan.cta_label || 'Get Started',
-    ctaLink: plan.cta_link || '/pricing',
-    highlighted: Boolean(plan.is_highlighted),
+    cta: plan.cta_label || plan.cta || 'Get Started',
+    ctaLink: plan.cta_link || plan.ctaLink || '/analyze',
+    highlighted: inferredHighlight,
+    sortOrder: Number(plan.sort_order ?? plan.sortOrder ?? 100),
   };
 }
 
@@ -128,7 +140,21 @@ const PricingCards: React.FC = () => {
         const plans = Array.isArray(payload?.plans) ? payload.plans : [];
         if (!plans.length) return;
 
-        const mapped = plans.map(mapPlanToTier);
+        const mapped = plans
+          .map(mapPlanToTier)
+          .sort((a, b) => (a.sortOrder ?? 100) - (b.sortOrder ?? 100));
+
+        if (!mapped.some((tier) => tier.highlighted)) {
+          const professionalIndex = mapped.findIndex((tier) => {
+            const code = String(tier.code || '').toLowerCase();
+            const name = String(tier.name || '').toLowerCase();
+            return code.includes('professional') || name.includes('professional');
+          });
+          if (professionalIndex >= 0) {
+            mapped[professionalIndex] = { ...mapped[professionalIndex], highlighted: true };
+          }
+        }
+
         if (mounted) setDisplayTiers(mapped);
       } catch {
         // Fallback to static tiers for resiliency.

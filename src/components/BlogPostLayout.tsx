@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -53,6 +53,11 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
   const [newsletterEmail, setNewsletterEmail] = useState("");
   const [isSubscribing, setIsSubscribing] = useState(false);
 
+  useEffect(() => {
+    if (!user?.email) return;
+    setNewsletterEmail((currentEmail) => currentEmail || user.email);
+  }, [user?.email]);
+
   const headings = useMemo(() => extractHeadings(post.content), [post.content]);
 
   const formatDate = (dateString: string) => {
@@ -81,14 +86,9 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
   };
 
   const handleNewsletterSubscribe = async () => {
-    if (!user) {
-      toast.error("Please create an account or log in to subscribe to the newsletter.");
-      return;
-    }
-
-    const emailToUse = user.email || "";
+    const emailToUse = (newsletterEmail || user?.email || "").trim();
     if (!emailToUse) {
-      toast.error("Unable to determine your account email.");
+      toast.error("Please enter a valid email address.");
       return;
     }
 
@@ -98,12 +98,14 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
         email: emailToUse,
         source: "blog-sidebar",
       });
-      if (result.emailSent === false) {
+      if (result.alreadySubscribed) {
+        toast.info(result.message || "This email is already subscribed to the newsletter.");
+      } else if (result.emailSent === false) {
         toast.success("Subscribed successfully, but confirmation email could not be sent yet.");
       } else {
         toast.success(result.message || "You are subscribed. Check your inbox for confirmation.");
       }
-      setNewsletterEmail("");
+      setNewsletterEmail(user?.email || "");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to subscribe.";
       toast.error(message);
@@ -312,14 +314,10 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
                 <div className="space-y-2">
                   <Input
                     type="email"
-                    value={user?.email ?? newsletterEmail}
-                    onChange={(e) => {
-                      if (!user) setNewsletterEmail(e.target.value);
-                    }}
-                    placeholder={user ? "Logged in account email" : "Log in to subscribe"}
+                    value={newsletterEmail}
+                    onChange={(e) => setNewsletterEmail(e.target.value)}
+                    placeholder="Enter your email"
                     className="bg-white/90 text-gray-900 placeholder:text-gray-600"
-                    disabled={!user}
-                    readOnly={Boolean(user)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -331,14 +329,10 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
                     variant="secondary"
                     size="sm"
                     className="w-full"
-                    disabled={isSubscribing || !user}
+                    disabled={isSubscribing || !newsletterEmail.trim()}
                     onClick={handleNewsletterSubscribe}
                   >
-                    {isSubscribing
-                      ? "Subscribing..."
-                      : user
-                      ? "Subscribe to Newsletter"
-                      : "Login to Subscribe"}
+                    {isSubscribing ? "Subscribing..." : "Subscribe to Newsletter"}
                   </Button>
                 </div>
               </div>

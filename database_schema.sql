@@ -23,6 +23,15 @@ CREATE TABLE IF NOT EXISTS customers (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Reconcile existing customers table when it was created earlier without auth columns.
+ALTER TABLE customers
+    ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT false,
+    ADD COLUMN IF NOT EXISTS verification_token VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS verification_expires TIMESTAMP,
+    ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMP;
+
 -- 2. BLOG_POSTS TABLE (for blog content)
 CREATE TABLE IF NOT EXISTS blog_posts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -139,6 +148,24 @@ ALTER TABLE page_views ENABLE ROW LEVEL SECURITY;
 ALTER TABLE newsletter_subscribers ENABLE ROW LEVEL SECURITY;
 
 -- Create RLS policies (basic policies - you may want to customize these)
+-- Drop existing policies first so this script can be rerun safely.
+DROP POLICY IF EXISTS "Allow public read access to published blog posts" ON blog_posts;
+DROP POLICY IF EXISTS "Allow public read access to approved comments" ON blog_comments;
+DROP POLICY IF EXISTS "Allow users to manage their own customer data" ON customers;
+DROP POLICY IF EXISTS "Allow public newsletter subscription" ON newsletter_subscribers;
+DROP POLICY IF EXISTS "Allow public page view tracking" ON page_views;
+DROP POLICY IF EXISTS "Allow public to insert comments" ON blog_comments;
+DROP POLICY IF EXISTS "Allow public to like posts" ON post_likes;
+DROP POLICY IF EXISTS "Allow public to like comments" ON comment_likes;
+DROP POLICY IF EXISTS "Allow public to read post likes" ON post_likes;
+DROP POLICY IF EXISTS "Allow public to read comment likes" ON comment_likes;
+DROP POLICY IF EXISTS "Allow public to read page views" ON page_views;
+DROP POLICY IF EXISTS "Allow public to read newsletter subscribers" ON newsletter_subscribers;
+DROP POLICY IF EXISTS "Allow public to update newsletter subscription" ON newsletter_subscribers;
+DROP POLICY IF EXISTS "Allow public to register customers" ON customers;
+DROP POLICY IF EXISTS "Allow public to read customer data for auth" ON customers;
+DROP POLICY IF EXISTS "Allow public to update customer data" ON customers;
+
 -- Allow public read access to published blog posts
 CREATE POLICY "Allow public read access to published blog posts" ON blog_posts
     FOR SELECT USING (published = true);

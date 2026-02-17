@@ -30,6 +30,8 @@ export interface Database {
           first_name: string
           last_name: string
           company: string | null
+          age: number | null
+          registration_country: string | null
           phone: string | null
           created_at: string
           updated_at: string
@@ -43,6 +45,8 @@ export interface Database {
           first_name: string
           last_name: string
           company?: string | null
+          age?: number | null
+          registration_country?: string | null
           phone?: string | null
           created_at?: string
           updated_at?: string
@@ -56,6 +60,8 @@ export interface Database {
           first_name?: string
           last_name?: string
           company?: string | null
+          age?: number | null
+          registration_country?: string | null
           phone?: string | null
           created_at?: string
           updated_at?: string

@@ -37,7 +37,7 @@ const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, signOut } = useAuth();
+  const { user, signOut, loading } = useAuth();
   const isHomePage = location.pathname === '/';
 
   const [internalMobileMenuOpen, setInternalMobileMenuOpen] = React.useState(false);
@@ -113,7 +113,7 @@ const Navbar: React.FC<NavbarProps> = ({
               )
             )}
 
-            {user ? (
+            {loading ? null : user ? (
               <div className="flex items-center ml-4 space-x-2">
                 <div className="w-8 h-8 bg-green-600 rounded-full flex items-center justify-center text-white text-sm font-semibold">
                   {user.email?.charAt(0).toUpperCase()}
@@ -185,7 +185,7 @@ const Navbar: React.FC<NavbarProps> = ({
             )}
 
             <div className="pt-2 border-t border-amber-200 mt-2">
-              {user ? (
+            {loading ? null : user ? (
                 <div className="flex items-center justify-between px-3 py-2">
                   <div className="flex items-center space-x-2">
                     <div className="w-8 h-8 bg-green-600 rounded-full flex items-center justify-center text-white text-sm font-semibold">

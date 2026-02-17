@@ -1,5 +1,50 @@
 const { supabase } = require('../config/supabase')
 
+const safeString = (value, fallback = '') => {
+  if (value === null || value === undefined) return fallback
+  const normalized = String(value).trim()
+  return normalized.length > 0 ? normalized : fallback
+}
+
+const buildUserContext = (user, customerData) => {
+  const metadata = user?.user_metadata || {}
+  const firstName = safeString(customerData?.first_name, safeString(metadata.first_name))
+  const lastName = safeString(customerData?.last_name, safeString(metadata.last_name))
+
+  return {
+    ...user,
+    customer_id: customerData?.id || null,
+    first_name: firstName,
+    last_name: lastName,
+    age: customerData?.age ?? metadata.age ?? null,
+    registration_country:
+      safeString(customerData?.registration_country, safeString(metadata.registration_country)) || null,
+    company: customerData?.company ?? metadata.company ?? null,
+    subscription_status: customerData?.subscription_status || 'free',
+    is_active: customerData?.is_active ?? true,
+  }
+}
+
+const fetchCustomerByEmail = async (email) => {
+  const normalizedEmail = safeString(email).toLowerCase()
+  if (!normalizedEmail) {
+    return { customerData: null, customerError: null }
+  }
+
+  const { data, error } = await supabase
+    .from('customers')
+    .select('*')
+    .eq('email', normalizedEmail)
+    .maybeSingle()
+
+  if (error) {
+    console.warn('Customer lookup warning:', error.message)
+    return { customerData: null, customerError: error }
+  }
+
+  return { customerData: data || null, customerError: null }
+}
+
 // Middleware to verify Supabase JWT token
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization']
@@ -10,6 +55,10 @@ const authenticateToken = async (req, res, next) => {
   }
 
   try {
+    if (!supabase) {
+      return res.status(500).json({ error: 'Authentication backend is not configured' })
+    }
+
     // Verify token with Supabase
     const { data: { user }, error } = await supabase.auth.getUser(token)
     
@@ -17,31 +66,15 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid token' })
     }
 
-    // Get additional user data from customers table
-    const { data: customerData, error: customerError } = await supabase
-      .from('customers')
-      .select('id, email, first_name, last_name, company, is_active, subscription_status')
-      .eq('email', user.email)
-      .single()
+    // Get additional user data from customers table.
+    // If unavailable, continue with Supabase auth metadata so protected endpoints still work.
+    const { customerData } = await fetchCustomerByEmail(user.email)
 
-    if (customerError) {
-      console.error('Error fetching customer data:', customerError)
-      return res.status(500).json({ error: 'Failed to fetch user data' })
-    }
-
-    if (!customerData || !customerData.is_active) {
+    if (customerData && customerData.is_active === false) {
       return res.status(401).json({ error: 'Account is deactivated' })
     }
 
-    // Combine Supabase user data with customer data
-    req.user = {
-      ...user,
-      customer_id: customerData.id,
-      first_name: customerData.first_name,
-      last_name: customerData.last_name,
-      company: customerData.company,
-      subscription_status: customerData.subscription_status
-    }
+    req.user = buildUserContext(user, customerData)
 
     next()
   } catch (error) {
@@ -61,6 +94,11 @@ const optionalAuth = async (req, res, next) => {
   }
 
   try {
+    if (!supabase) {
+      req.user = null
+      return next()
+    }
+
     const { data: { user }, error } = await supabase.auth.getUser(token)
     
     if (error || !user) {
@@ -68,24 +106,12 @@ const optionalAuth = async (req, res, next) => {
       return next()
     }
 
-    // Get customer data
-    const { data: customerData } = await supabase
-      .from('customers')
-      .select('id, email, first_name, last_name, company, is_active, subscription_status')
-      .eq('email', user.email)
-      .single()
+    const { customerData } = await fetchCustomerByEmail(user.email)
 
-    if (customerData && customerData.is_active) {
-      req.user = {
-        ...user,
-        customer_id: customerData.id,
-        first_name: customerData.first_name,
-        last_name: customerData.last_name,
-        company: customerData.company,
-        subscription_status: customerData.subscription_status
-      }
-    } else {
+    if (customerData && customerData.is_active === false) {
       req.user = null
+    } else {
+      req.user = buildUserContext(user, customerData)
     }
 
     next()
@@ -112,6 +138,10 @@ const requireAdmin = async (req, res, next) => {
 // Verify Supabase JWT token without database lookup
 const verifyToken = async (token) => {
   try {
+    if (!supabase) {
+      return { valid: false, user: null, error: new Error('Supabase client is not configured') }
+    }
+
     const { data: { user }, error } = await supabase.auth.getUser(token)
     
     if (error || !user) {

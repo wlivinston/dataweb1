@@ -21,6 +21,7 @@ import {
   ReconciliationDiagnostics,
   ReportPeriod,
 } from './financeTypes';
+import { SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATIVE_CHART_COLOR } from './chartColors';
 
 // ============================================================
 // 1. SMART COLUMN DETECTION
@@ -1063,10 +1064,10 @@ export function generateFinanceChartData(report: FinancialReport): FinanceChartD
 
   // Cash flow waterfall
   const cashFlowWaterfall = [
-    { name: 'Operating', value: cf.netOperatingCashFlow, fill: cf.netOperatingCashFlow >= 0 ? '#22c55e' : '#ef4444' },
-    { name: 'Investing', value: cf.netInvestingCashFlow, fill: cf.netInvestingCashFlow >= 0 ? '#22c55e' : '#ef4444' },
-    { name: 'Financing', value: cf.netFinancingCashFlow, fill: cf.netFinancingCashFlow >= 0 ? '#22c55e' : '#ef4444' },
-    { name: 'Net Change', value: cf.netCashChange, fill: cf.netCashChange >= 0 ? '#3b82f6' : '#f97316' },
+    { name: 'Operating', value: cf.netOperatingCashFlow, fill: cf.netOperatingCashFlow >= 0 ? POSITIVE_CHART_COLOR : NEGATIVE_CHART_COLOR },
+    { name: 'Investing', value: cf.netInvestingCashFlow, fill: cf.netInvestingCashFlow >= 0 ? POSITIVE_CHART_COLOR : NEGATIVE_CHART_COLOR },
+    { name: 'Financing', value: cf.netFinancingCashFlow, fill: cf.netFinancingCashFlow >= 0 ? POSITIVE_CHART_COLOR : NEGATIVE_CHART_COLOR },
+    { name: 'Net Change', value: cf.netCashChange, fill: cf.netCashChange >= 0 ? SHARED_CHART_PALETTE[0] : SHARED_CHART_PALETTE[2] },
   ];
 
   // Asset allocation
@@ -1083,9 +1084,9 @@ export function generateFinanceChartData(report: FinancialReport): FinanceChartD
 
   // Profitability margins
   const profitabilityMargins = [
-    { name: 'Gross Margin', value: pnl.grossMargin, color: '#22c55e' },
-    { name: 'Operating Margin', value: safeDivide(pnl.operatingIncome, pnl.totalRevenue) ?? 0, color: '#3b82f6' },
-    { name: 'Net Margin', value: pnl.netMargin, color: '#8b5cf6' },
+    { name: 'Gross Margin', value: pnl.grossMargin, color: SHARED_CHART_PALETTE[5] },
+    { name: 'Operating Margin', value: safeDivide(pnl.operatingIncome, pnl.totalRevenue) ?? 0, color: SHARED_CHART_PALETTE[0] },
+    { name: 'Net Margin', value: pnl.netMargin, color: SHARED_CHART_PALETTE[4] },
   ];
 
   return {
