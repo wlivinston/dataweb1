@@ -21,24 +21,18 @@ interface ResizableVisualizationProps {
   minSize?: number;
 }
 
+const ALL_VISUALIZATION_TYPES: SupportedVisualizationType[] = [
+  'bar',
+  'line',
+  'area',
+  'pie',
+  'scatter',
+  'table',
+];
+
 const getSwitchableVisualizationTypes = (baseType: Visualization['type']): SupportedVisualizationType[] => {
-  switch (baseType) {
-    case 'bar':
-      return ['bar', 'line', 'area'];
-    case 'line':
-      return ['line', 'bar', 'area'];
-    case 'area':
-      return ['area', 'line', 'bar'];
-    case 'pie':
-      return ['pie', 'bar', 'line'];
-    case 'scatter':
-      return ['scatter', 'line', 'bar'];
-    case 'table':
-      return ['table', 'bar', 'line'];
-    case 'gauge':
-    default:
-      return ['bar', 'line', 'area'];
-  }
+  const preferred = baseType === 'gauge' ? 'bar' : (baseType as SupportedVisualizationType);
+  return [preferred, ...ALL_VISUALIZATION_TYPES.filter(type => type !== preferred)];
 };
 
 const visualizationTypeLabel: Record<SupportedVisualizationType, string> = {

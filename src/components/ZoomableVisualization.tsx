@@ -3,7 +3,14 @@ import React, { useState, useRef, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Visualization } from '@/lib/types';
-import { renderVisualization } from '@/lib/visualizationRenderer';
+import { renderVisualization, type SupportedVisualizationType } from '@/lib/visualizationRenderer';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { ZoomIn, ZoomOut, RotateCcw, Move } from 'lucide-react';
 
 interface ZoomableVisualizationProps {
@@ -11,10 +18,36 @@ interface ZoomableVisualizationProps {
   getVisualizationIcon?: (type: string) => React.ReactNode;
 }
 
+const VISUALIZATION_TYPE_OPTIONS: SupportedVisualizationType[] = [
+  'bar',
+  'line',
+  'area',
+  'pie',
+  'scatter',
+  'table',
+];
+
+const VISUALIZATION_TYPE_LABEL: Record<SupportedVisualizationType, string> = {
+  bar: 'Bar',
+  line: 'Line',
+  area: 'Area',
+  pie: 'Pie',
+  scatter: 'Scatter',
+  table: 'Table',
+};
+
+const toDefaultType = (type: Visualization['type']): SupportedVisualizationType => {
+  if (type === 'gauge') return 'bar';
+  return type as SupportedVisualizationType;
+};
+
 const ZoomableVisualization: React.FC<ZoomableVisualizationProps> = ({
   visualization,
   getVisualizationIcon
 }) => {
+  const [selectedVisualizationType, setSelectedVisualizationType] = useState<SupportedVisualizationType>(
+    () => toDefaultType(visualization.type)
+  );
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -65,6 +98,10 @@ const ZoomableVisualization: React.FC<ZoomableVisualizationProps> = ({
     setIsDragging(false);
   }, []);
 
+  React.useEffect(() => {
+    setSelectedVisualizationType(toDefaultType(visualization.type));
+  }, [visualization.id, visualization.type]);
+
   return (
     <Card className="p-6 h-full flex flex-col">
       <CardHeader className="pb-4 flex-shrink-0">
@@ -73,7 +110,24 @@ const ZoomableVisualization: React.FC<ZoomableVisualizationProps> = ({
             {getVisualizationIcon && getVisualizationIcon(visualization.type)}
             <div className="flex-1 min-w-0">
               <CardTitle className="text-base font-medium truncate">{visualization.title}</CardTitle>
-              <p className="text-sm text-gray-500 capitalize mt-0.5">{visualization.type} Chart</p>
+              <div className="mt-1 flex items-center gap-2">
+                <p className="text-sm text-gray-500">{VISUALIZATION_TYPE_LABEL[selectedVisualizationType]} Chart</p>
+                <Select
+                  value={selectedVisualizationType}
+                  onValueChange={(value) => setSelectedVisualizationType(value as SupportedVisualizationType)}
+                >
+                  <SelectTrigger className="h-7 w-[120px] text-xs">
+                    <SelectValue placeholder="Visual" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {VISUALIZATION_TYPE_OPTIONS.map(option => (
+                      <SelectItem key={option} value={option} className="text-xs">
+                        {VISUALIZATION_TYPE_LABEL[option]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
           {/* Zoom Controls */}
@@ -149,9 +203,9 @@ const ZoomableVisualization: React.FC<ZoomableVisualizationProps> = ({
               alignItems: 'center',
               justifyContent: 'center'
             }}
-          >
-            <div style={{ width: '100%' }}>
-              {renderVisualization(visualization)}
+            >
+              <div style={{ width: '100%' }}>
+              {renderVisualization(visualization, selectedVisualizationType)}
             </div>
           </div>
         </div>

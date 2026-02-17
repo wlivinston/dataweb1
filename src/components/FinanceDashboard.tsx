@@ -39,7 +39,7 @@ import {
 } from 'lucide-react';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, PieChart, Pie, Cell, LineChart, Line, AreaChart, Area,
+  Tooltip, Legend, PieChart, Pie, Cell, LineChart, Line, AreaChart, Area, ScatterChart, Scatter,
 } from 'recharts';
 import * as XLSX from 'xlsx';
 import DataProcessingOverlay from './DataProcessingOverlay';
@@ -104,6 +104,7 @@ import {
 import { useAuth } from '@/hooks/useAuth';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { getApiUrl } from '@/lib/publicConfig';
+import { SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATIVE_CHART_COLOR } from '@/lib/chartColors';
 import { v4 as uuidv4 } from 'uuid';
 
 // ============================================================
@@ -112,10 +113,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 type FinanceView = 'upload' | 'mapping' | 'wideWizard' | 'assetWizard' | 'processing' | 'dashboard';
 
-const CHART_COLORS = [
-  '#8b5cf6', '#3b82f6', '#22c55e', '#f59e0b', '#ef4444',
-  '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16',
-];
+const CHART_COLORS = SHARED_CHART_PALETTE;
 
 const CATEGORY_OPTIONS: { value: AccountCategory | ''; label: string }[] = [
   { value: '', label: 'Auto-detect' },
@@ -141,15 +139,15 @@ const OPENING_INITIALIZATION_STRATEGY: OpeningInitializationStrategy = 'per_day'
 const formatOpeningInitializationStrategy = (strategy: OpeningInitializationStrategy): string =>
   strategy === 'per_day' ? 'Per-day' : 'Per-row';
 const RADIAN = Math.PI / 180;
-type FinanceSeriesChartType = 'bar' | 'line' | 'area';
-type FinanceDistributionChartType = 'pie' | 'bar' | 'area';
-const FINANCE_SERIES_CHART_OPTIONS: FinanceSeriesChartType[] = ['bar', 'line', 'area'];
-const FINANCE_DISTRIBUTION_CHART_OPTIONS: FinanceDistributionChartType[] = ['pie', 'bar', 'area'];
-const FINANCE_CHART_TYPE_LABEL: Record<FinanceSeriesChartType | FinanceDistributionChartType, string> = {
+type FinanceChartVisualType = 'bar' | 'line' | 'area' | 'pie' | 'scatter' | 'table';
+const FINANCE_CHART_OPTIONS: FinanceChartVisualType[] = ['bar', 'line', 'area', 'pie', 'scatter', 'table'];
+const FINANCE_CHART_TYPE_LABEL: Record<FinanceChartVisualType, string> = {
   bar: 'Bar',
   line: 'Line',
   area: 'Area',
   pie: 'Pie',
+  scatter: 'Scatter',
+  table: 'Table',
 };
 
 const parseBooleanEnv = (value: unknown): boolean => {
@@ -257,11 +255,11 @@ const FinanceDashboard: React.FC = () => {
   const [report, setReport] = useState<FinancialReport | null>(null);
   const [chartData, setChartData] = useState<FinanceChartData | null>(null);
   const [financeChartModes, setFinanceChartModes] = useState({
-    revenueVsExpenses: 'bar' as FinanceSeriesChartType,
-    expenseBreakdown: 'pie' as FinanceDistributionChartType,
-    cashFlowComponents: 'bar' as FinanceSeriesChartType,
-    assetAllocation: 'pie' as FinanceDistributionChartType,
-    profitabilityMargins: 'bar' as FinanceSeriesChartType,
+    revenueVsExpenses: 'bar' as FinanceChartVisualType,
+    expenseBreakdown: 'pie' as FinanceChartVisualType,
+    cashFlowComponents: 'bar' as FinanceChartVisualType,
+    assetAllocation: 'pie' as FinanceChartVisualType,
+    profitabilityMargins: 'bar' as FinanceChartVisualType,
   });
   const [writtenReport, setWrittenReport] = useState('');
   const [isGeneratingFinancePDF, setIsGeneratingFinancePDF] = useState(false);
@@ -1893,16 +1891,9 @@ const FinanceDashboard: React.FC = () => {
     };
   };
 
-  const setFinanceSeriesChartMode = (
-    key: 'revenueVsExpenses' | 'cashFlowComponents' | 'profitabilityMargins',
-    value: FinanceSeriesChartType
-  ) => {
-    setFinanceChartModes(prev => ({ ...prev, [key]: value }));
-  };
-
-  const setFinanceDistributionChartMode = (
-    key: 'expenseBreakdown' | 'assetAllocation',
-    value: FinanceDistributionChartType
+  const setFinanceChartMode = (
+    key: keyof typeof financeChartModes,
+    value: FinanceChartVisualType
   ) => {
     setFinanceChartModes(prev => ({ ...prev, [key]: value }));
   };
@@ -3536,14 +3527,14 @@ const FinanceDashboard: React.FC = () => {
                 <Select
                   value={financeChartModes.revenueVsExpenses}
                   onValueChange={(value) =>
-                    setFinanceSeriesChartMode('revenueVsExpenses', value as FinanceSeriesChartType)
+                    setFinanceChartMode('revenueVsExpenses', value as FinanceChartVisualType)
                   }
                 >
                   <SelectTrigger className="h-8 w-[100px] text-xs">
                     <SelectValue placeholder="Visual" />
                   </SelectTrigger>
                   <SelectContent>
-                    {FINANCE_SERIES_CHART_OPTIONS.map(option => (
+                    {FINANCE_CHART_OPTIONS.map(option => (
                       <SelectItem key={option} value={option} className="text-xs">
                         {FINANCE_CHART_TYPE_LABEL[option]}
                       </SelectItem>
@@ -3551,39 +3542,100 @@ const FinanceDashboard: React.FC = () => {
                   </SelectContent>
                 </Select>
               </div>
-              <ResponsiveContainer width="100%" height={250}>
-                {financeChartModes.revenueVsExpenses === 'bar' ? (
-                  <BarChart data={chartData.revenueVsExpenses}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="category" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                    <Legend />
-                    <Bar dataKey="revenue" fill="#22c55e" name="Revenue" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="expenses" fill="#ef4444" name="Expenses" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                ) : financeChartModes.revenueVsExpenses === 'line' ? (
-                  <LineChart data={chartData.revenueVsExpenses}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="category" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                    <Legend />
-                    <Line type="monotone" dataKey="revenue" stroke="#22c55e" strokeWidth={2.5} name="Revenue" />
-                    <Line type="monotone" dataKey="expenses" stroke="#ef4444" strokeWidth={2.5} name="Expenses" />
-                  </LineChart>
-                ) : (
-                  <AreaChart data={chartData.revenueVsExpenses}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="category" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                    <Legend />
-                    <Area type="monotone" dataKey="revenue" stroke="#22c55e" fill="#22c55e" fillOpacity={0.25} name="Revenue" />
-                    <Area type="monotone" dataKey="expenses" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2} name="Expenses" />
-                  </AreaChart>
-                )}
-              </ResponsiveContainer>
+              {financeChartModes.revenueVsExpenses === 'table' ? (
+                <div className="h-[250px] overflow-auto rounded-md border">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr>
+                        <th className="text-left p-2">Category</th>
+                        <th className="text-right p-2">Revenue</th>
+                        <th className="text-right p-2">Expenses</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {chartData.revenueVsExpenses.map((row, index) => (
+                        <tr key={index} className="border-t">
+                          <td className="p-2">{row.category}</td>
+                          <td className="p-2 text-right">{formatCurrency(row.revenue)}</td>
+                          <td className="p-2 text-right">{formatCurrency(row.expenses)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height={250}>
+                  {financeChartModes.revenueVsExpenses === 'bar' ? (
+                    <BarChart data={chartData.revenueVsExpenses}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="category" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                      <Legend />
+                      <Bar dataKey="revenue" fill={POSITIVE_CHART_COLOR} name="Revenue" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="expenses" fill={NEGATIVE_CHART_COLOR} name="Expenses" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  ) : financeChartModes.revenueVsExpenses === 'line' ? (
+                    <LineChart data={chartData.revenueVsExpenses}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="category" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                      <Legend />
+                      <Line type="monotone" dataKey="revenue" stroke={POSITIVE_CHART_COLOR} strokeWidth={2.5} name="Revenue" />
+                      <Line type="monotone" dataKey="expenses" stroke={NEGATIVE_CHART_COLOR} strokeWidth={2.5} name="Expenses" />
+                    </LineChart>
+                  ) : financeChartModes.revenueVsExpenses === 'area' ? (
+                    <AreaChart data={chartData.revenueVsExpenses}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="category" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                      <Legend />
+                      <Area type="monotone" dataKey="revenue" stroke={POSITIVE_CHART_COLOR} fill={POSITIVE_CHART_COLOR} fillOpacity={0.25} name="Revenue" />
+                      <Area type="monotone" dataKey="expenses" stroke={NEGATIVE_CHART_COLOR} fill={NEGATIVE_CHART_COLOR} fillOpacity={0.2} name="Expenses" />
+                    </AreaChart>
+                  ) : financeChartModes.revenueVsExpenses === 'pie' ? (
+                    <PieChart margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
+                      <Pie
+                        data={[
+                          { name: 'Revenue', value: chartData.revenueVsExpenses.reduce((sum, row) => sum + (row.revenue || 0), 0) },
+                          { name: 'Expenses', value: chartData.revenueVsExpenses.reduce((sum, row) => sum + (row.expenses || 0), 0) },
+                        ]}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={34}
+                        outerRadius={78}
+                        dataKey="value"
+                        nameKey="name"
+                      >
+                        <Cell fill={POSITIVE_CHART_COLOR} />
+                        <Cell fill={NEGATIVE_CHART_COLOR} />
+                      </Pie>
+                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                      <Legend />
+                    </PieChart>
+                  ) : (
+                    <ScatterChart>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="x" name="Revenue" tick={{ fontSize: 11 }} />
+                      <YAxis dataKey="y" name="Expenses" tick={{ fontSize: 11 }} />
+                      <Tooltip
+                        formatter={(value: number, name) => [formatCurrency(value), name]}
+                        labelFormatter={(_, payload: any) => payload?.[0]?.payload?.name ?? 'Point'}
+                      />
+                      <Scatter
+                        data={chartData.revenueVsExpenses.map(row => ({
+                          x: row.revenue,
+                          y: row.expenses,
+                          name: row.category,
+                        }))}
+                        fill={CHART_COLORS[4]}
+                      />
+                    </ScatterChart>
+                  )}
+                </ResponsiveContainer>
+              )}
             </Card>
 
             {/* Expense Breakdown */}
@@ -3596,14 +3648,14 @@ const FinanceDashboard: React.FC = () => {
                 <Select
                   value={financeChartModes.expenseBreakdown}
                   onValueChange={(value) =>
-                    setFinanceDistributionChartMode('expenseBreakdown', value as FinanceDistributionChartType)
+                    setFinanceChartMode('expenseBreakdown', value as FinanceChartVisualType)
                   }
                 >
                   <SelectTrigger className="h-8 w-[100px] text-xs">
                     <SelectValue placeholder="Visual" />
                   </SelectTrigger>
                   <SelectContent>
-                    {FINANCE_DISTRIBUTION_CHART_OPTIONS.map(option => (
+                    {FINANCE_CHART_OPTIONS.map(option => (
                       <SelectItem key={option} value={option} className="text-xs">
                         {FINANCE_CHART_TYPE_LABEL[option]}
                       </SelectItem>
@@ -3612,44 +3664,95 @@ const FinanceDashboard: React.FC = () => {
                 </Select>
               </div>
               {chartData.expenseBreakdown.length > 0 ? (
-                <ResponsiveContainer width="100%" height={250}>
-                  {financeChartModes.expenseBreakdown === 'pie' ? (
-                    <PieChart margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
-                      <Pie
-                        data={chartData.expenseBreakdown}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={34}
-                        outerRadius={78}
-                        dataKey="value"
-                        nameKey="name"
-                        label={renderCompactPiePercentLabel}
-                        labelLine={false}
-                      >
-                        {chartData.expenseBreakdown.map((_, index) => (
-                          <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                financeChartModes.expenseBreakdown === 'table' ? (
+                  <div className="h-[250px] overflow-auto rounded-md border">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="text-left p-2">Category</th>
+                          <th className="text-right p-2">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {expenseBreakdownSeries.map((row, index) => (
+                          <tr key={index} className="border-t">
+                            <td className="p-2">{row.category}</td>
+                            <td className="p-2 text-right">{formatCurrency(row.value)}</td>
+                          </tr>
                         ))}
-                      </Pie>
-                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                    </PieChart>
-                  ) : financeChartModes.expenseBreakdown === 'bar' ? (
-                    <BarChart data={expenseBreakdownSeries}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="category" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={55} />
-                      <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                      <Bar dataKey="value" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  ) : (
-                    <AreaChart data={expenseBreakdownSeries}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="category" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={55} />
-                      <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                      <Area type="monotone" dataKey="value" stroke="#8b5cf6" fill="#8b5cf6" fillOpacity={0.25} />
-                    </AreaChart>
-                  )}
-                </ResponsiveContainer>
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={250}>
+                    {financeChartModes.expenseBreakdown === 'pie' ? (
+                      <PieChart margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
+                        <Pie
+                          data={chartData.expenseBreakdown}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={34}
+                          outerRadius={78}
+                          dataKey="value"
+                          nameKey="name"
+                          label={renderCompactPiePercentLabel}
+                          labelLine={false}
+                        >
+                          {chartData.expenseBreakdown.map((_, index) => (
+                            <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                      </PieChart>
+                    ) : financeChartModes.expenseBreakdown === 'bar' ? (
+                      <BarChart data={expenseBreakdownSeries}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="category" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={55} />
+                        <YAxis tick={{ fontSize: 11 }} />
+                        <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                        <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                          {expenseBreakdownSeries.map((_, index) => (
+                            <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    ) : financeChartModes.expenseBreakdown === 'line' ? (
+                      <LineChart data={expenseBreakdownSeries}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="category" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={55} />
+                        <YAxis tick={{ fontSize: 11 }} />
+                        <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                        <Line type="monotone" dataKey="value" stroke={CHART_COLORS[4]} strokeWidth={2.5} />
+                      </LineChart>
+                    ) : financeChartModes.expenseBreakdown === 'area' ? (
+                      <AreaChart data={expenseBreakdownSeries}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="category" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={55} />
+                        <YAxis tick={{ fontSize: 11 }} />
+                        <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                        <Area type="monotone" dataKey="value" stroke={CHART_COLORS[4]} fill={CHART_COLORS[4]} fillOpacity={0.25} />
+                      </AreaChart>
+                    ) : (
+                      <ScatterChart>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="x" name="Index" tick={{ fontSize: 11 }} />
+                        <YAxis dataKey="y" name="Value" tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          formatter={(value: number) => formatCurrency(value)}
+                          labelFormatter={(_, payload: any) => payload?.[0]?.payload?.name ?? 'Point'}
+                        />
+                        <Scatter
+                          data={expenseBreakdownSeries.map((row, index) => ({
+                            x: index + 1,
+                            y: row.value,
+                            name: row.category,
+                          }))}
+                          fill={CHART_COLORS[3]}
+                        />
+                      </ScatterChart>
+                    )}
+                  </ResponsiveContainer>
+                )
               ) : (
                 <div className="h-[250px] flex items-center justify-center text-gray-400">
                   <p>No expense data available</p>
@@ -3667,14 +3770,14 @@ const FinanceDashboard: React.FC = () => {
                 <Select
                   value={financeChartModes.cashFlowComponents}
                   onValueChange={(value) =>
-                    setFinanceSeriesChartMode('cashFlowComponents', value as FinanceSeriesChartType)
+                    setFinanceChartMode('cashFlowComponents', value as FinanceChartVisualType)
                   }
                 >
                   <SelectTrigger className="h-8 w-[100px] text-xs">
                     <SelectValue placeholder="Visual" />
                   </SelectTrigger>
                   <SelectContent>
-                    {FINANCE_SERIES_CHART_OPTIONS.map(option => (
+                    {FINANCE_CHART_OPTIONS.map(option => (
                       <SelectItem key={option} value={option} className="text-xs">
                         {FINANCE_CHART_TYPE_LABEL[option]}
                       </SelectItem>
@@ -3682,37 +3785,96 @@ const FinanceDashboard: React.FC = () => {
                   </SelectContent>
                 </Select>
               </div>
-              <ResponsiveContainer width="100%" height={250}>
-                {financeChartModes.cashFlowComponents === 'bar' ? (
-                  <BarChart data={chartData.cashFlowWaterfall}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                    <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                      {chartData.cashFlowWaterfall.map((entry, index) => (
-                        <Cell key={index} fill={entry.fill} />
+              {financeChartModes.cashFlowComponents === 'table' ? (
+                <div className="h-[250px] overflow-auto rounded-md border">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr>
+                        <th className="text-left p-2">Component</th>
+                        <th className="text-right p-2">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {chartData.cashFlowWaterfall.map((row, index) => (
+                        <tr key={index} className="border-t">
+                          <td className="p-2">{row.name}</td>
+                          <td className="p-2 text-right">{formatCurrency(row.value)}</td>
+                        </tr>
                       ))}
-                    </Bar>
-                  </BarChart>
-                ) : financeChartModes.cashFlowComponents === 'line' ? (
-                  <LineChart data={chartData.cashFlowWaterfall}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                    <Line type="monotone" dataKey="value" stroke="#06b6d4" strokeWidth={2.5} dot={{ r: 4 }} />
-                  </LineChart>
-                ) : (
-                  <AreaChart data={chartData.cashFlowWaterfall}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                    <Area type="monotone" dataKey="value" stroke="#06b6d4" fill="#06b6d4" fillOpacity={0.25} />
-                  </AreaChart>
-                )}
-              </ResponsiveContainer>
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height={250}>
+                  {financeChartModes.cashFlowComponents === 'bar' ? (
+                    <BarChart data={chartData.cashFlowWaterfall}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                        {chartData.cashFlowWaterfall.map((entry, index) => (
+                          <Cell key={index} fill={entry.fill} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  ) : financeChartModes.cashFlowComponents === 'line' ? (
+                    <LineChart data={chartData.cashFlowWaterfall}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                      <Line type="monotone" dataKey="value" stroke={CHART_COLORS[1]} strokeWidth={2.5} dot={{ r: 4 }} />
+                    </LineChart>
+                  ) : financeChartModes.cashFlowComponents === 'area' ? (
+                    <AreaChart data={chartData.cashFlowWaterfall}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                      <Area type="monotone" dataKey="value" stroke={CHART_COLORS[1]} fill={CHART_COLORS[1]} fillOpacity={0.25} />
+                    </AreaChart>
+                  ) : financeChartModes.cashFlowComponents === 'pie' ? (
+                    <PieChart margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
+                      <Pie
+                        data={chartData.cashFlowWaterfall.map(item => ({
+                          name: item.name,
+                          value: Math.abs(item.value),
+                        }))}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={34}
+                        outerRadius={78}
+                        dataKey="value"
+                        nameKey="name"
+                      >
+                        {chartData.cashFlowWaterfall.map((_, index) => (
+                          <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                    </PieChart>
+                  ) : (
+                    <ScatterChart>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="x" name="Index" tick={{ fontSize: 11 }} />
+                      <YAxis dataKey="y" name="Value" tick={{ fontSize: 11 }} />
+                      <Tooltip
+                        formatter={(value: number) => formatCurrency(value)}
+                        labelFormatter={(_, payload: any) => payload?.[0]?.payload?.name ?? 'Point'}
+                      />
+                      <Scatter
+                        data={chartData.cashFlowWaterfall.map((row, index) => ({
+                          x: index + 1,
+                          y: row.value,
+                          name: row.name,
+                        }))}
+                        fill={CHART_COLORS[2]}
+                      />
+                    </ScatterChart>
+                  )}
+                </ResponsiveContainer>
+              )}
             </Card>
 
             {/* Asset Allocation */}
@@ -3725,14 +3887,14 @@ const FinanceDashboard: React.FC = () => {
                 <Select
                   value={financeChartModes.assetAllocation}
                   onValueChange={(value) =>
-                    setFinanceDistributionChartMode('assetAllocation', value as FinanceDistributionChartType)
+                    setFinanceChartMode('assetAllocation', value as FinanceChartVisualType)
                   }
                 >
                   <SelectTrigger className="h-8 w-[100px] text-xs">
                     <SelectValue placeholder="Visual" />
                   </SelectTrigger>
                   <SelectContent>
-                    {FINANCE_DISTRIBUTION_CHART_OPTIONS.map(option => (
+                    {FINANCE_CHART_OPTIONS.map(option => (
                       <SelectItem key={option} value={option} className="text-xs">
                         {FINANCE_CHART_TYPE_LABEL[option]}
                       </SelectItem>
@@ -3741,44 +3903,95 @@ const FinanceDashboard: React.FC = () => {
                 </Select>
               </div>
               {chartData.assetAllocation.length > 0 ? (
-                <ResponsiveContainer width="100%" height={250}>
-                  {financeChartModes.assetAllocation === 'pie' ? (
-                    <PieChart margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
-                      <Pie
-                        data={chartData.assetAllocation}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={34}
-                        outerRadius={78}
-                        dataKey="value"
-                        nameKey="name"
-                        label={renderCompactPiePercentLabel}
-                        labelLine={false}
-                      >
-                        {chartData.assetAllocation.map((_, index) => (
-                          <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                financeChartModes.assetAllocation === 'table' ? (
+                  <div className="h-[250px] overflow-auto rounded-md border">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="text-left p-2">Category</th>
+                          <th className="text-right p-2">Value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {assetAllocationSeries.map((row, index) => (
+                          <tr key={index} className="border-t">
+                            <td className="p-2">{row.category}</td>
+                            <td className="p-2 text-right">{formatCurrency(row.value)}</td>
+                          </tr>
                         ))}
-                      </Pie>
-                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                    </PieChart>
-                  ) : financeChartModes.assetAllocation === 'bar' ? (
-                    <BarChart data={assetAllocationSeries}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="category" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={55} />
-                      <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                      <Bar dataKey="value" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  ) : (
-                    <AreaChart data={assetAllocationSeries}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="category" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={55} />
-                      <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(value: number) => formatCurrency(value)} />
-                      <Area type="monotone" dataKey="value" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} />
-                    </AreaChart>
-                  )}
-                </ResponsiveContainer>
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={250}>
+                    {financeChartModes.assetAllocation === 'pie' ? (
+                      <PieChart margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
+                        <Pie
+                          data={chartData.assetAllocation}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={34}
+                          outerRadius={78}
+                          dataKey="value"
+                          nameKey="name"
+                          label={renderCompactPiePercentLabel}
+                          labelLine={false}
+                        >
+                          {chartData.assetAllocation.map((_, index) => (
+                            <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                      </PieChart>
+                    ) : financeChartModes.assetAllocation === 'bar' ? (
+                      <BarChart data={assetAllocationSeries}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="category" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={55} />
+                        <YAxis tick={{ fontSize: 11 }} />
+                        <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                        <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                          {assetAllocationSeries.map((_, index) => (
+                            <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    ) : financeChartModes.assetAllocation === 'line' ? (
+                      <LineChart data={assetAllocationSeries}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="category" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={55} />
+                        <YAxis tick={{ fontSize: 11 }} />
+                        <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                        <Line type="monotone" dataKey="value" stroke={CHART_COLORS[0]} strokeWidth={2.5} />
+                      </LineChart>
+                    ) : financeChartModes.assetAllocation === 'area' ? (
+                      <AreaChart data={assetAllocationSeries}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="category" tick={{ fontSize: 11 }} interval={0} angle={-18} textAnchor="end" height={55} />
+                        <YAxis tick={{ fontSize: 11 }} />
+                        <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                        <Area type="monotone" dataKey="value" stroke={CHART_COLORS[0]} fill={CHART_COLORS[0]} fillOpacity={0.25} />
+                      </AreaChart>
+                    ) : (
+                      <ScatterChart>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="x" name="Index" tick={{ fontSize: 11 }} />
+                        <YAxis dataKey="y" name="Value" tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          formatter={(value: number) => formatCurrency(value)}
+                          labelFormatter={(_, payload: any) => payload?.[0]?.payload?.name ?? 'Point'}
+                        />
+                        <Scatter
+                          data={assetAllocationSeries.map((row, index) => ({
+                            x: index + 1,
+                            y: row.value,
+                            name: row.category,
+                          }))}
+                          fill={CHART_COLORS[0]}
+                        />
+                      </ScatterChart>
+                    )}
+                  </ResponsiveContainer>
+                )
               ) : (
                 <div className="h-[250px] flex items-center justify-center text-gray-400">
                   <p>No asset data available</p>
@@ -3796,14 +4009,14 @@ const FinanceDashboard: React.FC = () => {
                 <Select
                   value={financeChartModes.profitabilityMargins}
                   onValueChange={(value) =>
-                    setFinanceSeriesChartMode('profitabilityMargins', value as FinanceSeriesChartType)
+                    setFinanceChartMode('profitabilityMargins', value as FinanceChartVisualType)
                   }
                 >
                   <SelectTrigger className="h-8 w-[100px] text-xs">
                     <SelectValue placeholder="Visual" />
                   </SelectTrigger>
                   <SelectContent>
-                    {FINANCE_SERIES_CHART_OPTIONS.map(option => (
+                    {FINANCE_CHART_OPTIONS.map(option => (
                       <SelectItem key={option} value={option} className="text-xs">
                         {FINANCE_CHART_TYPE_LABEL[option]}
                       </SelectItem>
@@ -3811,37 +4024,93 @@ const FinanceDashboard: React.FC = () => {
                   </SelectContent>
                 </Select>
               </div>
-              <ResponsiveContainer width="100%" height={200}>
-                {financeChartModes.profitabilityMargins === 'bar' ? (
-                  <BarChart data={chartData.profitabilityMargins} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
-                    <YAxis type="category" dataKey="name" tick={{ fontSize: 12 }} width={120} />
-                    <Tooltip formatter={(value: number) => `${value.toFixed(1)}%`} />
-                    <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-                      {chartData.profitabilityMargins.map((entry, index) => (
-                        <Cell key={index} fill={entry.color} />
+              {financeChartModes.profitabilityMargins === 'table' ? (
+                <div className="h-[200px] overflow-auto rounded-md border">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr>
+                        <th className="text-left p-2">Margin</th>
+                        <th className="text-right p-2">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {profitabilityMarginSeries.map((row, index) => (
+                        <tr key={index} className="border-t">
+                          <td className="p-2">{row.category}</td>
+                          <td className="p-2 text-right">{row.value.toFixed(1)}%</td>
+                        </tr>
                       ))}
-                    </Bar>
-                  </BarChart>
-                ) : financeChartModes.profitabilityMargins === 'line' ? (
-                  <LineChart data={profitabilityMarginSeries}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="category" tick={{ fontSize: 12 }} />
-                    <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(value: number) => `${value.toFixed(1)}%`} />
-                    <Line type="monotone" dataKey="value" stroke="#16a34a" strokeWidth={2.5} dot={{ r: 4 }} />
-                  </LineChart>
-                ) : (
-                  <AreaChart data={profitabilityMarginSeries}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="category" tick={{ fontSize: 12 }} />
-                    <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
-                    <Tooltip formatter={(value: number) => `${value.toFixed(1)}%`} />
-                    <Area type="monotone" dataKey="value" stroke="#16a34a" fill="#16a34a" fillOpacity={0.25} />
-                  </AreaChart>
-                )}
-              </ResponsiveContainer>
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height={200}>
+                  {financeChartModes.profitabilityMargins === 'bar' ? (
+                    <BarChart data={chartData.profitabilityMargins} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
+                      <YAxis type="category" dataKey="name" tick={{ fontSize: 12 }} width={120} />
+                      <Tooltip formatter={(value: number) => `${value.toFixed(1)}%`} />
+                      <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                        {chartData.profitabilityMargins.map((entry, index) => (
+                          <Cell key={index} fill={entry.color} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  ) : financeChartModes.profitabilityMargins === 'line' ? (
+                    <LineChart data={profitabilityMarginSeries}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="category" tick={{ fontSize: 12 }} />
+                      <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(value: number) => `${value.toFixed(1)}%`} />
+                      <Line type="monotone" dataKey="value" stroke={CHART_COLORS[5]} strokeWidth={2.5} dot={{ r: 4 }} />
+                    </LineChart>
+                  ) : financeChartModes.profitabilityMargins === 'area' ? (
+                    <AreaChart data={profitabilityMarginSeries}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="category" tick={{ fontSize: 12 }} />
+                      <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(value: number) => `${value.toFixed(1)}%`} />
+                      <Area type="monotone" dataKey="value" stroke={CHART_COLORS[5]} fill={CHART_COLORS[5]} fillOpacity={0.25} />
+                    </AreaChart>
+                  ) : financeChartModes.profitabilityMargins === 'pie' ? (
+                    <PieChart margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
+                      <Pie
+                        data={profitabilityMarginSeries.map((row) => ({ name: row.category, value: Math.abs(row.value) }))}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={28}
+                        outerRadius={72}
+                        dataKey="value"
+                        nameKey="name"
+                      >
+                        {profitabilityMarginSeries.map((_, index) => (
+                          <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(value: number) => `${value.toFixed(1)}%`} />
+                    </PieChart>
+                  ) : (
+                    <ScatterChart>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="x" name="Index" tick={{ fontSize: 11 }} />
+                      <YAxis dataKey="y" name="Margin" tick={{ fontSize: 11 }} unit="%" />
+                      <Tooltip
+                        formatter={(value: number) => `${value.toFixed(1)}%`}
+                        labelFormatter={(_, payload: any) => payload?.[0]?.payload?.name ?? 'Point'}
+                      />
+                      <Scatter
+                        data={profitabilityMarginSeries.map((row, index) => ({
+                          x: index + 1,
+                          y: row.value,
+                          name: row.category,
+                        }))}
+                        fill={CHART_COLORS[5]}
+                      />
+                    </ScatterChart>
+                  )}
+                </ResponsiveContainer>
+              )}
             </Card>
           </div>
         </TabsContent>
