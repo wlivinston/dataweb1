@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { Suspense, lazy, useState } from 'react';
 import Navbar from '@/components/Navbar';
 import Hero from '@/components/Hero';
-import Services from '@/components/Services';
-import About from '@/components/About';
 import Footer from '@/components/Footer';
+const Services = lazy(() => import('@/components/Services'));
+const About = lazy(() => import('@/components/About'));
 
 const AppLayout: React.FC = () => {
   const [activeSection, setActiveSection] = useState('home');
@@ -31,7 +31,13 @@ const AppLayout: React.FC = () => {
         setMobileMenuOpen={setMobileMenuOpen}
       />
       <main>
-        {renderSection()}
+        {activeSection === 'home' ? (
+          renderSection()
+        ) : (
+          <Suspense fallback={<div className="py-16 text-center text-gray-500">Loading section...</div>}>
+            {renderSection()}
+          </Suspense>
+        )}
       </main>
       <Footer />
     </div>

@@ -1,3 +1,4 @@
+import { Suspense, lazy, type ReactNode } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -5,19 +6,27 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AuthProvider } from "@/hooks/useAuth";
-import Index from "./pages/Index";
-import NotFound from "./pages/NotFound";
-import AnalyzePage from "./pages/Analyze";
-import BlogPage from "./pages/BlogPage";
-import BlogPostPage from "./pages/BlogPostPage";
-import PricingPage from "./pages/Pricing";
-import RequestReportPage from "./pages/RequestReport";
-import Login from "./pages/Login";
-import FinancePage from "./pages/Finance";
-import CookiePolicyPage from "./pages/CookiePolicy";
 import CookieConsentBanner from "@/components/CookieConsentBanner";
 
 const queryClient = new QueryClient();
+const Index = lazy(() => import("./pages/Index"));
+const NotFound = lazy(() => import("./pages/NotFound"));
+const AnalyzePage = lazy(() => import("./pages/Analyze"));
+const BlogPage = lazy(() => import("./pages/BlogPage"));
+const BlogPostPage = lazy(() => import("./pages/BlogPostPage"));
+const PricingPage = lazy(() => import("./pages/Pricing"));
+const RequestReportPage = lazy(() => import("./pages/RequestReport"));
+const Login = lazy(() => import("./pages/Login"));
+const FinancePage = lazy(() => import("./pages/Finance"));
+const CookiePolicyPage = lazy(() => import("./pages/CookiePolicy"));
+
+const RouteLoader = () => (
+  <div className="min-h-[40vh] flex items-center justify-center text-gray-500">Loading...</div>
+);
+
+const withSuspense = (node: ReactNode) => (
+  <Suspense fallback={<RouteLoader />}>{node}</Suspense>
+);
 
 const App = () => (
   <ThemeProvider defaultTheme="light">
@@ -28,16 +37,16 @@ const App = () => (
           <Sonner />
           <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
             <Routes>
-              <Route path="/" element={<Index />} />
-              <Route path="/analyze" element={<AnalyzePage />} />
-              <Route path="/blog" element={<BlogPage />} />
-              <Route path="/blog/:slug" element={<BlogPostPage />} />
-              <Route path="/pricing" element={<PricingPage />} />
-              <Route path="/request-report" element={<RequestReportPage />} />
-              <Route path="/finance" element={<FinancePage />} />
-              <Route path="/login" element={<Login />} />
-              <Route path="/cookie-policy" element={<CookiePolicyPage />} />
-              <Route path="*" element={<NotFound />} />
+              <Route path="/" element={withSuspense(<Index />)} />
+              <Route path="/analyze" element={withSuspense(<AnalyzePage />)} />
+              <Route path="/blog" element={withSuspense(<BlogPage />)} />
+              <Route path="/blog/:slug" element={withSuspense(<BlogPostPage />)} />
+              <Route path="/pricing" element={withSuspense(<PricingPage />)} />
+              <Route path="/request-report" element={withSuspense(<RequestReportPage />)} />
+              <Route path="/finance" element={withSuspense(<FinancePage />)} />
+              <Route path="/login" element={withSuspense(<Login />)} />
+              <Route path="/cookie-policy" element={withSuspense(<CookiePolicyPage />)} />
+              <Route path="*" element={withSuspense(<NotFound />)} />
             </Routes>
             <CookieConsentBanner />
           </BrowserRouter>

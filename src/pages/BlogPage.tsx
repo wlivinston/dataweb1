@@ -1,8 +1,8 @@
-import React from 'react';
-import Blog from '@/components/Blog';
+import React, { Suspense, lazy } from 'react';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import SeoMeta from '@/components/SeoMeta';
+const Blog = lazy(() => import('@/components/Blog'));
 
 const BlogPage: React.FC = () => {
   return (
@@ -14,7 +14,9 @@ const BlogPage: React.FC = () => {
       />
       <Navbar />
       <main className="pt-16">
-        <Blog />
+        <Suspense fallback={<div className="py-16 text-center text-gray-500">Loading blog posts...</div>}>
+          <Blog />
+        </Suspense>
       </main>
       <Footer />
     </div>

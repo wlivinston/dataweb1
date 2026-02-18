@@ -1,8 +1,9 @@
-// Finance Page — Route wrapper for /finance
+import { Suspense, lazy } from 'react';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
-import FinanceDashboard from '@/components/FinanceDashboard';
 import SeoMeta from '@/components/SeoMeta';
+
+const FinanceDashboard = lazy(() => import('@/components/FinanceDashboard'));
 
 const FinancePage = () => {
   return (
@@ -15,7 +16,9 @@ const FinancePage = () => {
       <Navbar />
       <main className="pt-20 pb-16">
         <div className="container mx-auto px-4 max-w-7xl">
-          <FinanceDashboard />
+          <Suspense fallback={<div className="py-16 text-center text-gray-500">Loading finance engine...</div>}>
+            <FinanceDashboard />
+          </Suspense>
         </div>
       </main>
       <Footer />
