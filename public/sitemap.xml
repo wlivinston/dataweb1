@@ -180,4 +180,10 @@
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
+  <url>
+    <loc>https://www.dataafrik.com/blog/ai-policy-considerations-for-africa-preparing-for-a-responsible-and-inclusive-future</loc>
+    <lastmod>2026-02-18</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
 </urlset>

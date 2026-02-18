@@ -600,6 +600,36 @@
   background: linear-gradient(180deg, rgba(16, 185, 129, 0.14), rgba(59, 130, 246, 0.1));
 }
 
+/* AI policy visual blocks */
+.markdown-preview .policy-pillars {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  margin: 16px 0 24px;
+  flex-wrap: wrap;
+}
+
+.markdown-preview .policy-box {
+  flex: 1 1 180px;
+  min-height: 84px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 14px;
+  padding: 14px;
+  background: linear-gradient(180deg, rgba(99, 102, 241, 0.12), rgba(16, 185, 129, 0.08));
+  color: rgb(15 23 42);
+}
+
+.markdown-preview .policy-title {
+  font-weight: 900;
+  margin-bottom: 6px;
+}
+
+.markdown-preview .policy-desc {
+  color: rgba(15, 23, 42, 0.72);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
 /* Responsive typography */
 @media (max-width: 768px) {
   .blog-title {
