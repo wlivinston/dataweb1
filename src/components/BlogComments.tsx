@@ -5,7 +5,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { MessageCircle, Reply, Heart, User, LogIn, AlertCircle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { getApiUrl } from '@/lib/publicConfig';
+import { PUBLIC_CONFIG, getApiUrl } from '@/lib/publicConfig';
 import { useAuth } from '@/hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 
@@ -28,11 +28,28 @@ interface Comment {
 interface BlogCommentsProps {
   postId?: string | number | null;
   postSlug: string;
+  postSeed?: {
+    title?: string;
+    excerpt?: string;
+    content?: string;
+    author?: string;
+    category?: string;
+    featured?: boolean;
+    date?: string;
+    readTime?: string;
+    tags?: string[];
+  };
 }
 
 interface ApiErrorResponse {
   error?: string;
   errors?: Array<{ msg?: string }>;
+}
+
+type ResolveFailureReason = 'network' | 'not_found' | null;
+interface ResolveResult {
+  id: string | null;
+  reason: ResolveFailureReason;
 }
 
 const isJsonResponse = (response: Response): boolean =>
@@ -59,6 +76,53 @@ const normalizeSlug = (value: string): string =>
     .replace(/[^a-z0-9-]/g, "")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
+
+const safeDecode = (value: string): string => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
+const buildSlugCandidates = (...values: Array<string | null | undefined>): string[] => {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+
+  const push = (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+    seen.add(trimmed);
+    ordered.push(trimmed);
+  };
+
+  for (const value of values) {
+    const raw = String(value || "").trim();
+    if (!raw) continue;
+
+    const decoded = safeDecode(raw);
+    push(raw);
+    push(decoded);
+    push(raw.toLowerCase());
+    push(decoded.toLowerCase());
+    push(normalizeSlug(raw));
+    push(normalizeSlug(decoded));
+  }
+
+  return ordered;
+};
+
+const isNetworkFetchError = (error: unknown): boolean => {
+  if (error instanceof TypeError) return true;
+  const message = String((error as any)?.message || error || '').toLowerCase();
+  return (
+    message.includes('failed to fetch') ||
+    message.includes('err_connection_refused') ||
+    message.includes('networkerror')
+  );
+};
 
 const normalizeComment = (raw: Partial<Comment> & { replies?: unknown }): Comment => {
   const rawReplies = Array.isArray(raw.replies) ? raw.replies : [];
@@ -101,17 +165,21 @@ const extractErrorMessage = async (response: Response, fallback: string): Promis
   return fallback;
 };
 
-const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
+const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug, postSeed }) => {
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState({ content: '' });
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [replyContent, setReplyContent] = useState('');
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [editingContent, setEditingContent] = useState('');
+  const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [resolvedPostId, setResolvedPostId] = useState<string | null>(() =>
     postId == null ? null : String(postId).trim() || null
   );
   const [isResolvingPostId, setIsResolvingPostId] = useState(false);
+  const [resolveFailureReason, setResolveFailureReason] = useState<ResolveFailureReason>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -132,38 +200,44 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
     };
   }, [session?.access_token]);
 
-  const resolveBackendPostId = useCallback(async (): Promise<string | null> => {
+  const resolveBackendPostId = useCallback(async (): Promise<ResolveResult> => {
     const direct = postId == null ? '' : String(postId).trim();
     if (direct) {
       setResolvedPostId(direct);
-      return direct;
+      return { id: direct, reason: null };
     }
 
-    const slug = normalizeSlug(postSlug);
-    if (!slug) {
+    const slugCandidates = buildSlugCandidates(postSlug);
+    if (slugCandidates.length === 0) {
       setResolvedPostId(null);
-      return null;
+      return { id: null, reason: 'not_found' };
     }
+
+    const normalizedSlugCandidates = slugCandidates.map((candidate) => normalizeSlug(candidate)).filter(Boolean);
+    const canonicalSlug = normalizedSlugCandidates[0] || slugCandidates[0];
 
     setIsResolvingPostId(true);
+    setResolveFailureReason(null);
     try {
-      const lookupResponse = await fetch(
-        getApiUrl(`/api/blog/posts/${encodeURIComponent(slug)}`),
-        {
-          headers: { ...authHeader },
-        }
-      );
-
-      if (lookupResponse.ok) {
-        const payload = await parseJsonStrict<{ post?: { id?: string | number } }>(
-          lookupResponse,
-          "Lookup post by slug failed"
+      for (const slugCandidate of slugCandidates) {
+        const lookupResponse = await fetch(
+          getApiUrl(`/api/blog/posts/${encodeURIComponent(slugCandidate)}`),
+          {
+            headers: { ...authHeader },
+          }
         );
-        const id = payload?.post?.id;
-        const normalizedId = id == null ? '' : String(id).trim();
-        if (normalizedId) {
-          setResolvedPostId(normalizedId);
-          return normalizedId;
+
+        if (lookupResponse.ok) {
+          const payload = await parseJsonStrict<{ post?: { id?: string | number } }>(
+            lookupResponse,
+            "Lookup post by slug failed"
+          );
+          const id = payload?.post?.id;
+          const normalizedId = id == null ? '' : String(id).trim();
+          if (normalizedId) {
+            setResolvedPostId(normalizedId);
+            return { id: normalizedId, reason: null };
+          }
         }
       }
 
@@ -173,7 +247,18 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
           'Content-Type': 'application/json',
           ...authHeader,
         },
-        body: JSON.stringify({ slug }),
+        body: JSON.stringify({
+          slug: canonicalSlug,
+          title: postSeed?.title,
+          excerpt: postSeed?.excerpt,
+          content: postSeed?.content,
+          author: postSeed?.author,
+          category: postSeed?.category,
+          featured: Boolean(postSeed?.featured),
+          date: postSeed?.date,
+          readTime: postSeed?.readTime,
+          tags: Array.isArray(postSeed?.tags) ? postSeed.tags : undefined,
+        }),
       });
 
       if (ensureResponse.ok) {
@@ -185,51 +270,110 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
         const normalizedEnsuredId = ensuredId == null ? '' : String(ensuredId).trim();
         if (normalizedEnsuredId) {
           setResolvedPostId(normalizedEnsuredId);
-          return normalizedEnsuredId;
+          return { id: normalizedEnsuredId, reason: null };
+        }
+      }
+
+      const normalizedCandidateSet = new Set(normalizedSlugCandidates);
+
+      // Fallback: ask backend to sync markdown by slug (if markdown files are available at runtime).
+      const syncResponse = await fetch(getApiUrl('/api/blog/sync/markdown'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeader,
+        },
+        body: JSON.stringify({ slugs: slugCandidates }),
+      });
+
+      if (syncResponse.ok) {
+        const syncPayload = await parseJsonStrict<{ posts?: Array<{ id?: string | number; slug?: string }> }>(
+          syncResponse,
+          "Sync markdown fallback failed"
+        );
+        const syncedPost = Array.isArray(syncPayload?.posts)
+          ? syncPayload.posts.find((candidate: any) =>
+              normalizedCandidateSet.has(normalizeSlug(candidate?.slug))
+            )
+          : null;
+
+        const syncedId = syncedPost?.id == null ? '' : String(syncedPost.id).trim();
+        if (syncedId) {
+          setResolvedPostId(syncedId);
+          return { id: syncedId, reason: null };
         }
       }
 
       // Final fallback: query list endpoint and match slug client-side.
-      const listResponse = await fetch(
-        getApiUrl(`/api/blog/posts?limit=50&search=${encodeURIComponent(slug)}`),
-        {
-          headers: { ...authHeader },
-        }
-      );
+      let page = 1;
+      let totalPages = 1;
 
-      if (listResponse.ok) {
-        const listPayload = await parseJsonStrict<{ posts?: Array<{ id?: string | number; slug?: string }> }>(
+      while (page <= totalPages && page <= 10) {
+        const listResponse = await fetch(
+          getApiUrl(`/api/blog/posts?limit=100&page=${page}`),
+          {
+            headers: { ...authHeader },
+          }
+        );
+
+        if (!listResponse.ok) {
+          break;
+        }
+
+        const listPayload = await parseJsonStrict<{
+          posts?: Array<{ id?: string | number; slug?: string }>;
+          pagination?: { pages?: number };
+        }>(
           listResponse,
           "List post fallback failed"
         );
+
+        totalPages = Number(listPayload?.pagination?.pages || 1);
         const matchedPost = Array.isArray(listPayload?.posts)
-          ? listPayload.posts.find((candidate: any) => normalizeSlug(candidate?.slug) === slug)
+          ? listPayload.posts.find((candidate: any) =>
+              normalizedCandidateSet.has(normalizeSlug(candidate?.slug))
+            )
           : null;
 
         const matchedId = matchedPost?.id == null ? '' : String(matchedPost.id).trim();
         if (matchedId) {
           setResolvedPostId(matchedId);
-          return matchedId;
+          return { id: matchedId, reason: null };
         }
+
+        page += 1;
       }
     } catch (resolveError) {
+      const reason: ResolveFailureReason = isNetworkFetchError(resolveError) ? 'network' : 'not_found';
+      setResolveFailureReason(reason);
       console.error('Error resolving backend post id:', resolveError);
+      setResolvedPostId(null);
+      return { id: null, reason };
     } finally {
       setIsResolvingPostId(false);
     }
 
+    setResolveFailureReason('not_found');
     setResolvedPostId(null);
-    return null;
-  }, [authHeader, postId, postSlug]);
+    return { id: null, reason: 'not_found' };
+  }, [authHeader, postId, postSlug, postSeed]);
 
   const fetchComments = useCallback(async () => {
     setIsLoading(true);
 
     try {
-      const effectivePostId = await resolveBackendPostId();
+      const resolution = await resolveBackendPostId();
+      const effectivePostId = resolution.id;
       if (!effectivePostId) {
         setComments([]);
-        setError('Comments are unavailable for this article until it is synced in the backend `blog_posts` table.');
+        if (resolution.reason === 'network') {
+          const backendTarget = PUBLIC_CONFIG.backendUrl || 'your backend URL';
+          setError(
+            `Comments service is unavailable because the backend is unreachable (${backendTarget}). Start the backend server or update VITE_BACKEND_URL.`
+          );
+        } else {
+          setError('Comments are unavailable for this article until it is synced in the backend `blog_posts` table.');
+        }
         return;
       }
 
@@ -398,6 +542,109 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
   };
 
   const renderComment = (comment: Comment, isReply = false) => (
+    (() => {
+      const currentUserEmail = String(user?.email || '').trim().toLowerCase();
+      const commentEmail = String(comment.author_email || '').trim().toLowerCase();
+      const canManageComment = Boolean(currentUserEmail && commentEmail && currentUserEmail === commentEmail);
+      const isEditing = editingCommentId === comment.id;
+      const isDeleting = deletingCommentId === comment.id;
+
+      const startEditingComment = () => {
+        if (!canManageComment) return;
+        setEditingCommentId(comment.id);
+        setEditingContent(comment.content);
+      };
+
+      const cancelEditingComment = () => {
+        setEditingCommentId(null);
+        setEditingContent('');
+      };
+
+      const saveEditedComment = async () => {
+        if (!session?.access_token) {
+          setError('You must be logged in to edit comments.');
+          return;
+        }
+
+        const trimmedContent = editingContent.trim();
+        if (!trimmedContent) {
+          setError('Edited comment cannot be empty.');
+          return;
+        }
+
+        setIsSubmitting(true);
+        setError(null);
+        setSuccess(null);
+
+        try {
+          const response = await fetch(getApiUrl(`/api/comments/${encodeURIComponent(comment.id)}`), {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              ...authHeader,
+            },
+            body: JSON.stringify({ content: trimmedContent }),
+          });
+
+          if (!response.ok) {
+            const message = await extractErrorMessage(response, 'Failed to update comment.');
+            setError(message);
+            return;
+          }
+
+          setSuccess('Comment updated successfully.');
+          cancelEditingComment();
+          await fetchComments();
+        } catch (editError) {
+          console.error('Error updating comment:', editError);
+          setError('Failed to update comment. Please try again.');
+        } finally {
+          setIsSubmitting(false);
+        }
+      };
+
+      const deleteComment = async () => {
+        if (!session?.access_token) {
+          setError('You must be logged in to delete comments.');
+          return;
+        }
+
+        if (!window.confirm('Delete this comment? This action cannot be undone.')) {
+          return;
+        }
+
+        setDeletingCommentId(comment.id);
+        setError(null);
+        setSuccess(null);
+
+        try {
+          const response = await fetch(getApiUrl(`/api/comments/${encodeURIComponent(comment.id)}`), {
+            method: 'DELETE',
+            headers: {
+              ...authHeader,
+            },
+          });
+
+          if (!response.ok) {
+            const message = await extractErrorMessage(response, 'Failed to delete comment.');
+            setError(message);
+            return;
+          }
+
+          setSuccess('Comment deleted successfully.');
+          if (editingCommentId === comment.id) {
+            cancelEditingComment();
+          }
+          await fetchComments();
+        } catch (deleteError) {
+          console.error('Error deleting comment:', deleteError);
+          setError('Failed to delete comment. Please try again.');
+        } finally {
+          setDeletingCommentId(null);
+        }
+      };
+
+      return (
     <div
       key={comment.id}
       className={`bg-white rounded-lg p-6 ${isReply ? 'ml-8 border-l-2 border-gray-200' : 'border border-gray-200'}`}
@@ -432,7 +679,26 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
             </Badge>
           </div>
 
-          <p className="text-gray-700 mb-4 leading-relaxed">{comment.content}</p>
+          {isEditing ? (
+            <div className="mb-4">
+              <Textarea
+                value={editingContent}
+                onChange={(e) => setEditingContent(e.target.value)}
+                className="mb-3"
+                rows={4}
+              />
+              <div className="flex gap-2">
+                <Button onClick={saveEditedComment} disabled={isSubmitting} size="sm">
+                  {isSubmitting ? 'Saving...' : 'Save'}
+                </Button>
+                <Button variant="outline" onClick={cancelEditingComment} size="sm">
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-gray-700 mb-4 leading-relaxed">{comment.content}</p>
+          )}
 
           <div className="flex items-center gap-4">
             <button
@@ -454,6 +720,24 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
               <Reply className="h-4 w-4" />
               Reply
             </button>
+
+            {canManageComment && !isEditing && (
+              <>
+                <button
+                  onClick={startEditingComment}
+                  className="text-sm text-gray-500 hover:text-blue-600 transition-colors"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={deleteComment}
+                  disabled={isDeleting}
+                  className="text-sm text-gray-500 hover:text-red-600 transition-colors disabled:opacity-60"
+                >
+                  {isDeleting ? 'Deleting...' : 'Delete'}
+                </button>
+              </>
+            )}
           </div>
 
           {replyTo === comment.id && (
@@ -489,6 +773,8 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug }) => {
         </div>
       </div>
     </div>
+      );
+    })()
   );
 
   return (

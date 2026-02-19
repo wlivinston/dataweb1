@@ -24,6 +24,7 @@ const navItems: NavItem[] = [
   { id: 'services', label: 'Services', type: 'section' },
   { id: 'analyze', label: 'Analyze Your Data', type: 'link', href: '/analyze' },
   { id: 'finance', label: 'Finance', type: 'link', href: '/finance' },
+  { id: 'ml-engine', label: 'ML Engine', type: 'link', href: '/ml-engine' },
   { id: 'pricing', label: 'Pricing', type: 'link', href: '/pricing' },
   { id: 'blog', label: 'Blog', type: 'link', href: '/blog' },
   { id: 'about', label: 'Who We Are', type: 'section' },

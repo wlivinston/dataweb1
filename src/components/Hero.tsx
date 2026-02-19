@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
-import { ArrowRight, BarChart3, Upload, Zap, FileText, DollarSign } from 'lucide-react';
+import { ArrowRight, BarChart3, Upload, Zap, FileText, DollarSign, BrainCircuit } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 interface HeroProps {
@@ -66,11 +66,19 @@ const Hero: React.FC<HeroProps> = ({ setActiveSection }) => {
               <BarChart3 className="mr-2 h-4 w-4" />
               Finance Engine
             </Button>
+            <Button
+              size="lg"
+              onClick={() => navigate('/ml-engine')}
+              className="bg-gradient-to-r from-blue-600 to-purple-600 text-white hover:from-blue-700 hover:to-purple-700"
+            >
+              <BrainCircuit className="mr-2 h-4 w-4" />
+              ML Engine
+            </Button>
           </div>
         </div>
 
         {/* Feature Icons */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-12">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 mt-12">
           <div className="text-center p-6 rounded-lg bg-white/10 backdrop-blur-sm border border-white/20">
             <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
               <Upload className="h-8 w-8 text-blue-300" />
@@ -91,6 +99,13 @@ const Hero: React.FC<HeroProps> = ({ setActiveSection }) => {
             </div>
             <h3 className="text-xl font-semibold mb-2 text-white">PDF Reports & Expert Analysis</h3>
             <p className="text-gray-300">Download reports or let our analysts write them for you</p>
+          </div>
+          <div className="text-center p-6 rounded-lg bg-white/10 backdrop-blur-sm border border-white/20">
+            <div className="w-16 h-16 bg-violet-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+              <BrainCircuit className="h-8 w-8 text-violet-300" />
+            </div>
+            <h3 className="text-xl font-semibold mb-2 text-white">ML Engine</h3>
+            <p className="text-gray-300">Train models, compare algorithms & generate predictions in-browser</p>
           </div>
         </div>
       </div>

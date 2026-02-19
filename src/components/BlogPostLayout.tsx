@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -9,9 +9,11 @@ import { Link } from "react-router-dom";
 import RequestReportCTA from "./RequestReportCTA";
 import { Input } from "@/components/ui/input";
 import { subscribeToNewsletter } from "@/lib/newsletter";
+import { getApiUrl } from "@/lib/publicConfig";
 import { toast } from "sonner";
-import BlogComments from "@/components/BlogComments";
 import { useAuth } from "@/hooks/useAuth";
+
+const BlogComments = React.lazy(() => import("@/components/BlogComments"));
 
 export interface BlogPostLayoutData {
   slug?: string;
@@ -24,6 +26,8 @@ export interface BlogPostLayoutData {
   category: string;
   featured?: boolean;
   qualification?: string;
+  likeCount?: number;
+  userLiked?: boolean;
 }
 
 interface BlogPostLayoutProps {
@@ -48,8 +52,10 @@ function extractHeadings(markdown: string): { id: string; text: string; level: n
 }
 
 const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = null }) => {
-  const { user } = useAuth();
-  const [likes, setLikes] = useState(0);
+  const { user, session } = useAuth();
+  const [likes, setLikes] = useState<number>(Number(post.likeCount || 0));
+  const [hasLiked, setHasLiked] = useState<boolean>(Boolean(post.userLiked));
+  const [isLiking, setIsLiking] = useState(false);
   const [newsletterEmail, setNewsletterEmail] = useState("");
   const [isSubscribing, setIsSubscribing] = useState(false);
 
@@ -57,6 +63,11 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
     if (!user?.email) return;
     setNewsletterEmail((currentEmail) => currentEmail || user.email);
   }, [user?.email]);
+
+  useEffect(() => {
+    setLikes(Number(post.likeCount || 0));
+    setHasLiked(Boolean(post.userLiked));
+  }, [post.likeCount, post.userLiked, post.slug]);
 
   const headings = useMemo(() => extractHeadings(post.content), [post.content]);
 
@@ -68,8 +79,53 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
     });
   };
 
-  const handleLike = () => {
-    setLikes(prev => prev + 1);
+  const handleLike = async () => {
+    if (!session?.access_token) {
+      toast.error("Please log in to like this post.");
+      return;
+    }
+
+    if (hasLiked) {
+      return;
+    }
+
+    const slug = (post.slug || "").trim();
+    if (!slug) {
+      toast.error("Unable to like this post right now.");
+      return;
+    }
+
+    setIsLiking(true);
+    try {
+      const response = await fetch(getApiUrl(`/api/blog/posts/${encodeURIComponent(slug)}/like`), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        message?: string;
+        liked?: boolean;
+        like_count?: number;
+      };
+
+      if (!response.ok) {
+        toast.error(payload.error || "Failed to like post.");
+        return;
+      }
+
+      setHasLiked(Boolean(payload.liked ?? true));
+      setLikes((current) => {
+        if (typeof payload.like_count === "number") return payload.like_count;
+        return current + (hasLiked ? 0 : 1);
+      });
+    } catch (error) {
+      toast.error("Failed to like post. Please try again.");
+    } finally {
+      setIsLiking(false);
+    }
   };
 
   const handleShare = (platform: string) => {
@@ -222,9 +278,10 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
                     variant="outline"
                     size="sm"
                     onClick={handleLike}
-                    className="flex items-center gap-2"
+                    disabled={isLiking || hasLiked}
+                    className={`flex items-center gap-2 ${hasLiked ? "border-red-300 text-red-600" : ""}`}
                   >
-                    <Heart className="h-4 w-4" />
+                    <Heart className={`h-4 w-4 ${hasLiked ? "fill-current text-red-500" : ""}`} />
                     {likes} Likes
                   </Button>
                 </div>
@@ -259,7 +316,22 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
 
             {/* Comments */}
             <div className="mt-12 pt-8 border-t border-gray-200">
-              <BlogComments postId={backendPostId} postSlug={post.slug || ""} />
+              <Suspense fallback={<div className="text-sm text-gray-500">Loading comments...</div>}>
+                <BlogComments
+                  postId={backendPostId}
+                  postSlug={post.slug || ""}
+                  postSeed={{
+                    title: post.title,
+                    excerpt: post.excerpt,
+                    content: post.content,
+                    author: post.author,
+                    category: post.category,
+                    featured: Boolean(post.featured),
+                    date: post.date,
+                    readTime: post.readTime,
+                  }}
+                />
+              </Suspense>
             </div>
           </article>
 

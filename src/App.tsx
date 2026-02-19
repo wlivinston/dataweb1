@@ -19,6 +19,7 @@ const RequestReportPage = lazy(() => import("./pages/RequestReport"));
 const Login = lazy(() => import("./pages/Login"));
 const FinancePage = lazy(() => import("./pages/Finance"));
 const CookiePolicyPage = lazy(() => import("./pages/CookiePolicy"));
+const MLEnginePage = lazy(() => import("./pages/MLEngine"));
 
 const RouteLoader = () => (
   <div className="min-h-[40vh] flex items-center justify-center text-gray-500">Loading...</div>
@@ -46,6 +47,7 @@ const App = () => (
               <Route path="/finance" element={withSuspense(<FinancePage />)} />
               <Route path="/login" element={withSuspense(<Login />)} />
               <Route path="/cookie-policy" element={withSuspense(<CookiePolicyPage />)} />
+              <Route path="/ml-engine" element={withSuspense(<MLEnginePage />)} />
               <Route path="*" element={withSuspense(<NotFound />)} />
             </Routes>
             <CookieConsentBanner />

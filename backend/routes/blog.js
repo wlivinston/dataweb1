@@ -1,4 +1,5 @@
 const express = require('express');
+const net = require('net');
 const { supabase } = require('../config/supabase');
 const { query } = require('../config/database');
 const { optionalAuth } = require('../middleware/auth');
@@ -76,6 +77,117 @@ function normalizeSlug(slugInput) {
     .replace(/[^a-z0-9-]/g, '')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+function normalizeInetCandidate(rawValue) {
+  if (!rawValue) return null;
+
+  const first = String(rawValue)
+    .split(',')[0]
+    .trim()
+    .replace(/^\[|\]$/g, '');
+
+  if (!first) return null;
+
+  const v4WithPort = first.match(/^(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?$/);
+  if (v4WithPort) {
+    const ip = v4WithPort[1];
+    return net.isIP(ip) ? ip : null;
+  }
+
+  const normalized = first.replace(/^::ffff:/i, '');
+  return net.isIP(normalized) ? normalized : null;
+}
+
+function getClientInet(req) {
+  const candidates = [
+    req.ip,
+    req.headers['x-forwarded-for'],
+    req.socket?.remoteAddress,
+    req.connection?.remoteAddress,
+  ];
+
+  for (const candidate of candidates) {
+    const ip = normalizeInetCandidate(candidate);
+    if (ip) return ip;
+  }
+
+  return null;
+}
+
+async function getTableColumns(tableName) {
+  const result = await query(
+    `SELECT column_name
+     FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = $1`,
+    [tableName]
+  );
+
+  return new Set(result.rows.map((row) => String(row.column_name || '').trim()));
+}
+
+function buildPostLikeIdentity(req, postId, postLikeColumns) {
+  const userId = String(req.user?.id || req.user?.auth_user_id || '').trim();
+  const userEmail = String(req.user?.email || '').trim().toLowerCase();
+
+  if (userId && postLikeColumns.has('user_id')) {
+    const insertColumns = ['post_id', 'user_id'];
+    const insertValues = [postId, userId];
+
+    if (postLikeColumns.has('user_email') && userEmail) {
+      insertColumns.push('user_email');
+      insertValues.push(userEmail);
+    }
+
+    if (postLikeColumns.has('ip_address')) {
+      const ip = getClientInet(req);
+      if (ip) {
+        insertColumns.push('ip_address');
+        insertValues.push(ip);
+      }
+    }
+
+    return {
+      whereClause: 'post_id = $1 AND user_id = $2',
+      whereValues: [postId, userId],
+      insertColumns,
+      insertValues,
+    };
+  }
+
+  if (userEmail && postLikeColumns.has('user_email')) {
+    const insertColumns = ['post_id', 'user_email'];
+    const insertValues = [postId, userEmail];
+
+    if (postLikeColumns.has('ip_address')) {
+      const ip = getClientInet(req);
+      if (ip) {
+        insertColumns.push('ip_address');
+        insertValues.push(ip);
+      }
+    }
+
+    return {
+      whereClause: 'post_id = $1 AND lower(user_email) = lower($2)',
+      whereValues: [postId, userEmail],
+      insertColumns,
+      insertValues,
+    };
+  }
+
+  if (postLikeColumns.has('ip_address')) {
+    const requesterIp = getClientInet(req);
+    if (!requesterIp) return null;
+
+    return {
+      whereClause: 'post_id = $1 AND ip_address = $2',
+      whereValues: [postId, requesterIp],
+      insertColumns: ['post_id', 'ip_address'],
+      insertValues: [postId, requesterIp],
+    };
+  }
+
+  return null;
 }
 
 function parseReadTimeMinutes(input) {
@@ -387,7 +499,21 @@ async function getPublishedPostBySlug(slugInput) {
       'SELECT * FROM blog_posts WHERE lower(slug) = lower($1) AND published = true LIMIT 1',
       [slug]
     );
-    return fallback.rows?.[0] || null;
+    if (fallback.rows?.[0]) {
+      return fallback.rows[0];
+    }
+
+    // Final fallback for historical rows where slug was stored with spaces/uppercase
+    // before normalization was standardized.
+    const normalizedFallback = await query(
+      `SELECT * FROM blog_posts
+       WHERE trim(both '-' from regexp_replace(lower(slug), '[^a-z0-9]+', '-', 'g')) = $1
+         AND published = true
+       LIMIT 1`,
+      [slug]
+    );
+
+    return normalizedFallback.rows?.[0] || null;
   } catch {
     return null;
   }
@@ -583,6 +709,20 @@ router.get('/posts/:slug', optionalAuth, async (req, res) => {
       return res.status(404).json({ error: 'Blog post not found', slug });
     }
 
+    const postLikeColumns = await getTableColumns('post_likes').catch(() => new Set());
+    let userLiked = false;
+
+    if (postLikeColumns.size > 0) {
+      const identity = buildPostLikeIdentity(req, post.id, postLikeColumns);
+      if (identity) {
+        const likedResult = await query(
+          `SELECT 1 FROM post_likes WHERE ${identity.whereClause} LIMIT 1`,
+          identity.whereValues
+        );
+        userLiked = likedResult.rows.length > 0;
+      }
+    }
+
     // Increment view count
     await supabase
       .from('blog_posts')
@@ -612,7 +752,7 @@ router.get('/posts/:slug', optionalAuth, async (req, res) => {
     res.json({
       post: {
         ...post,
-        user_liked: false, // You can implement this based on user likes
+        user_liked: userLiked,
         user_bookmarked: false // You can implement this based on user bookmarks
       },
       related_posts: related || []
@@ -627,53 +767,58 @@ router.get('/posts/:slug', optionalAuth, async (req, res) => {
 // Like/unlike a blog post
 router.post('/posts/:slug/like', optionalAuth, async (req, res) => {
   try {
-    const { slug } = req.params;
+    if (!req.user) {
+      return res.status(401).json({ error: 'You must be logged in to like a post' });
+    }
 
-    // Get post
-    const postResult = await query(
-      'SELECT id FROM blog_posts WHERE slug = $1 AND published = true',
-      [slug]
-    );
+    const slug = normalizeSlug(req.params.slug);
+    if (!slug) {
+      return res.status(400).json({ error: 'Invalid slug' });
+    }
 
-    if (postResult.rows.length === 0) {
+    const post = await getPublishedPostBySlug(slug);
+    if (!post?.id) {
       return res.status(404).json({ error: 'Blog post not found' });
     }
 
-    const post = postResult.rows[0];
+    const postLikeColumns = await getTableColumns('post_likes');
+    const identity = buildPostLikeIdentity(req, post.id, postLikeColumns);
+    if (!identity) {
+      return res.status(400).json({ error: 'Unable to resolve like identity for current user' });
+    }
 
-    // For now, we'll use IP-based likes. In a real app, you'd want user-based likes
     const existingLike = await query(
-      'SELECT id FROM post_likes WHERE post_id = $1 AND ip_address = $2',
-      [post.id, req.ip]
+      `SELECT id FROM post_likes WHERE ${identity.whereClause} LIMIT 1`,
+      identity.whereValues
     );
 
     if (existingLike.rows.length > 0) {
-      // Unlike
-      await query(
-        'DELETE FROM post_likes WHERE post_id = $1 AND ip_address = $2',
-        [post.id, req.ip]
-      );
-
-      await query(
-        'UPDATE blog_posts SET like_count = GREATEST(like_count - 1, 0) WHERE id = $1',
+      const likeCountResult = await query(
+        'SELECT COUNT(*)::INTEGER AS like_count FROM post_likes WHERE post_id = $1',
         [post.id]
       );
-
-      res.json({ message: 'Post unliked', liked: false });
-    } else {
-      // Like
-      await query(
-        'INSERT INTO post_likes (post_id, ip_address) VALUES ($1, $2)',
-        [post.id, req.ip]
-      );
-
-      await query(
-        'UPDATE blog_posts SET like_count = like_count + 1 WHERE id = $1',
-        [post.id]
-      );
-
-      res.json({ message: 'Post liked', liked: true });
+      const likeCount = Number(likeCountResult.rows?.[0]?.like_count || 0);
+      return res.json({ message: 'Post already liked', liked: true, like_count: likeCount });
     }
+
+    const placeholders = identity.insertColumns.map((_, index) => `$${index + 1}`).join(', ');
+    await query(
+      `INSERT INTO post_likes (${identity.insertColumns.join(', ')}) VALUES (${placeholders})`,
+      identity.insertValues
+    );
+
+    const likeCountResult = await query(
+      'SELECT COUNT(*)::INTEGER AS like_count FROM post_likes WHERE post_id = $1',
+      [post.id]
+    );
+    const likeCount = Number(likeCountResult.rows?.[0]?.like_count || 0);
+
+    await query(
+      'UPDATE blog_posts SET like_count = $2 WHERE id = $1',
+      [post.id, likeCount]
+    );
+
+    return res.json({ message: 'Post liked', liked: true, like_count: likeCount });
 
   } catch (error) {
     console.error('Like post error:', error);

@@ -1,8 +1,5 @@
-//import { loadPosts } from "@/lib/loadPosts";
 import React, { useEffect, useState, useMemo } from "react";
-import { loadPosts, type PostData } from "@/lib/loadPosts";
-import { getApiUrl } from "@/lib/publicConfig";
-//import type { PostData } from "@/lib/loadPosts";
+import { loadPostBySlug, loadPosts, type PostData } from "@/lib/loadPosts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,6 +32,57 @@ const categoryIcons: Record<string, string> = {
   "Analytics": "📊",
 };
 
+// ─── Skeleton for blog list ─────────────────────────────────────────────────
+const BlogSkeleton: React.FC = () => (
+  <div className="animate-pulse">
+    {/* Category filter bar skeleton */}
+    <div className="flex flex-wrap justify-center gap-2 mb-12">
+      {[80, 120, 100, 90, 110, 95].map((w, i) => (
+        <div key={i} className="h-8 rounded-md bg-gray-200" style={{ width: w }} />
+      ))}
+    </div>
+
+    {/* Featured posts skeleton (2-col) */}
+    <div className="mb-12 grid grid-cols-1 md:grid-cols-2 gap-8">
+      {[0, 1].map((i) => (
+        <div key={i} className="rounded-xl shadow-md overflow-hidden bg-white">
+          <div className="h-56 bg-gray-200" />
+          <div className="p-6 space-y-3">
+            <div className="h-4 w-20 bg-gray-200 rounded" />
+            <div className="h-6 w-3/4 bg-gray-300 rounded" />
+            <div className="h-4 w-full bg-gray-200 rounded" />
+            <div className="h-4 w-5/6 bg-gray-200 rounded" />
+            <div className="flex justify-between mt-4">
+              <div className="h-4 w-28 bg-gray-200 rounded" />
+              <div className="h-4 w-20 bg-gray-200 rounded" />
+            </div>
+            <div className="h-9 w-full bg-gray-200 rounded-md mt-2" />
+          </div>
+        </div>
+      ))}
+    </div>
+
+    {/* Regular posts skeleton (3-col) */}
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+      {[0, 1, 2, 3, 4, 5].map((i) => (
+        <div key={i} className="rounded-xl shadow-md overflow-hidden bg-white">
+          <div className="h-40 bg-gray-200" />
+          <div className="p-5 space-y-3">
+            <div className="h-4 w-20 bg-gray-200 rounded" />
+            <div className="h-5 w-4/5 bg-gray-300 rounded" />
+            <div className="h-4 w-full bg-gray-200 rounded" />
+            <div className="flex justify-between mt-3">
+              <div className="h-3 w-24 bg-gray-200 rounded" />
+              <div className="h-3 w-16 bg-gray-200 rounded" />
+            </div>
+            <div className="h-9 w-full bg-gray-200 rounded-md mt-2" />
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
 const Blog: React.FC = () => {
   const [posts, setPosts] = useState<PostData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,22 +90,12 @@ const Blog: React.FC = () => {
 
   useEffect(() => {
     let mounted = true;
-  
+
     (async () => {
       try {
-        // Keep backend blog_posts synced with markdown source files.
-        try {
-          const syncResponse = await fetch(getApiUrl("/api/blog/sync/markdown"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-          });
-          if (!syncResponse.ok) {
-            console.warn("Markdown bulk sync returned non-OK status:", syncResponse.status);
-          }
-        } catch (syncError) {
-          console.warn("Markdown bulk sync skipped:", syncError);
-        }
-
+        // Load posts from markdown (localStorage-cached, then lazy-parsed).
+        // Backend sync is intentionally omitted here — it runs only once per
+        // session via the server's startup routine, keeping this path fast.
         const mdPosts = await loadPosts();
         if (mounted) setPosts(mdPosts);
       } catch (e) {
@@ -66,11 +104,12 @@ const Blog: React.FC = () => {
         if (mounted) setLoading(false);
       }
     })();
-  
+
     return () => {
       mounted = false;
     };
   }, []);
+
   const categories = useMemo(() => {
     const cats = new Set(posts.map(p => p.category));
     return ["All", ...Array.from(cats)];
@@ -92,6 +131,12 @@ const Blog: React.FC = () => {
     });
   };
 
+  const prefetchPostResources = (slug: string) => {
+    // Warm markdown data and heavy post layout chunk before navigation.
+    void loadPostBySlug(slug);
+    void import("@/components/BlogPostLayout");
+  };
+
   return (
     <section className="py-20 bg-gray-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -104,28 +149,25 @@ const Blog: React.FC = () => {
           </p>
         </div>
 
-        {/* Category Filters */}
-        <div className="flex flex-wrap justify-center gap-2 mb-12">
-          {categories.map((cat) => (
-            <Button
-              key={cat}
-              variant={selectedCategory === cat ? "default" : "outline"}
-              size="sm"
-              onClick={() => setSelectedCategory(cat)}
-              className={selectedCategory === cat ? "bg-green-600 hover:bg-green-700" : ""}
-            >
-              {cat}
-            </Button>
-          ))}
-        </div>
-
         {loading ? (
-          <div className="text-center py-12">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-            <p className="text-gray-600">Loading blog posts...</p>
-          </div>
+          <BlogSkeleton />
         ) : (
           <>
+            {/* Category Filters */}
+            <div className="flex flex-wrap justify-center gap-2 mb-12">
+              {categories.map((cat) => (
+                <Button
+                  key={cat}
+                  variant={selectedCategory === cat ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setSelectedCategory(cat)}
+                  className={selectedCategory === cat ? "bg-green-600 hover:bg-green-700" : ""}
+                >
+                  {cat}
+                </Button>
+              ))}
+            </div>
+
             {/* Featured Posts */}
             {featuredPosts.length > 0 && (
               <div className="mb-12">
@@ -163,7 +205,12 @@ const Blog: React.FC = () => {
                               {post.readTime}
                             </div>
                           </div>
-                          <Link to={`/blog/${post.slug}`}>
+                          <Link
+                            to={`/blog/${post.slug}`}
+                            onMouseEnter={() => prefetchPostResources(post.slug)}
+                            onFocus={() => prefetchPostResources(post.slug)}
+                            onTouchStart={() => prefetchPostResources(post.slug)}
+                          >
                             <Button variant="outline" className="w-full group">
                               Read More
                               <ArrowRight className="h-4 w-4 ml-2 group-hover:translate-x-1 transition-transform" />
@@ -209,7 +256,12 @@ const Blog: React.FC = () => {
                           {post.readTime}
                         </div>
                       </div>
-                      <Link to={`/blog/${post.slug}`}>
+                      <Link
+                        to={`/blog/${post.slug}`}
+                        onMouseEnter={() => prefetchPostResources(post.slug)}
+                        onFocus={() => prefetchPostResources(post.slug)}
+                        onTouchStart={() => prefetchPostResources(post.slug)}
+                      >
                         <Button variant="outline" className="w-full group">
                           Read More
                           <ArrowRight className="h-4 w-4 ml-2 group-hover:translate-x-1 transition-transform" />
