@@ -1,4 +1,4 @@
-// ML Engine — Client-Side Machine Learning Pipeline for DataAfrik
+// ML Engine - Client-Side Machine Learning Pipeline for DataAfrik
 // Runs entirely in the browser. No backend required.
 
 import { Dataset } from './types';
@@ -111,6 +111,21 @@ export interface ClusteringMetrics {
   daviesBouldinIndex: number;
 }
 
+export type TreeProblemType = 'regression' | 'classification';
+
+export interface DecisionTreeNode {
+  isLeaf: boolean;
+  prediction: number;
+  samples: number;
+  impurity: number;
+  depth: number;
+  feature?: string;
+  threshold?: number;
+  left?: DecisionTreeNode;
+  right?: DecisionTreeNode;
+  classCounts?: number[];
+}
+
 export interface ModelResult {
   algorithm: MLAlgorithm;
   algorithmLabel: string;
@@ -129,6 +144,9 @@ export interface ModelResult {
   isTopModel: boolean;
   centroids?: number[][];
   clusterAssignments?: number[];
+  tree?: DecisionTreeNode;
+  forest?: DecisionTreeNode[];
+  classValues?: number[];
 }
 
 export interface ModelComparisonResult {
@@ -332,8 +350,8 @@ export const detectMLProblem = (dataset: Dataset): MLProblemDetection => {
 
     const confidence = Math.min(0.95, Math.max(0.5, bestScore / 100));
     const reasoning = bestType === 'regression'
-      ? `Column "${bestTarget}" has ${bestCardinality} unique numeric values — ideal for regression to predict continuous outcomes.`
-      : `Column "${bestTarget}" has ${bestCardinality} distinct categories — suitable for classification to predict discrete labels.`;
+      ? `Column "${bestTarget}" has ${bestCardinality} unique numeric values - ideal for regression to predict continuous outcomes.`
+      : `Column "${bestTarget}" has ${bestCardinality} distinct categories - suitable for classification to predict discrete labels.`;
 
     return {
       problemType: bestType,
@@ -774,7 +792,7 @@ const trainLinearRegression = (
     intercept: regResult.intercept,
     featureImportance: importance,
     equation: regResult.equation,
-    interpretation: `Linear Regression achieved R² = ${metrics.rSquared.toFixed(3)}, RMSE = ${metrics.rmse.toFixed(3)}.`,
+    interpretation: `Linear Regression achieved R2 = ${metrics.rSquared.toFixed(3)}, RMSE = ${metrics.rmse.toFixed(3)}.`,
     isTopModel: false,
   };
 };
@@ -891,6 +909,342 @@ const trainLogisticRegression = (
   };
 };
 
+const makeSeededRng = (seed: number): (() => number) => {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+interface TreeSplit {
+  feature: string;
+  threshold: number;
+  gain: number;
+  leftIndices: number[];
+  rightIndices: number[];
+}
+
+interface TreeBuildOptions {
+  problemType: TreeProblemType;
+  featureColumns: string[];
+  targetValues: number[];
+  maxDepth: number;
+  minSamplesSplit: number;
+  minSamplesLeaf: number;
+  minGain: number;
+  maxFeaturesPerSplit?: number;
+  rng?: () => number;
+  nClasses?: number;
+}
+
+const giniFromCounts = (counts: number[], total: number): number => {
+  if (total <= 0) return 0;
+  let sum = 0;
+  for (const c of counts) {
+    const p = c / total;
+    sum += p * p;
+  }
+  return 1 - sum;
+};
+
+const sampleFeaturesForSplit = (
+  featureColumns: string[],
+  maxFeaturesPerSplit: number | undefined,
+  rng?: () => number
+): string[] => {
+  if (!maxFeaturesPerSplit || maxFeaturesPerSplit >= featureColumns.length) {
+    return featureColumns;
+  }
+  const random = rng ?? Math.random;
+  const shuffled = [...featureColumns];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    const tmp = shuffled[i];
+    shuffled[i] = shuffled[j];
+    shuffled[j] = tmp;
+  }
+  return shuffled.slice(0, Math.max(1, maxFeaturesPerSplit));
+};
+
+const evaluateBestSplitForFeature = (
+  rows: Record<string, number>[],
+  indices: number[],
+  targetValues: number[],
+  parentImpurity: number,
+  options: TreeBuildOptions,
+  feature: string
+): TreeSplit | null => {
+  if (indices.length < options.minSamplesSplit) return null;
+
+  const pairs = indices
+    .map(idx => ({ idx, x: rows[idx][feature], y: targetValues[idx] }))
+    .sort((a, b) => a.x - b.x);
+
+  if (pairs.length < options.minSamplesSplit) return null;
+
+  let bestThreshold = Number.NaN;
+  let bestGain = 0;
+
+  if (options.problemType === 'classification') {
+    const nClasses = options.nClasses ?? 2;
+    const totalCounts = Array(nClasses).fill(0);
+    for (const p of pairs) totalCounts[p.y] = (totalCounts[p.y] || 0) + 1;
+    const leftCounts = Array(nClasses).fill(0);
+
+    for (let i = 0; i < pairs.length - 1; i++) {
+      const cls = pairs[i].y;
+      leftCounts[cls] = (leftCounts[cls] || 0) + 1;
+      if (pairs[i].x === pairs[i + 1].x) continue;
+
+      const leftN = i + 1;
+      const rightN = pairs.length - leftN;
+      if (leftN < options.minSamplesLeaf || rightN < options.minSamplesLeaf) continue;
+
+      const rightCounts = totalCounts.map((c, ci) => c - leftCounts[ci]);
+      const leftImpurity = giniFromCounts(leftCounts, leftN);
+      const rightImpurity = giniFromCounts(rightCounts, rightN);
+      const weightedImpurity = (leftImpurity * leftN + rightImpurity * rightN) / pairs.length;
+      const gain = parentImpurity - weightedImpurity;
+
+      if (gain > bestGain) {
+        bestGain = gain;
+        bestThreshold = (pairs[i].x + pairs[i + 1].x) / 2;
+      }
+    }
+  } else {
+    let totalSum = 0;
+    let totalSumSq = 0;
+    for (const p of pairs) {
+      totalSum += p.y;
+      totalSumSq += p.y * p.y;
+    }
+    let leftSum = 0;
+    let leftSumSq = 0;
+
+    for (let i = 0; i < pairs.length - 1; i++) {
+      const y = pairs[i].y;
+      leftSum += y;
+      leftSumSq += y * y;
+      if (pairs[i].x === pairs[i + 1].x) continue;
+
+      const leftN = i + 1;
+      const rightN = pairs.length - leftN;
+      if (leftN < options.minSamplesLeaf || rightN < options.minSamplesLeaf) continue;
+
+      const rightSum = totalSum - leftSum;
+      const rightSumSq = totalSumSq - leftSumSq;
+      const leftSse = Math.max(0, leftSumSq - (leftSum * leftSum) / leftN);
+      const rightSse = Math.max(0, rightSumSq - (rightSum * rightSum) / rightN);
+      const weightedImpurity = (leftSse + rightSse) / pairs.length;
+      const gain = parentImpurity - weightedImpurity;
+
+      if (gain > bestGain) {
+        bestGain = gain;
+        bestThreshold = (pairs[i].x + pairs[i + 1].x) / 2;
+      }
+    }
+  }
+
+  if (!Number.isFinite(bestThreshold) || bestGain <= options.minGain) {
+    return null;
+  }
+
+  const leftIndices: number[] = [];
+  const rightIndices: number[] = [];
+  for (const idx of indices) {
+    if (rows[idx][feature] <= bestThreshold) leftIndices.push(idx);
+    else rightIndices.push(idx);
+  }
+
+  if (leftIndices.length < options.minSamplesLeaf || rightIndices.length < options.minSamplesLeaf) {
+    return null;
+  }
+
+  return {
+    feature,
+    threshold: bestThreshold,
+    gain: bestGain,
+    leftIndices,
+    rightIndices,
+  };
+};
+
+const buildCanonicalTree = (
+  rows: Record<string, number>[],
+  options: TreeBuildOptions,
+  featureGain: Record<string, number>,
+  indices: number[],
+  depth: number
+): DecisionTreeNode => {
+  const samples = indices.length;
+  if (samples === 0) {
+    return { isLeaf: true, prediction: 0, samples: 0, impurity: 0, depth };
+  }
+
+  const targetValues = options.targetValues;
+  let impurity = 0;
+  let prediction = 0;
+  let classCounts: number[] | undefined;
+
+  if (options.problemType === 'classification') {
+    const nClasses = options.nClasses ?? 2;
+    classCounts = Array(nClasses).fill(0);
+    for (const idx of indices) {
+      const cls = targetValues[idx];
+      classCounts[cls] = (classCounts[cls] || 0) + 1;
+    }
+    impurity = giniFromCounts(classCounts, samples);
+    prediction = classCounts.indexOf(Math.max(...classCounts));
+  } else {
+    let sum = 0;
+    let sumSq = 0;
+    for (const idx of indices) {
+      const y = targetValues[idx];
+      sum += y;
+      sumSq += y * y;
+    }
+    prediction = sum / samples;
+    const sse = Math.max(0, sumSq - (sum * sum) / samples);
+    impurity = sse / samples;
+  }
+
+  const shouldStop =
+    depth >= options.maxDepth ||
+    samples < options.minSamplesSplit ||
+    impurity <= 1e-12 ||
+    (options.problemType === 'classification' && !!classCounts && Math.max(...classCounts) === samples);
+
+  if (shouldStop) {
+    return {
+      isLeaf: true,
+      prediction,
+      samples,
+      impurity,
+      depth,
+      classCounts,
+    };
+  }
+
+  const candidateFeatures = sampleFeaturesForSplit(
+    options.featureColumns,
+    options.maxFeaturesPerSplit,
+    options.rng
+  );
+
+  let bestSplit: TreeSplit | null = null;
+  for (const feature of candidateFeatures) {
+    const split = evaluateBestSplitForFeature(rows, indices, targetValues, impurity, options, feature);
+    if (split && (!bestSplit || split.gain > bestSplit.gain)) {
+      bestSplit = split;
+    }
+  }
+
+  if (!bestSplit) {
+    return {
+      isLeaf: true,
+      prediction,
+      samples,
+      impurity,
+      depth,
+      classCounts,
+    };
+  }
+
+  featureGain[bestSplit.feature] = (featureGain[bestSplit.feature] || 0) + bestSplit.gain;
+
+  const leftNode = buildCanonicalTree(rows, options, featureGain, bestSplit.leftIndices, depth + 1);
+  const rightNode = buildCanonicalTree(rows, options, featureGain, bestSplit.rightIndices, depth + 1);
+
+  return {
+    isLeaf: false,
+    prediction,
+    samples,
+    impurity,
+    depth,
+    feature: bestSplit.feature,
+    threshold: bestSplit.threshold,
+    left: leftNode,
+    right: rightNode,
+    classCounts,
+  };
+};
+
+const getTreeStats = (node: DecisionTreeNode): { maxDepth: number; leafCount: number } => {
+  if (node.isLeaf) {
+    return { maxDepth: node.depth, leafCount: 1 };
+  }
+  const leftStats = node.left ? getTreeStats(node.left) : { maxDepth: node.depth, leafCount: 0 };
+  const rightStats = node.right ? getTreeStats(node.right) : { maxDepth: node.depth, leafCount: 0 };
+  return {
+    maxDepth: Math.max(node.depth, leftStats.maxDepth, rightStats.maxDepth),
+    leafCount: leftStats.leafCount + rightStats.leafCount,
+  };
+};
+
+const featureImportanceFromGain = (
+  featureColumns: string[],
+  featureGain: Record<string, number>
+): FeatureImportanceItem[] => {
+  const maxGain = Math.max(...featureColumns.map(f => featureGain[f] || 0), 0.001);
+  return featureColumns.map(feature => ({
+    feature,
+    importance: (featureGain[feature] || 0) / maxGain,
+    correlationWithTarget: 0,
+    isSelected: (featureGain[feature] || 0) > 0,
+  }));
+};
+
+interface TreePredictionDetail {
+  prediction: number;
+  leafSamples: number;
+  classCounts?: number[];
+  pathLength: number;
+  contributions: Record<string, number>;
+}
+
+const predictWithTreeDetail = (
+  tree: DecisionTreeNode,
+  inputs: Record<string, number>
+): TreePredictionDetail => {
+  const contributions: Record<string, number> = {};
+  let current = tree;
+  let pathLength = 0;
+
+  while (!current.isLeaf && current.feature && Number.isFinite(current.threshold)) {
+    const feature = current.feature;
+    const threshold = current.threshold as number;
+    const value = inputs[feature] ?? 0;
+    contributions[feature] = (contributions[feature] || 0) + Math.abs(value - threshold);
+    const goLeft = value <= threshold;
+    const next = goLeft ? current.left : current.right;
+    if (!next) break;
+    current = next;
+    pathLength++;
+  }
+
+  return {
+    prediction: current.prediction,
+    leafSamples: current.samples,
+    classCounts: current.classCounts,
+    pathLength,
+    contributions,
+  };
+};
+
+const toContributionArray = (
+  featureColumns: string[],
+  contributionsMap: Record<string, number>
+): { feature: string; contribution: number; direction: 'positive' | 'negative' }[] => {
+  return featureColumns.map(feature => ({
+    feature,
+    contribution: contributionsMap[feature] || 0,
+    direction: 'positive',
+  }));
+};
+
 const trainDecisionTree = (
   processedDataset: ProcessedDataset,
   trainTestSplit: number,
@@ -899,65 +1253,42 @@ const trainDecisionTree = (
   const start = Date.now();
   const { data, targetColumn, featureColumns } = processedDataset;
   const { train, test } = splitData(data, trainTestSplit);
+  const featureGain: Record<string, number> = {};
+  featureColumns.forEach(f => { featureGain[f] = 0; });
 
-  // Simulation: feature-weighted regression using top 70% of features by correlation
-  const correlations = featureColumns.map(col => {
-    const paired: [number, number][] = train.map(r => [r[col] || 0, r[targetColumn] || 0]);
-    return { col, r: Math.abs(pearsonR(paired.map(p => p[0]), paired.map(p => p[1]))) };
-  }).sort((a, b) => b.r - a.r);
+  const baseMaxDepth = Math.min(12, Math.max(4, Math.round(Math.log2(Math.max(2, train.length)))));
+  const minSamplesSplit = Math.max(8, Math.floor(Math.sqrt(Math.max(4, train.length)) / 2));
+  const minSamplesLeaf = Math.max(3, Math.floor(minSamplesSplit / 3));
 
-  const topFeatures = correlations.slice(0, Math.max(1, Math.floor(correlations.length * 0.7))).map(c => c.col);
-  const trainDS = datasetFromRows(train, processedDataset.columns, targetColumn, topFeatures);
-  const regResult = multipleRegression(trainDS, targetColumn, topFeatures);
+  if (problemType === 'classification') {
+    const classValues = [...new Set(data.map(r => Math.round(r[targetColumn])))]
+      .sort((a, b) => a - b)
+      .slice(0, 20);
+    const classIndexByValue: Record<number, number> = {};
+    classValues.forEach((v, i) => { classIndexByValue[v] = i; });
+    const nClasses = classValues.length;
 
-  const predictions = test.map(row => {
-    let pred = regResult.intercept || 0;
-    for (const col of topFeatures) {
-      pred += (regResult.coefficients[col] || 0) * (row[col] || 0);
-    }
-    return pred;
-  });
-  const actuals = test.map(r => r[targetColumn]);
-
-  const importance = featureColumns.map(col => ({
-    feature: col,
-    importance: correlations.find(c => c.col === col)?.r || 0,
-    correlationWithTarget: 0,
-    isSelected: topFeatures.includes(col),
-  }));
-  const maxImp = Math.max(...importance.map(i => i.importance), 0.001);
-  importance.forEach(i => { i.importance = i.importance / maxImp; });
-
-  if (problemType === 'regression') {
-    const metrics = computeRegressionMetrics(predictions, actuals, topFeatures.length);
-    return {
-      algorithm: 'decision_tree',
-      algorithmLabel: 'Decision Tree',
-      problemType: 'regression',
-      trainingDurationMs: Date.now() - start,
-      trainRows: train.length,
-      testRows: test.length,
-      regressionMetrics: metrics,
-      coefficients: regResult.coefficients,
-      intercept: regResult.intercept,
-      featureImportance: importance,
-      interpretation: `Decision Tree (simulated) achieved R² = ${metrics.rSquared.toFixed(3)}, RMSE = ${metrics.rmse.toFixed(3)}.`,
-      isTopModel: false,
+    const trainTargets = train.map(r => classIndexByValue[Math.round(r[targetColumn])] ?? 0);
+    const options: TreeBuildOptions = {
+      problemType: 'classification',
+      featureColumns,
+      targetValues: trainTargets,
+      maxDepth: baseMaxDepth,
+      minSamplesSplit,
+      minSamplesLeaf,
+      minGain: 1e-7,
+      nClasses,
     };
-  } else {
-    // Classification: threshold-based from regression predictions
-    const uniqueClasses = [...new Set(actuals.map(a => Math.round(a)))].sort((a, b) => a - b);
-    const nClasses = Math.min(uniqueClasses.length, 10);
-    const classLabels = uniqueClasses.slice(0, nClasses).map(c => {
-      const rlm = processedDataset.reverseLabelMappings[targetColumn] || {};
-      return rlm[c] !== undefined ? rlm[c] : String(c);
-    });
-    const roundedPreds = predictions.map(p => {
-      const rounded = Math.round(Math.max(0, Math.min(nClasses - 1, p)));
-      return uniqueClasses.indexOf(Math.round(p)) >= 0 ? uniqueClasses.indexOf(Math.round(p)) : 0;
-    });
-    const roundedActuals = actuals.map(a => uniqueClasses.indexOf(Math.round(a)) >= 0 ? uniqueClasses.indexOf(Math.round(a)) : 0);
-    const metrics = computeClassificationMetrics(roundedPreds, roundedActuals, classLabels);
+
+    const trainIndices = train.map((_, i) => i);
+    const tree = buildCanonicalTree(train, options, featureGain, trainIndices, 0);
+
+    const predictions = test.map(row => Math.round(predictWithTreeDetail(tree, row).prediction));
+    const actualIndices = test.map(row => classIndexByValue[Math.round(row[targetColumn])] ?? 0);
+    const reverseLM = processedDataset.reverseLabelMappings[targetColumn] || {};
+    const classLabels = classValues.map(v => reverseLM[v] !== undefined ? reverseLM[v] : String(v));
+    const metrics = computeClassificationMetrics(predictions, actualIndices, classLabels);
+    const treeStats = getTreeStats(tree);
 
     return {
       algorithm: 'decision_tree',
@@ -967,11 +1298,44 @@ const trainDecisionTree = (
       trainRows: train.length,
       testRows: test.length,
       classificationMetrics: metrics,
-      featureImportance: importance,
-      interpretation: `Decision Tree achieved accuracy = ${(metrics.accuracy * 100).toFixed(1)}%, F1 = ${metrics.f1.toFixed(3)}.`,
+      featureImportance: featureImportanceFromGain(featureColumns, featureGain),
+      interpretation: `Decision Tree (CART) depth ${treeStats.maxDepth} with ${treeStats.leafCount} leaves achieved accuracy ${(metrics.accuracy * 100).toFixed(1)}% and F1 ${metrics.f1.toFixed(3)}.`,
       isTopModel: false,
+      tree,
+      classValues,
     };
   }
+
+  const trainTargets = train.map(r => r[targetColumn]);
+  const options: TreeBuildOptions = {
+    problemType: 'regression',
+    featureColumns,
+    targetValues: trainTargets,
+    maxDepth: baseMaxDepth,
+    minSamplesSplit,
+    minSamplesLeaf,
+    minGain: 1e-8,
+  };
+  const trainIndices = train.map((_, i) => i);
+  const tree = buildCanonicalTree(train, options, featureGain, trainIndices, 0);
+  const predictions = test.map(row => predictWithTreeDetail(tree, row).prediction);
+  const actuals = test.map(row => row[targetColumn]);
+  const metrics = computeRegressionMetrics(predictions, actuals, featureColumns.length);
+  const treeStats = getTreeStats(tree);
+
+  return {
+    algorithm: 'decision_tree',
+    algorithmLabel: 'Decision Tree',
+    problemType: 'regression',
+    trainingDurationMs: Date.now() - start,
+    trainRows: train.length,
+    testRows: test.length,
+    regressionMetrics: metrics,
+    featureImportance: featureImportanceFromGain(featureColumns, featureGain),
+    interpretation: `Decision Tree (CART) depth ${treeStats.maxDepth} with ${treeStats.leafCount} leaves achieved R² ${metrics.rSquared.toFixed(3)} and RMSE ${metrics.rmse.toFixed(3)}.`,
+    isTopModel: false,
+    tree,
+  };
 };
 
 const trainRandomForest = (
@@ -982,94 +1346,70 @@ const trainRandomForest = (
   const start = Date.now();
   const { data, targetColumn, featureColumns } = processedDataset;
   const { train, test } = splitData(data, trainTestSplit);
+  const nTrees = train.length > 3000 ? 9 : 11;
+  const forest: DecisionTreeNode[] = [];
+  const cumulativeGain: Record<string, number> = {};
+  featureColumns.forEach(f => { cumulativeGain[f] = 0; });
 
-  const N_TREES = 5;
-  const FEATURE_RATIO = 0.7;
-  const SAMPLE_RATIO = 0.8;
+  const baseMaxDepth = Math.min(12, Math.max(5, Math.round(Math.log2(Math.max(2, train.length)))));
+  const minSamplesSplit = Math.max(8, Math.floor(Math.sqrt(Math.max(4, train.length)) / 2));
+  const minSamplesLeaf = Math.max(3, Math.floor(minSamplesSplit / 3));
+  const perSplitFeatureCount = problemType === 'classification'
+    ? Math.max(1, Math.floor(Math.sqrt(Math.max(1, featureColumns.length))))
+    : Math.max(1, Math.floor(featureColumns.length / 3));
 
-  const allPredictions: number[][] = [];
-  const allCoefficients: Record<string, number[]> = {};
-  featureColumns.forEach(f => { allCoefficients[f] = []; });
-  const allIntercepts: number[] = [];
+  if (problemType === 'classification') {
+    const classValues = [...new Set(data.map(r => Math.round(r[targetColumn])))]
+      .sort((a, b) => a - b)
+      .slice(0, 20);
+    const classIndexByValue: Record<number, number> = {};
+    classValues.forEach((v, i) => { classIndexByValue[v] = i; });
+    const nClasses = classValues.length;
 
-  for (let t = 0; t < N_TREES; t++) {
-    // Bootstrap sample
-    const sampleSize = Math.floor(train.length * SAMPLE_RATIO);
-    const sample: Record<string, number>[] = [];
-    for (let i = 0; i < sampleSize; i++) {
-      sample.push(train[Math.floor((i * 7 + t * 13) % train.length)]);
+    for (let t = 0; t < nTrees; t++) {
+      const rng = makeSeededRng(20260219 + t * 97);
+      const bootstrapRows: Record<string, number>[] = [];
+      const bootstrapTargets: number[] = [];
+
+      for (let i = 0; i < train.length; i++) {
+        const sampleIndex = Math.floor(rng() * train.length);
+        const row = train[sampleIndex];
+        bootstrapRows.push(row);
+        bootstrapTargets.push(classIndexByValue[Math.round(row[targetColumn])] ?? 0);
+      }
+
+      const treeGain: Record<string, number> = {};
+      featureColumns.forEach(f => { treeGain[f] = 0; });
+      const options: TreeBuildOptions = {
+        problemType: 'classification',
+        featureColumns,
+        targetValues: bootstrapTargets,
+        maxDepth: baseMaxDepth,
+        minSamplesSplit,
+        minSamplesLeaf,
+        minGain: 1e-7,
+        maxFeaturesPerSplit: perSplitFeatureCount,
+        rng,
+        nClasses,
+      };
+      const treeIndices = bootstrapRows.map((_, i) => i);
+      const tree = buildCanonicalTree(bootstrapRows, options, treeGain, treeIndices, 0);
+      forest.push(tree);
+      featureColumns.forEach(f => { cumulativeGain[f] += treeGain[f] || 0; });
     }
 
-    // Random feature subset
-    const nSelectedFeatures = Math.max(1, Math.floor(featureColumns.length * FEATURE_RATIO));
-    const featureSubset = [...featureColumns]
-      .sort(() => (t * 0.1 + 0.5) - 0.5) // pseudo-random
-      .slice(0, nSelectedFeatures);
-
-    const sampleDS = datasetFromRows(sample, processedDataset.columns, targetColumn, featureSubset);
-    const regResult = multipleRegression(sampleDS, targetColumn, featureSubset);
-
-    const treePreds = test.map(row => {
-      let pred = regResult.intercept || 0;
-      for (const col of featureSubset) {
-        pred += (regResult.coefficients[col] || 0) * (row[col] || 0);
+    const predictions = test.map(row => {
+      const votes = Array(classValues.length).fill(0);
+      for (const tree of forest) {
+        const cls = Math.max(0, Math.min(classValues.length - 1, Math.round(predictWithTreeDetail(tree, row).prediction)));
+        votes[cls]++;
       }
-      return pred;
+      return votes.indexOf(Math.max(...votes));
     });
-    allPredictions.push(treePreds);
-    allIntercepts.push(regResult.intercept || 0);
-    featureSubset.forEach(f => {
-      allCoefficients[f].push(regResult.coefficients[f] || 0);
-    });
-  }
-
-  // Ensemble: average predictions
-  const ensemblePreds = test.map((_, i) =>
-    mean(allPredictions.map(preds => preds[i]))
-  );
-  const actuals = test.map(r => r[targetColumn]);
-
-  // Feature importance: average |coefficient| across trees
-  const importance = featureColumns.map(f => ({
-    feature: f,
-    importance: allCoefficients[f].length > 0 ? Math.abs(mean(allCoefficients[f])) : 0,
-    correlationWithTarget: 0,
-    isSelected: true,
-  }));
-  const maxImp = Math.max(...importance.map(i => i.importance), 0.001);
-  importance.forEach(i => { i.importance = i.importance / maxImp; });
-
-  const avgCoefficients: Record<string, number> = {};
-  featureColumns.forEach(f => {
-    avgCoefficients[f] = allCoefficients[f].length > 0 ? mean(allCoefficients[f]) : 0;
-  });
-
-  if (problemType === 'regression') {
-    const metrics = computeRegressionMetrics(ensemblePreds, actuals, featureColumns.length);
-    return {
-      algorithm: 'random_forest',
-      algorithmLabel: 'Random Forest',
-      problemType: 'regression',
-      trainingDurationMs: Date.now() - start,
-      trainRows: train.length,
-      testRows: test.length,
-      regressionMetrics: metrics,
-      coefficients: avgCoefficients,
-      intercept: mean(allIntercepts),
-      featureImportance: importance,
-      interpretation: `Random Forest (${N_TREES} trees) achieved R² = ${metrics.rSquared.toFixed(3)}, RMSE = ${metrics.rmse.toFixed(3)}.`,
-      isTopModel: false,
-    };
-  } else {
-    const uniqueClasses = [...new Set(actuals.map(a => Math.round(a)))].sort((a, b) => a - b);
-    const nClasses = Math.min(uniqueClasses.length, 10);
-    const classLabels = uniqueClasses.slice(0, nClasses).map(c => {
-      const rlm = processedDataset.reverseLabelMappings[targetColumn] || {};
-      return rlm[c] !== undefined ? rlm[c] : String(c);
-    });
-    const roundedPreds = ensemblePreds.map(p => Math.max(0, Math.min(nClasses - 1, uniqueClasses.indexOf(Math.round(p)) >= 0 ? uniqueClasses.indexOf(Math.round(p)) : 0)));
-    const roundedActuals = actuals.map(a => Math.max(0, Math.min(nClasses - 1, uniqueClasses.indexOf(Math.round(a)) >= 0 ? uniqueClasses.indexOf(Math.round(a)) : 0)));
-    const metrics = computeClassificationMetrics(roundedPreds, roundedActuals, classLabels);
+    const actualIndices = test.map(row => classIndexByValue[Math.round(row[targetColumn])] ?? 0);
+    const reverseLM = processedDataset.reverseLabelMappings[targetColumn] || {};
+    const classLabels = classValues.map(v => reverseLM[v] !== undefined ? reverseLM[v] : String(v));
+    const metrics = computeClassificationMetrics(predictions, actualIndices, classLabels);
 
     return {
       algorithm: 'random_forest',
@@ -1079,12 +1419,62 @@ const trainRandomForest = (
       trainRows: train.length,
       testRows: test.length,
       classificationMetrics: metrics,
-      coefficients: avgCoefficients,
-      featureImportance: importance,
-      interpretation: `Random Forest (${N_TREES} trees) achieved accuracy = ${(metrics.accuracy * 100).toFixed(1)}%, F1 = ${metrics.f1.toFixed(3)}.`,
+      featureImportance: featureImportanceFromGain(featureColumns, cumulativeGain),
+      interpretation: `Random Forest (CART, ${nTrees} trees) achieved accuracy ${(metrics.accuracy * 100).toFixed(1)}% and F1 ${metrics.f1.toFixed(3)}.`,
       isTopModel: false,
+      forest,
+      classValues,
     };
   }
+
+  for (let t = 0; t < nTrees; t++) {
+    const rng = makeSeededRng(20260219 + t * 97);
+    const bootstrapRows: Record<string, number>[] = [];
+    const bootstrapTargets: number[] = [];
+
+    for (let i = 0; i < train.length; i++) {
+      const sampleIndex = Math.floor(rng() * train.length);
+      const row = train[sampleIndex];
+      bootstrapRows.push(row);
+      bootstrapTargets.push(row[targetColumn]);
+    }
+
+    const treeGain: Record<string, number> = {};
+    featureColumns.forEach(f => { treeGain[f] = 0; });
+    const options: TreeBuildOptions = {
+      problemType: 'regression',
+      featureColumns,
+      targetValues: bootstrapTargets,
+      maxDepth: baseMaxDepth,
+      minSamplesSplit,
+      minSamplesLeaf,
+      minGain: 1e-8,
+      maxFeaturesPerSplit: perSplitFeatureCount,
+      rng,
+    };
+    const treeIndices = bootstrapRows.map((_, i) => i);
+    const tree = buildCanonicalTree(bootstrapRows, options, treeGain, treeIndices, 0);
+    forest.push(tree);
+    featureColumns.forEach(f => { cumulativeGain[f] += treeGain[f] || 0; });
+  }
+
+  const predictions = test.map(row => mean(forest.map(tree => predictWithTreeDetail(tree, row).prediction)));
+  const actuals = test.map(row => row[targetColumn]);
+  const metrics = computeRegressionMetrics(predictions, actuals, featureColumns.length);
+
+  return {
+    algorithm: 'random_forest',
+    algorithmLabel: 'Random Forest',
+    problemType: 'regression',
+    trainingDurationMs: Date.now() - start,
+    trainRows: train.length,
+    testRows: test.length,
+    regressionMetrics: metrics,
+    featureImportance: featureImportanceFromGain(featureColumns, cumulativeGain),
+    interpretation: `Random Forest (CART, ${nTrees} trees) achieved R² ${metrics.rSquared.toFixed(3)} and RMSE ${metrics.rmse.toFixed(3)}.`,
+    isTopModel: false,
+    forest,
+  };
 };
 
 const trainKMeansModel = (
@@ -1210,7 +1600,7 @@ export const trainAllModels = async (
   bestModel.isTopModel = true;
 
   onProgress?.(100, 'Training complete!');
-  const rankingMetric = problemType === 'regression' ? 'R²' : 'F1 Score';
+  const rankingMetric = problemType === 'regression' ? 'R2' : 'F1 Score';
   return { results, bestModel, rankingMetric, trainingComplete: true };
 };
 
@@ -1236,29 +1626,22 @@ export const makePrediction = (
       val = Number(rawVal) || 0;
     }
 
-    // Apply scaling
     const sp = scalingParams[col];
-    if (sp) {
-      if (processedDataset.data.length > 0) {
-        // Detect scaling from data distribution
-        const sampleVal = processedDataset.data[0][col];
-        const originalScale = sp.min + sampleVal * (sp.max - sp.min);
-        const isMinMax = Math.abs(originalScale - sp.mean) < Math.abs(processedDataset.data[0][col] - sp.mean);
-        if (isMinMax) {
-          val = (val - sp.min) / (sp.max - sp.min);
-        } else {
-          val = (val - sp.mean) / sp.std;
-        }
+    if (sp && processedDataset.data.length > 0) {
+      const sampleVal = processedDataset.data[0][col];
+      const originalScale = sp.min + sampleVal * (sp.max - sp.min);
+      const isMinMax = Math.abs(originalScale - sp.mean) < Math.abs(processedDataset.data[0][col] - sp.mean);
+      if (isMinMax) {
+        val = (val - sp.min) / (sp.max - sp.min);
+      } else {
+        val = (val - sp.mean) / sp.std;
       }
     }
+
     numericInputs[col] = val;
   }
 
-  let rawPrediction = model.intercept || 0;
-  const contributions: { feature: string; contribution: number; direction: 'positive' | 'negative' }[] = [];
-
   if (model.algorithm === 'k_means' && model.centroids) {
-    // Find nearest centroid
     let bestCluster = 0;
     let bestDist = Infinity;
     model.centroids.forEach((centroid, ci) => {
@@ -1275,6 +1658,112 @@ export const makePrediction = (
     };
   }
 
+  const topFromContrib = (items: { feature: string; contribution: number; direction: 'positive' | 'negative' }[]) => {
+    return [...items].sort((a, b) => b.contribution - a.contribution)[0];
+  };
+
+  if (model.algorithm === 'decision_tree' && model.tree) {
+    const detail = predictWithTreeDetail(model.tree, numericInputs);
+    const featureContributions = toContributionArray(featureColumns, detail.contributions);
+
+    if (model.problemType === 'classification') {
+      const classCounts = detail.classCounts ?? [];
+      const voteTotal = classCounts.reduce((s, v) => s + v, 0);
+      const classIdx = Math.max(0, Math.round(detail.prediction));
+      const classValue = model.classValues?.[classIdx] ?? classIdx;
+      const label = reverseLabelMappings[targetColumn]?.[classValue] ?? String(classValue);
+      const confidence = voteTotal > 0 ? Math.max(...classCounts) / voteTotal : 0.6;
+      const topContributor = topFromContrib(featureContributions);
+
+      return {
+        predictedValue: label,
+        confidence: Math.max(0.35, Math.min(0.99, confidence)),
+        featureContributions,
+        explanation: topContributor
+          ? `Decision Tree path was driven mostly by "${topContributor.feature}".`
+          : `Prediction made using ${model.algorithmLabel}.`,
+      };
+    }
+
+    const predictedValue = detail.prediction;
+    const rmse = model.regressionMetrics?.rmse ?? 0;
+    const margin = rmse > 0 ? 1.96 * rmse : 0;
+    const sampleFactor = Math.min(1, detail.leafSamples / Math.max(20, model.trainRows * 0.2));
+    const rmseFactor = rmse > 0 ? Math.max(0.4, Math.min(0.95, 1 / (1 + rmse))) : 0.8;
+    const confidence = Math.max(0.35, Math.min(0.97, 0.65 * sampleFactor + 0.35 * rmseFactor));
+    const topContributor = topFromContrib(featureContributions);
+
+    return {
+      predictedValue,
+      confidence,
+      confidenceInterval: margin > 0 ? { lower: predictedValue - margin, upper: predictedValue + margin } : undefined,
+      featureContributions,
+      explanation: topContributor
+        ? `Decision Tree path was driven mostly by "${topContributor.feature}". Model: ${model.algorithmLabel}.`
+        : `Prediction made using ${model.algorithmLabel}.`,
+    };
+  }
+
+  if (model.algorithm === 'random_forest' && model.forest && model.forest.length > 0) {
+    const details = model.forest.map(tree => predictWithTreeDetail(tree, numericInputs));
+    const contributionsMap: Record<string, number> = {};
+    featureColumns.forEach(f => { contributionsMap[f] = 0; });
+    details.forEach(d => {
+      featureColumns.forEach(f => {
+        contributionsMap[f] += d.contributions[f] || 0;
+      });
+    });
+    featureColumns.forEach(f => {
+      contributionsMap[f] = contributionsMap[f] / model.forest!.length;
+    });
+    const featureContributions = toContributionArray(featureColumns, contributionsMap);
+
+    if (model.problemType === 'classification') {
+      const classCount = Math.max(2, model.classValues?.length || 2);
+      const votes = Array(classCount).fill(0);
+      details.forEach(d => {
+        const idx = Math.max(0, Math.min(classCount - 1, Math.round(d.prediction)));
+        votes[idx]++;
+      });
+      const winningIdx = votes.indexOf(Math.max(...votes));
+      const confidence = votes[winningIdx] / model.forest.length;
+      const classValue = model.classValues?.[winningIdx] ?? winningIdx;
+      const label = reverseLabelMappings[targetColumn]?.[classValue] ?? String(classValue);
+      const topContributor = topFromContrib(featureContributions);
+
+      return {
+        predictedValue: label,
+        confidence: Math.max(0.35, Math.min(0.99, confidence)),
+        featureContributions,
+        explanation: topContributor
+          ? `Random Forest vote was influenced most by "${topContributor.feature}".`
+          : `Prediction made using ${model.algorithmLabel}.`,
+      };
+    }
+
+    const preds = details.map(d => d.prediction);
+    const predictedValue = mean(preds);
+    const predStd = Math.sqrt(mean(preds.map(p => (p - predictedValue) ** 2)));
+    const rmse = model.regressionMetrics?.rmse ?? predStd;
+    const margin = 1.96 * Math.max(predStd, rmse);
+    const uncertainty = predStd + rmse;
+    const confidence = Math.max(0.35, Math.min(0.97, 1 / (1 + uncertainty)));
+    const topContributor = topFromContrib(featureContributions);
+
+    return {
+      predictedValue,
+      confidence,
+      confidenceInterval: { lower: predictedValue - margin, upper: predictedValue + margin },
+      featureContributions,
+      explanation: topContributor
+        ? `Random Forest prediction was influenced most by "${topContributor.feature}". Model: ${model.algorithmLabel}.`
+        : `Prediction made using ${model.algorithmLabel}.`,
+    };
+  }
+
+  // Linear/Logistic fallback
+  let rawPrediction = model.intercept || 0;
+  const contributions: { feature: string; contribution: number; direction: 'positive' | 'negative' }[] = [];
   for (const col of featureColumns) {
     const coef = model.coefficients?.[col] || 0;
     const contribution = coef * numericInputs[col];
@@ -1286,7 +1775,6 @@ export const makePrediction = (
     });
   }
 
-  // For classification: apply sigmoid and round to class
   let predictedValue: number | string = rawPrediction;
   let confidence = 0.7;
 
@@ -1297,10 +1785,8 @@ export const makePrediction = (
     const rlm = reverseLabelMappings[targetColumn] || {};
     predictedValue = rlm[classIdx] !== undefined ? rlm[classIdx] : (classIdx === 1 ? 'Yes' : 'No');
   } else {
-    // Unscale prediction for regression
     const sp = scalingParams[targetColumn];
     if (sp && rawPrediction !== 0) {
-      // Estimate residual std for confidence
       const residualStd = sp.std * 0.2;
       confidence = Math.max(0.3, Math.min(0.99, 1 - residualStd / (sp.std + 0.001)));
       predictedValue = rawPrediction;
@@ -1313,7 +1799,7 @@ export const makePrediction = (
     upper: Number(predictedValue) + 1.96 * sp.std * 0.2,
   } : undefined;
 
-  const topContributor = [...contributions].sort((a, b) => b.contribution - a.contribution)[0];
+  const topContributor = topFromContrib(contributions);
 
   return {
     predictedValue,
@@ -1352,6 +1838,9 @@ export const generateDeploymentGuidance = (
       intercept: model.intercept ?? null,
       coefficients: model.coefficients ?? null,
       centroids: model.centroids ?? null,
+      tree: model.tree ?? null,
+      forest: model.forest ?? null,
+      class_values: model.classValues ?? null,
     },
     performance: model.regressionMetrics
       ? { r_squared: model.regressionMetrics.rSquared, rmse: model.regressionMetrics.rmse }
@@ -1372,7 +1861,7 @@ export const generateDeploymentGuidance = (
   ];
 
   const retraining: string[] = [
-    `Retrain when dataset grows by 20% (currently ${nRows} rows → next at ${Math.round(nRows * 1.2)} rows).`,
+    `Retrain when dataset grows by 20% (currently ${nRows} rows -> next at ${Math.round(nRows * 1.2)} rows).`,
     'Retrain quarterly regardless of drift for freshness.',
     'Retrain immediately if prediction confidence drops below 60% on average.',
     'Retrain when new features or data sources become available.',
@@ -1404,6 +1893,8 @@ Response:
     apiEndpointTemplate: apiTemplate,
     monitoringRecommendations: monitoring,
     retrainingTriggers: retraining,
-    estimatedInferenceMs: model.algorithm === 'random_forest' ? 25 : 5,
+    estimatedInferenceMs: model.algorithm === 'random_forest' ? 40 : model.algorithm === 'decision_tree' ? 12 : 5,
   };
 };
+
+
