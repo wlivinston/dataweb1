@@ -608,7 +608,7 @@ router.post('/pdf-checkout', authenticateToken, [
       return res.status(500).json({ error: 'Paystack is not configured. Set PAYSTACK_SECRET_KEY.' });
     }
 
-    const paystackCurrency = (process.env.PAYSTACK_CURRENCY || 'NGN').toUpperCase();
+    const paystackCurrency = String(process.env.PAYSTACK_CURRENCY || '').trim().toUpperCase();
     const paystackSingleAmount = Number(process.env.PAYSTACK_PDF_SINGLE_AMOUNT || plan.amount);
     const paystackMonthlyAmount = Number(process.env.PAYSTACK_PDF_MONTHLY_AMOUNT || plan.amount);
     const amount = requestedPlan === 'monthly' ? paystackMonthlyAmount : paystackSingleAmount;
@@ -617,27 +617,53 @@ router.post('/pdf-checkout', authenticateToken, [
       customerIdentity ? String(customerIdentity).replace(/[^a-zA-Z0-9_-]/g, '') : 'guest';
     const reference = `pdf_${requestedPlan}_${referenceIdentity}_${Date.now()}`;
 
-    const paystackResponse = await fetch('https://api.paystack.co/transaction/initialize', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${paystackSecretKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    const basePaystackPayload = {
+      email: req.user.email,
+      amount: Math.round(amount * 100),
+      callback_url: callbackUrl,
+      reference,
+      metadata: {
+        ...(customerIdentity ? { customer_id: customerIdentity } : {}),
         email: req.user.email,
-        amount: Math.round(amount * 100),
-        currency: paystackCurrency,
-        callback_url: callbackUrl,
-        reference,
-        metadata: {
-          ...(customerIdentity ? { customer_id: customerIdentity } : {}),
-          email: req.user.email,
-          pdf_plan: requestedPlan,
-        },
-      }),
-    });
+        pdf_plan: requestedPlan,
+      },
+    };
 
-    const paystackPayload = await paystackResponse.json();
+    const initializePaystackCheckout = async (currency) => {
+      const payload = currency ? { ...basePaystackPayload, currency } : basePaystackPayload;
+      const response = await fetch('https://api.paystack.co/transaction/initialize', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${paystackSecretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      let parsed = null;
+      try {
+        parsed = await response.json();
+      } catch (error) {
+        parsed = null;
+      }
+
+      return { response, parsed };
+    };
+
+    let { response: paystackResponse, parsed: paystackPayload } =
+      await initializePaystackCheckout(paystackCurrency);
+
+    const paystackErrorMessage = String(paystackPayload?.message || '');
+    const shouldRetryWithoutCurrency =
+      Boolean(paystackCurrency) &&
+      (!paystackResponse.ok || !paystackPayload?.status || !paystackPayload?.data?.authorization_url) &&
+      /currency/i.test(paystackErrorMessage) &&
+      /(unsupported|not supported|invalid)/i.test(paystackErrorMessage);
+
+    if (shouldRetryWithoutCurrency) {
+      ({ response: paystackResponse, parsed: paystackPayload } = await initializePaystackCheckout(''));
+    }
+
     if (!paystackResponse.ok || !paystackPayload?.status || !paystackPayload?.data?.authorization_url) {
       return res.status(502).json({
         error: paystackPayload?.message || 'Failed to initialize Paystack checkout',
