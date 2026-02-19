@@ -17,7 +17,7 @@ import { Separator } from '@/components/ui/separator';
 import {
   Upload, BrainCircuit, Zap, CheckCircle2, Circle, ChevronRight,
   AlertTriangle, Download, Copy, RefreshCw, TrendingUp, Settings,
-  BarChart2, Layers, Cpu, Rocket, Target, FileText
+  BarChart2, Layers, Cpu, Rocket, Target, FileText, Lightbulb
 } from 'lucide-react';
 import type { Dataset, ColumnInfo } from '@/lib/types';
 import {
@@ -145,6 +145,194 @@ const parseFileToDataset = async (file: File): Promise<Dataset> => {
     data: rows,
   };
 };
+
+// ============================================================
+// Data Purpose Inference
+// ============================================================
+
+interface DatasetPurpose {
+  domain: string;           // e.g. "Healthcare / Medical"
+  likelyGoal: string;       // one sentence — what this data was collected to find
+  potentialQuestions: string[]; // 2-4 specific questions this data could answer
+  insight: string;          // one plain-language observation about the data's nature
+}
+
+function inferDatasetPurpose(dataset: import('@/lib/types').Dataset): DatasetPurpose {
+  const colNames = dataset.columns.map(c => c.name.toLowerCase());
+  const fileName = dataset.name.toLowerCase();
+  const allText = [...colNames, fileName].join(' ');
+  const numericCols = dataset.columns.filter(c => c.type === 'number');
+  const categoricalCols = dataset.columns.filter(c => c.type === 'string');
+
+  // ── Domain signal tokens ─────────────────────────────────────────────────
+  const has = (...tokens: string[]) => tokens.some(t => allText.includes(t));
+
+  const isHealthcare = has('patient', 'diagnosis', 'disease', 'symptom', 'hospital', 'medical',
+    'health', 'blood', 'glucose', 'bmi', 'cholesterol', 'heart', 'cancer', 'mortality',
+    'admission', 'discharge', 'drug', 'treatment', 'clinical', 'icd', 'age', 'weight', 'height');
+  const isFinance = has('price', 'revenue', 'profit', 'loss', 'sales', 'income', 'expense',
+    'cost', 'budget', 'transaction', 'amount', 'payment', 'loan', 'credit', 'debt',
+    'stock', 'return', 'investment', 'market', 'balance', 'tax', 'gdp', 'interest');
+  const isHR = has('employee', 'salary', 'attrition', 'tenure', 'department', 'hire',
+    'resignation', 'performance', 'promotion', 'manager', 'workforce', 'headcount', 'staff');
+  const isMarketing = has('customer', 'churn', 'campaign', 'click', 'conversion', 'impression',
+    'engagement', 'subscriber', 'purchase', 'product', 'brand', 'segment', 'lead',
+    'acquisition', 'retention', 'ctr', 'cpc', 'roi', 'funnel');
+  const isEducation = has('student', 'grade', 'score', 'pass', 'fail', 'exam', 'course',
+    'school', 'university', 'gpa', 'attendance', 'teacher', 'subject', 'enrollment');
+  const isRealEstate = has('price', 'house', 'property', 'bedroom', 'bathroom', 'sqft',
+    'area', 'location', 'zip', 'neighbourhood', 'rent', 'estate', 'lot', 'floor');
+  const isSupplyChain = has('inventory', 'stock', 'shipment', 'delivery', 'supplier',
+    'order', 'warehouse', 'freight', 'logistics', 'demand', 'lead_time', 'sku');
+  const isEnvironment = has('temperature', 'humidity', 'rainfall', 'pollution', 'co2',
+    'emission', 'climate', 'weather', 'wind', 'pressure', 'aqi', 'sensor');
+  const isSocial = has('population', 'country', 'region', 'income', 'poverty', 'crime',
+    'unemployment', 'literacy', 'life_expectancy', 'birth', 'death', 'demographic');
+  const isEcommerce = has('order', 'product', 'cart', 'review', 'rating', 'category',
+    'discount', 'shipping', 'return', 'seller', 'buyer', 'marketplace');
+
+  // ── Numeric-only heuristics (for unlabeled data) ─────────────────────────
+  const allNumeric = numericCols.length >= dataset.columns.length * 0.9;
+  const hasBinaryCol = numericCols.some(c => (c.uniqueCount ?? 0) === 2);
+  const hasHighCardNum = numericCols.some(c => (c.uniqueCount ?? 0) > 50);
+
+  // ── Resolve domain ────────────────────────────────────────────────────────
+  let domain = 'General / Unknown';
+  let likelyGoal = '';
+  let potentialQuestions: string[] = [];
+  let insight = '';
+
+  // Priority order: most specific first
+  if (isRealEstate && isFinance) {
+    domain = 'Real Estate';
+    likelyGoal = 'This dataset was likely collected to model property values and understand which physical or location-based features drive pricing.';
+    potentialQuestions = [
+      'What is the predicted sale price of a property given its size, location, and features?',
+      'Which features (bedrooms, area, neighbourhood) have the biggest impact on price?',
+      'Are there underpriced or overpriced properties compared to similar listings?',
+      'How do prices vary across different locations or neighbourhoods?',
+    ];
+    insight = 'Real estate data typically combines numeric measurements (square footage, price) with categorical attributes (location, type), making it well-suited for regression modelling.';
+  } else if (isHealthcare) {
+    domain = 'Healthcare / Medical';
+    likelyGoal = 'This dataset was likely collected to study patient health outcomes, predict disease risk, or identify clinical factors that influence treatment success.';
+    potentialQuestions = [
+      'Which patients are at highest risk of a particular diagnosis or adverse outcome?',
+      'What clinical measurements best predict disease progression?',
+      'Can we identify patient groups with similar health profiles for targeted care?',
+      'Which factors most strongly influence recovery time or treatment effectiveness?',
+    ];
+    insight = 'Medical datasets often contain a mix of biometric measurements and categorical diagnoses. Predictions here carry real-world significance, so model confidence and interpretability are especially important.';
+  } else if (isHR) {
+    domain = 'Human Resources / Workforce';
+    likelyGoal = 'This dataset was likely collected to understand employee behaviour, predict attrition risk, or identify factors that contribute to performance and satisfaction.';
+    potentialQuestions = [
+      'Which employees are most likely to leave the organisation in the next quarter?',
+      'What factors (salary, tenure, department) most influence employee retention?',
+      'Can we identify groups of employees with similar career trajectories?',
+      'What drives the gap in performance ratings across departments?',
+    ];
+    insight = 'HR data combines measurable outcomes (salary, tenure) with categorical context (department, role), making it suitable for both classification (will they leave?) and regression (performance score) tasks.';
+  } else if (isMarketing || isEcommerce) {
+    domain = isEcommerce ? 'E-Commerce / Retail' : 'Marketing / Customer Analytics';
+    likelyGoal = 'This dataset was likely collected to understand customer behaviour, optimise conversion, or predict which customers are at risk of churning.';
+    potentialQuestions = [
+      'Which customers are most likely to churn or stop purchasing?',
+      'What customer segments exist based on purchase behaviour?',
+      'Which marketing channels or campaigns generate the best ROI?',
+      'What product features or price points drive the highest conversion?',
+    ];
+    insight = 'Customer and marketing data is often used to personalise experiences and prioritise resources. Even modest prediction accuracy can translate into significant revenue impact.';
+  } else if (isFinance) {
+    domain = 'Finance / Economics';
+    likelyGoal = 'This dataset was likely collected to forecast financial outcomes, detect anomalies, or model the relationship between economic variables.';
+    potentialQuestions = [
+      'Can we predict future revenue or profit based on current indicators?',
+      'Which financial variables are most correlated with business performance?',
+      'Are there transactions or patterns that look unusual or potentially fraudulent?',
+      'How do different cost or income drivers influence overall margins?',
+    ];
+    insight = 'Financial data tends to be numeric-heavy and time-dependent. Trends, seasonality, and outliers are often as informative as the average values.';
+  } else if (isEducation) {
+    domain = 'Education';
+    likelyGoal = 'This dataset was likely collected to understand student performance, predict academic outcomes, or identify factors that support or hinder learning.';
+    potentialQuestions = [
+      'Which students are at risk of failing and may need early intervention?',
+      'What factors (attendance, study hours, prior grades) best predict exam results?',
+      'Are there distinct groups of learners with different needs or learning styles?',
+      'How do school or course characteristics affect student outcomes?',
+    ];
+    insight = 'Education data connects inputs like effort and attendance with outcomes like grades, making it a natural fit for both regression and classification models.';
+  } else if (isSupplyChain) {
+    domain = 'Supply Chain / Logistics';
+    likelyGoal = 'This dataset was likely collected to optimise inventory levels, forecast demand, or identify inefficiencies in the supply and delivery process.';
+    potentialQuestions = [
+      'What is the expected demand for each product over the next period?',
+      'Which suppliers or routes are causing the most delivery delays?',
+      'Can we predict stock-outs before they happen?',
+      'What factors most influence order lead times?',
+    ];
+    insight = 'Supply chain data often spans multiple interacting variables (orders, stock, delivery times), and even small prediction improvements can significantly reduce costs.';
+  } else if (isEnvironment) {
+    domain = 'Environmental / Climate Science';
+    likelyGoal = 'This dataset was likely collected to monitor environmental conditions, study climate patterns, or model the impact of human activity on natural systems.';
+    potentialQuestions = [
+      'Can we predict temperature or pollution levels based on current sensor readings?',
+      'What environmental factors most strongly drive air quality changes?',
+      'Are there identifiable seasonal or geographic patterns in the data?',
+      'How do emissions or activity levels correlate with environmental outcomes?',
+    ];
+    insight = 'Environmental datasets are often time-series in nature with strong seasonal patterns. The ML engine will benefit from features that capture time and location context.';
+  } else if (isSocial) {
+    domain = 'Social / Demographic Research';
+    likelyGoal = 'This dataset was likely collected to study population trends, social inequality, or the relationship between economic and demographic factors.';
+    potentialQuestions = [
+      'Which demographic or regional factors most influence income or quality of life?',
+      'Can we predict life expectancy or literacy rates from socioeconomic indicators?',
+      'Are there natural groupings of regions or populations with similar characteristics?',
+      'How do different policy or investment variables relate to social outcomes?',
+    ];
+    insight = 'Social research data often reflects complex, multi-cause relationships. Clustering models are particularly useful for identifying groups with similar profiles, while regression can quantify factor impact.';
+  } else {
+    // Generic fallback — still provide useful guidance
+    domain = allNumeric ? 'Numerical / Scientific Measurements' : 'Mixed / General Dataset';
+    if (hasBinaryCol && allNumeric) {
+      likelyGoal = 'This dataset appears structured for a classification task — one or more columns look like binary outcomes (yes/no, pass/fail, 0/1), suggesting the data was collected to understand what predicts those outcomes.';
+      potentialQuestions = [
+        'What input variables best predict the binary outcome column?',
+        'Can we accurately classify new records into the correct category?',
+        'Are there groups of records that share similar patterns?',
+        'Which features contribute most to the predicted result?',
+      ];
+      insight = 'Binary outcome columns (0 and 1) are strong signals for classification tasks. The engine will likely recommend Logistic Regression or Random Forest as the best model types.';
+    } else if (hasHighCardNum && numericCols.length >= 3) {
+      likelyGoal = 'This dataset contains multiple continuous numeric measurements, suggesting it was collected to model relationships between variables or to build a predictive scoring system.';
+      potentialQuestions = [
+        'Which input columns most strongly predict the target variable?',
+        'Can we estimate the target value for a new set of inputs?',
+        'Are there natural clusters or groupings in the data?',
+        'How well do different model types explain the variation in this data?',
+      ];
+      insight = 'Multiple continuous numeric columns are ideal for regression and clustering. The engine will analyse which variables carry the most predictive information.';
+    } else {
+      likelyGoal = 'The dataset contains a mix of measurements and attributes. It was likely collected to find patterns, predict an outcome, or group similar records — the engine will help determine which approach fits best.';
+      potentialQuestions = [
+        'What patterns or relationships exist between the columns?',
+        'Can we predict or estimate a specific outcome from the other variables?',
+        'Are there natural groups or segments hidden in the data?',
+        'Which columns are most informative for making predictions?',
+      ];
+      insight = `With ${dataset.columns.length} columns and ${dataset.rowCount.toLocaleString()} records, running Auto-Detection will help pinpoint the best ML task and target variable for your specific goal.`;
+    }
+  }
+
+  // Fill in missing goal/questions for matched domains that haven't set them yet
+  if (!likelyGoal) {
+    likelyGoal = `This dataset was likely collected to analyse ${domain.toLowerCase()} outcomes and uncover the key factors driving those results.`;
+  }
+
+  return { domain, likelyGoal, potentialQuestions, insight };
+}
 
 // ============================================================
 // Data Summary Helper
@@ -524,18 +712,48 @@ const MLEngineDashboard: React.FC = () => {
               <MetricCard label="File" value={dataset.name.length > 15 ? dataset.name.slice(0, 15) + '…' : dataset.name} color="orange" />
             </div>
 
-            {/* Plain-language data summary */}
-            <Card className="border-emerald-200 bg-emerald-50">
-              <CardHeader className="pb-2 pt-4 px-5">
-                <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-emerald-600" />
-                  <CardTitle className="text-sm font-semibold text-emerald-800">Data Summary</CardTitle>
-                </div>
-              </CardHeader>
-              <CardContent className="px-5 pb-4">
-                <p className="text-sm text-emerald-900 leading-relaxed">{buildDataSummary(dataset)}</p>
-              </CardContent>
-            </Card>
+            {/* Plain-language data summary + purpose */}
+            {(() => {
+              const purpose = inferDatasetPurpose(dataset);
+              return (
+                <Card className="border-emerald-200 bg-emerald-50 overflow-hidden">
+                  {/* ── Purpose Section ── */}
+                  <div className="border-b border-emerald-200 px-5 pt-4 pb-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Lightbulb className="h-4 w-4 text-emerald-600 shrink-0" />
+                      <span className="text-sm font-semibold text-emerald-800">Likely Purpose</span>
+                      <Badge variant="outline" className="ml-auto text-xs border-emerald-300 text-emerald-700 bg-white/60">
+                        {purpose.domain}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-emerald-900 leading-relaxed mb-3">{purpose.likelyGoal}</p>
+                    <p className="text-xs text-emerald-700 italic mb-2">{purpose.insight}</p>
+                    {purpose.potentialQuestions.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1.5">Questions this data could answer</p>
+                        <ul className="space-y-1">
+                          {purpose.potentialQuestions.map((q, i) => (
+                            <li key={i} className="flex items-start gap-2 text-sm text-emerald-900">
+                              <span className="mt-0.5 shrink-0 w-4 h-4 rounded-full bg-emerald-200 text-emerald-700 flex items-center justify-center text-xs font-bold">{i + 1}</span>
+                              {q}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ── Data Summary Section ── */}
+                  <div className="px-5 pt-3 pb-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <FileText className="h-4 w-4 text-emerald-600 shrink-0" />
+                      <span className="text-sm font-semibold text-emerald-800">Data Summary</span>
+                    </div>
+                    <p className="text-sm text-emerald-900 leading-relaxed">{buildDataSummary(dataset)}</p>
+                  </div>
+                </Card>
+              );
+            })()}
 
             {/* Detection result */}
             {det && (
@@ -762,14 +980,27 @@ const MLEngineDashboard: React.FC = () => {
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base">Feature Importance (Correlation with Target)</CardTitle>
                   </CardHeader>
-                  <CardContent>
-                    <ResponsiveContainer width="100%" height={Math.max(200, result.featureImportance.length * 28)}>
-                      <BarChart data={result.featureImportance} layout="vertical" margin={{ left: 10, right: 30 }}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis type="number" domain={[0, 1]} tickFormatter={v => v.toFixed(2)} />
-                        <YAxis type="category" dataKey="feature" width={120} tick={{ fontSize: 11 }} />
-                        <Tooltip formatter={(v: number) => v.toFixed(3)} />
-                        <Bar dataKey="importance" radius={[0, 4, 4, 0]}>
+                  <CardContent className="overflow-x-auto">
+                    <ResponsiveContainer width="100%" height={Math.max(240, result.featureImportance.length * 38)}>
+                      <BarChart
+                        data={result.featureImportance}
+                        layout="vertical"
+                        margin={{ left: 8, right: 40, top: 4, bottom: 4 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                        <XAxis type="number" domain={[0, 1]} tickFormatter={v => v.toFixed(2)} tick={{ fontSize: 11 }} />
+                        <YAxis
+                          type="category"
+                          dataKey="feature"
+                          width={180}
+                          tick={{ fontSize: 11 }}
+                          tickFormatter={(v: string) => v.length > 22 ? v.slice(0, 22) + '…' : v}
+                        />
+                        <Tooltip
+                          formatter={(v: number) => [v.toFixed(3), 'Importance']}
+                          labelFormatter={(label: string) => `Feature: ${label}`}
+                        />
+                        <Bar dataKey="importance" radius={[0, 4, 4, 0]} barSize={22}>
                           {result.featureImportance.map((entry, idx) => (
                             <Cell key={idx} fill={importanceColor(entry.importance)} />
                           ))}
@@ -1096,14 +1327,27 @@ const MLEngineDashboard: React.FC = () => {
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Feature Importance (this model)</CardTitle>
             </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={Math.max(150, evalModel.featureImportance.length * 26)}>
-                <BarChart data={evalModel.featureImportance} layout="vertical" margin={{ left: 10, right: 30 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis type="number" domain={[0, 1]} tickFormatter={v => v.toFixed(2)} />
-                  <YAxis type="category" dataKey="feature" width={120} tick={{ fontSize: 11 }} />
-                  <Tooltip formatter={(v: number) => v.toFixed(3)} />
-                  <Bar dataKey="importance" radius={[0, 4, 4, 0]}>
+            <CardContent className="overflow-x-auto">
+              <ResponsiveContainer width="100%" height={Math.max(180, evalModel.featureImportance.length * 38)}>
+                <BarChart
+                  data={evalModel.featureImportance}
+                  layout="vertical"
+                  margin={{ left: 8, right: 40, top: 4, bottom: 4 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                  <XAxis type="number" domain={[0, 1]} tickFormatter={v => v.toFixed(2)} tick={{ fontSize: 11 }} />
+                  <YAxis
+                    type="category"
+                    dataKey="feature"
+                    width={180}
+                    tick={{ fontSize: 11 }}
+                    tickFormatter={(v: string) => v.length > 22 ? v.slice(0, 22) + '…' : v}
+                  />
+                  <Tooltip
+                    formatter={(v: number) => [v.toFixed(3), 'Importance']}
+                    labelFormatter={(label: string) => `Feature: ${label}`}
+                  />
+                  <Bar dataKey="importance" radius={[0, 4, 4, 0]} barSize={22}>
                     {evalModel.featureImportance.map((entry, idx) => (
                       <Cell key={idx} fill={importanceColor(entry.importance)} />
                     ))}
