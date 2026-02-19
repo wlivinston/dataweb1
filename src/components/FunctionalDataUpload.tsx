@@ -121,11 +121,24 @@ const FunctionalDataUpload: React.FC = () => {
   const colorSchemes = CHART_COLOR_SCHEMES;
 
   const getAccessToken = async (): Promise<string | null> => {
-    if (session?.access_token) return session.access_token;
-    if (!supabase) return null;
+    if (!supabase) {
+      return session?.access_token || null;
+    }
 
-    const { data } = await supabase.auth.getSession();
-    return data.session?.access_token || null;
+    // Prefer the SDK session so we can recover from stale in-memory tokens
+    // after third-party payment redirects.
+    const { data, error } = await supabase.auth.getSession();
+    if (!error && data.session?.access_token) {
+      return data.session.access_token;
+    }
+
+    // Last resort: force refresh.
+    const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+    if (refreshError) {
+      return session?.access_token || null;
+    }
+
+    return refreshed.session?.access_token || session?.access_token || null;
   };
 
   const hasPaidPDFAccess = async (): Promise<boolean> => {
