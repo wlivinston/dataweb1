@@ -1582,6 +1582,96 @@ const MLEngineDashboard: React.FC = () => {
       ? buildDecisionAdvice(predictionResult, model, cleanedDS.targetColumn, predictionInputs)
       : null;
 
+    const downloadPredictionResult = (format: 'txt' | 'json') => {
+      if (!predictionResult || !plainReport || !advice) return;
+
+      const timestamp = new Date().toISOString();
+      const safeTarget = String(cleanedDS.targetColumn || 'result')
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      const filenameBase = `ml-prediction-${safeTarget || 'result'}-${Date.now()}`;
+
+      const metrics: Record<string, number> = {};
+      if (model.regressionMetrics) {
+        metrics.r_squared = model.regressionMetrics.rSquared;
+        metrics.adjusted_r_squared = model.regressionMetrics.adjustedRSquared;
+        metrics.rmse = model.regressionMetrics.rmse;
+        metrics.mae = model.regressionMetrics.mae;
+        metrics.mape = model.regressionMetrics.mape;
+      } else if (model.classificationMetrics) {
+        metrics.accuracy = model.classificationMetrics.accuracy;
+        metrics.precision = model.classificationMetrics.precision;
+        metrics.recall = model.classificationMetrics.recall;
+        metrics.f1 = model.classificationMetrics.f1;
+      } else if (model.clusteringMetrics) {
+        metrics.silhouette_score = model.clusteringMetrics.silhouetteScore;
+        metrics.optimal_k = model.clusteringMetrics.optimalK;
+        metrics.inertia = model.clusteringMetrics.inertia;
+        metrics.davies_bouldin_index = model.clusteringMetrics.daviesBouldinIndex;
+      }
+
+      const exportPayload = {
+        generated_at: timestamp,
+        target_column: cleanedDS.targetColumn,
+        model: {
+          algorithm: model.algorithm,
+          algorithm_label: model.algorithmLabel,
+          problem_type: model.problemType,
+          metrics,
+        },
+        input_values: predictionInputs,
+        prediction: {
+          value: predictionResult.predictedValue,
+          confidence: predictionResult.confidence,
+          confidence_interval: predictionResult.confidenceInterval || null,
+          feature_contributions: predictionResult.featureContributions,
+        },
+        plain_language_report: plainReport,
+        decision_advisory: advice,
+      };
+
+      const textBody = [
+        `ML Prediction Result (${timestamp})`,
+        `Target: ${cleanedDS.targetColumn}`,
+        `Model: ${model.algorithmLabel} (${model.algorithm})`,
+        `Problem Type: ${model.problemType}`,
+        '',
+        `Predicted Value: ${String(predictionResult.predictedValue)}`,
+        `Confidence: ${(predictionResult.confidence * 100).toFixed(1)}%`,
+        predictionResult.confidenceInterval
+          ? `Confidence Interval: ${predictionResult.confidenceInterval.lower.toFixed(2)} - ${predictionResult.confidenceInterval.upper.toFixed(2)}`
+          : 'Confidence Interval: n/a',
+        '',
+        'Inputs',
+        ...Object.entries(predictionInputs).map(([key, value]) => `- ${key}: ${value}`),
+        '',
+        'Plain Language Report',
+        plainReport,
+        '',
+        'Decision Advisory',
+        `- Verdict: ${advice.verdict}`,
+        `- Readiness: ${advice.overallReadiness}`,
+        ...advice.immediateActions.map((item) => `- Act Now: ${item}`),
+        ...advice.watchPoints.map((item) => `- Monitor: ${item}`),
+        ...advice.revisitTriggers.map((item) => `- Revisit: ${item}`),
+      ].join('\n');
+
+      const blob =
+        format === 'json'
+          ? new Blob([JSON.stringify(exportPayload, null, 2)], { type: 'application/json' })
+          : new Blob([textBody], { type: 'text/plain;charset=utf-8' });
+
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${filenameBase}.${format === 'json' ? 'json' : 'txt'}`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+
+      toast.success(`Prediction ${format.toUpperCase()} downloaded.`);
+    };
+
     return (
       <Card className="mt-8 border-2 border-blue-200 bg-gradient-to-br from-blue-50 to-purple-50">
         <CardHeader>
@@ -1637,6 +1727,17 @@ const MLEngineDashboard: React.FC = () => {
           {predictionResult && conf && plainReport && advice && (
             <>
               <Separator className="my-6" />
+
+              <div className="mb-4 flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={() => downloadPredictionResult('txt')}>
+                  <Download className="mr-2 h-4 w-4" />
+                  Download Summary
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => downloadPredictionResult('json')}>
+                  <Download className="mr-2 h-4 w-4" />
+                  Download JSON
+                </Button>
+              </div>
 
               {/* ── Row 1: Predicted value + confidence badge ── */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
