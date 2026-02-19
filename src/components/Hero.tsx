@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
-import { ArrowRight, BarChart3, Upload, Zap, FileText, DollarSign, BrainCircuit } from 'lucide-react';
+import { ArrowRight, BarChart3, Upload, Zap, FileText, BrainCircuit } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 interface HeroProps {
@@ -52,11 +52,11 @@ const Hero: React.FC<HeroProps> = ({ setActiveSection }) => {
             </Button>
             <Button
               size="lg"
-              onClick={() => navigate('/pricing')}
+              onClick={() => navigate('/blog')}
               className="bg-gradient-to-r from-blue-600 to-purple-600 text-white hover:from-blue-700 hover:to-purple-700"
             >
-              <DollarSign className="mr-2 h-4 w-4" />
-              See Pricing
+              <FileText className="mr-2 h-4 w-4" />
+              Blog
             </Button>
             <Button
               size="lg"

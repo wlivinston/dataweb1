@@ -17,7 +17,7 @@ import { Separator } from '@/components/ui/separator';
 import {
   Upload, BrainCircuit, Zap, CheckCircle2, Circle, ChevronRight,
   AlertTriangle, Download, Copy, RefreshCw, TrendingUp, Settings,
-  BarChart2, Layers, Cpu, Rocket, Target
+  BarChart2, Layers, Cpu, Rocket, Target, FileText
 } from 'lucide-react';
 import type { Dataset, ColumnInfo } from '@/lib/types';
 import {
@@ -145,6 +145,79 @@ const parseFileToDataset = async (file: File): Promise<Dataset> => {
     data: rows,
   };
 };
+
+// ============================================================
+// Data Summary Helper
+// ============================================================
+
+function buildDataSummary(dataset: import('@/lib/types').Dataset): string {
+  const cols = dataset.columns;
+  const numericCols = cols.filter(c => c.type === 'number');
+  const categoricalCols = cols.filter(c => c.type === 'string');
+  const totalCells = dataset.rowCount * cols.length;
+  const totalMissing = cols.reduce((sum, c) => sum + (c.nullCount ?? 0), 0);
+  const missingPct = totalCells > 0 ? ((totalMissing / totalCells) * 100).toFixed(1) : '0';
+  const highCardCols = categoricalCols.filter(c => (c.uniqueCount ?? 0) > 20);
+  const lowVarCols = numericCols.filter(c => (c.uniqueCount ?? 0) <= 3);
+
+  const parts: string[] = [];
+
+  // Dataset shape
+  parts.push(
+    `Your dataset "${dataset.name}" contains ${dataset.rowCount.toLocaleString()} records across ${cols.length} column${cols.length !== 1 ? 's' : ''}.`
+  );
+
+  // Column breakdown
+  if (numericCols.length > 0 && categoricalCols.length > 0) {
+    parts.push(
+      `It has ${numericCols.length} numeric column${numericCols.length !== 1 ? 's' : ''} (${numericCols.slice(0, 3).map(c => c.name).join(', ')}${numericCols.length > 3 ? ', …' : ''}) ` +
+      `and ${categoricalCols.length} text/category column${categoricalCols.length !== 1 ? 's' : ''} (${categoricalCols.slice(0, 3).map(c => c.name).join(', ')}${categoricalCols.length > 3 ? ', …' : ''}).`
+    );
+  } else if (numericCols.length > 0) {
+    parts.push(
+      `All ${numericCols.length} columns are numeric (${numericCols.slice(0, 4).map(c => c.name).join(', ')}${numericCols.length > 4 ? ', …' : ''}), which is ideal for regression and clustering models.`
+    );
+  } else {
+    parts.push(
+      `All ${categoricalCols.length} columns contain text or categories. The engine will encode these for machine learning.`
+    );
+  }
+
+  // Data quality
+  if (totalMissing === 0) {
+    parts.push('The data appears complete — no missing values were detected.');
+  } else if (parseFloat(missingPct) < 5) {
+    parts.push(`There are a small number of missing values (${missingPct}% of cells), which the engine will handle automatically during preprocessing.`);
+  } else {
+    parts.push(`About ${missingPct}% of values are missing. The preprocessing step will let you choose how to handle them (fill with averages, remove rows, etc.).`);
+  }
+
+  // High cardinality warning
+  if (highCardCols.length > 0) {
+    parts.push(
+      `Note: ${highCardCols.map(c => `"${c.name}"`).join(', ')} ${highCardCols.length === 1 ? 'has' : 'have'} many unique text values — ${highCardCols.length === 1 ? 'it' : 'they'} may be identifiers (like names or IDs) rather than useful features for prediction.`
+    );
+  }
+
+  // Low-variance numeric columns
+  if (lowVarCols.length > 0 && dataset.rowCount > 20) {
+    parts.push(
+      `The column${lowVarCols.length !== 1 ? 's' : ''} ${lowVarCols.map(c => `"${c.name}"`).join(', ')} ${lowVarCols.length !== 1 ? 'have' : 'has'} very few distinct values and may represent categories rather than measurements.`
+    );
+  }
+
+  // Size guidance
+  if (dataset.rowCount < 50) {
+    parts.push('With fewer than 50 rows, results will be indicative only — more data generally leads to more reliable predictions.');
+  } else if (dataset.rowCount >= 1000) {
+    parts.push(`With ${dataset.rowCount.toLocaleString()} rows, the engine has good signal to train reliable models.`);
+  }
+
+  // Closing instruction
+  parts.push('Click "Run Auto-Detection" below to let the engine identify the best ML approach for this data.');
+
+  return parts.join(' ');
+}
 
 // ============================================================
 // Main Component
@@ -450,6 +523,19 @@ const MLEngineDashboard: React.FC = () => {
               <MetricCard label="Numeric Cols" value={numericCols.length} color="green" />
               <MetricCard label="File" value={dataset.name.length > 15 ? dataset.name.slice(0, 15) + '…' : dataset.name} color="orange" />
             </div>
+
+            {/* Plain-language data summary */}
+            <Card className="border-emerald-200 bg-emerald-50">
+              <CardHeader className="pb-2 pt-4 px-5">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-emerald-600" />
+                  <CardTitle className="text-sm font-semibold text-emerald-800">Data Summary</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent className="px-5 pb-4">
+                <p className="text-sm text-emerald-900 leading-relaxed">{buildDataSummary(dataset)}</p>
+              </CardContent>
+            </Card>
 
             {/* Detection result */}
             {det && (
