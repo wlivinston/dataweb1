@@ -35,6 +35,39 @@ interface BlogPostLayoutProps {
   backendPostId?: string | number | null;
 }
 
+const DISALLOWED_MARKDOWN_ELEMENTS = [
+  "script",
+  "style",
+  "object",
+  "embed",
+  "link",
+  "meta",
+  "form",
+  "input",
+  "button",
+  "textarea",
+  "select",
+] as const;
+
+function isAllowedEmbedUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl, "https://www.dataafrik.com");
+    const host = parsed.hostname.toLowerCase();
+    const protocol = parsed.protocol.toLowerCase();
+
+    if (protocol !== "https:") return false;
+
+    return (
+      host === "www.youtube.com" ||
+      host === "youtube.com" ||
+      host === "www.youtube-nocookie.com" ||
+      host === "youtube-nocookie.com"
+    );
+  } catch {
+    return false;
+  }
+}
+
 function extractHeadings(markdown: string): { id: string; text: string; level: number }[] {
   const headingRegex = /^(#{2,3})\s+(.+)$/gm;
   const headings: { id: string; text: string; level: number }[] = [];
@@ -220,6 +253,8 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 rehypePlugins={[rehypeRaw]}
+                disallowedElements={[...DISALLOWED_MARKDOWN_ELEMENTS]}
+                unwrapDisallowed
                 components={{
                   h2: ({ children, ...props }) => {
                     const text = typeof children === 'string' ? children : String(children);
@@ -249,15 +284,30 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
                       </pre>
                     );
                   },
-                  img: ({ node, src, alt, ...props }) => {
+                  iframe: ({ src, title }) => {
+                    if (!src || !isAllowedEmbedUrl(src)) return null;
+                    return (
+                      <div className="my-6 aspect-video w-full overflow-hidden rounded-lg border border-gray-200">
+                        <iframe
+                          src={src}
+                          title={title || "Embedded content"}
+                          className="h-full w-full"
+                          loading="lazy"
+                          referrerPolicy="strict-origin-when-cross-origin"
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                          allowFullScreen
+                        />
+                      </div>
+                    );
+                  },
+                  img: ({ src, alt, className }) => {
                     if (!src) return null;
                     return (
                       <a href={src} target="_blank" rel="noopener noreferrer" className="block">
                         <img
                           src={src}
                           alt={alt || "Article image"}
-                          {...props}
-                          className={`cursor-zoom-in ${props.className || ""}`.trim()}
+                          className={`cursor-zoom-in ${className || ""}`.trim()}
                           loading="lazy"
                         />
                       </a>
