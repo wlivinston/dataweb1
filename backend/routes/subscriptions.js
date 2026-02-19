@@ -21,6 +21,8 @@ const PAID_PDF_STATUSES = new Set([
   'annual',
 ]);
 
+const EXCHANGE_RATE_CACHE = new Map();
+
 function normalizeBaseUrl(url) {
   return (url || '').replace(/\/+$/, '');
 }
@@ -38,6 +40,92 @@ function normalizeReturnPath(value) {
 
 function isLikelyEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+}
+
+function isTruthyEnv(value, fallback = false) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
+}
+
+function toPositiveNumber(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+function toExchangeRateCacheTtlMs() {
+  const configuredTtl = Number(process.env.EXCHANGE_RATE_CACHE_TTL_MS || 600000);
+  if (!Number.isFinite(configuredTtl) || configuredTtl <= 0) return 600000;
+  return configuredTtl;
+}
+
+async function fetchExchangeRateFromFrankfurter(fromCurrency, toCurrency) {
+  const response = await fetch(
+    `https://api.frankfurter.app/latest?from=${encodeURIComponent(fromCurrency)}&to=${encodeURIComponent(toCurrency)}`
+  );
+
+  const payload = await response.json().catch(() => null);
+  const rate = Number(payload?.rates?.[toCurrency]);
+  if (!response.ok || !Number.isFinite(rate) || rate <= 0) {
+    throw new Error('Frankfurter rate lookup failed');
+  }
+
+  return rate;
+}
+
+async function fetchExchangeRateFromOpenErApi(fromCurrency, toCurrency) {
+  const response = await fetch(
+    `https://open.er-api.com/v6/latest/${encodeURIComponent(fromCurrency)}`
+  );
+
+  const payload = await response.json().catch(() => null);
+  const rate = Number(payload?.rates?.[toCurrency]);
+  if (!response.ok || !Number.isFinite(rate) || rate <= 0) {
+    throw new Error('Open ER API rate lookup failed');
+  }
+
+  return rate;
+}
+
+async function getExchangeRate(fromCurrency, toCurrency) {
+  if (fromCurrency === toCurrency) {
+    return 1;
+  }
+
+  const cacheKey = `${fromCurrency}->${toCurrency}`;
+  const now = Date.now();
+  const ttlMs = toExchangeRateCacheTtlMs();
+  const cached = EXCHANGE_RATE_CACHE.get(cacheKey);
+  if (cached && now - cached.timestamp < ttlMs) {
+    return cached.rate;
+  }
+
+  let resolvedRate = null;
+  let lastError = null;
+
+  const lookups = [fetchExchangeRateFromFrankfurter, fetchExchangeRateFromOpenErApi];
+  for (const lookup of lookups) {
+    try {
+      resolvedRate = await lookup(fromCurrency, toCurrency);
+      if (Number.isFinite(resolvedRate) && resolvedRate > 0) {
+        break;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (!Number.isFinite(resolvedRate) || resolvedRate <= 0) {
+    throw lastError || new Error('Unable to retrieve exchange rate');
+  }
+
+  EXCHANGE_RATE_CACHE.set(cacheKey, {
+    rate: resolvedRate,
+    timestamp: now,
+  });
+
+  return resolvedRate;
 }
 
 function getPdfPlanConfig(plan) {
@@ -609,9 +697,40 @@ router.post('/pdf-checkout', authenticateToken, [
     }
 
     const paystackCurrency = String(process.env.PAYSTACK_CURRENCY || '').trim().toUpperCase();
-    const paystackSingleAmount = Number(process.env.PAYSTACK_PDF_SINGLE_AMOUNT || plan.amount);
-    const paystackMonthlyAmount = Number(process.env.PAYSTACK_PDF_MONTHLY_AMOUNT || plan.amount);
-    const amount = requestedPlan === 'monthly' ? paystackMonthlyAmount : paystackSingleAmount;
+    const paystackBaseCurrency = String(process.env.PAYSTACK_BASE_CURRENCY || 'USD').trim().toUpperCase();
+    const paystackAutoConvert = isTruthyEnv(process.env.PAYSTACK_AUTO_CONVERT, false);
+    const paystackSingleAmountOverride = toPositiveNumber(process.env.PAYSTACK_PDF_SINGLE_AMOUNT);
+    const paystackMonthlyAmountOverride = toPositiveNumber(process.env.PAYSTACK_PDF_MONTHLY_AMOUNT);
+    const overrideAmount =
+      requestedPlan === 'monthly' ? paystackMonthlyAmountOverride : paystackSingleAmountOverride;
+
+    let amount = overrideAmount ?? plan.amount;
+    let resolvedExchangeRate = null;
+    let convertedFromCurrency = null;
+
+    // Optional dynamic conversion from base pricing currency (e.g. USD) to
+    // PAYSTACK_CURRENCY using live exchange rates.
+    if (
+      paystackAutoConvert &&
+      paystackCurrency &&
+      paystackBaseCurrency &&
+      paystackCurrency !== paystackBaseCurrency
+    ) {
+      try {
+        const rate = await getExchangeRate(paystackBaseCurrency, paystackCurrency);
+        const convertedAmount = Number((plan.amount * rate).toFixed(2));
+        if (Number.isFinite(convertedAmount) && convertedAmount > 0) {
+          amount = convertedAmount;
+          resolvedExchangeRate = rate;
+          convertedFromCurrency = paystackBaseCurrency;
+        }
+      } catch (exchangeError) {
+        console.warn(
+          `Paystack FX conversion failed (${paystackBaseCurrency} -> ${paystackCurrency}). Falling back to configured amount.`,
+          exchangeError?.message || exchangeError
+        );
+      }
+    }
     const callbackUrl = `${frontendBase}${returnPath}?pdfPayment=success&provider=paystack`;
     const referenceIdentity =
       customerIdentity ? String(customerIdentity).replace(/[^a-zA-Z0-9_-]/g, '') : 'guest';
@@ -626,6 +745,14 @@ router.post('/pdf-checkout', authenticateToken, [
         ...(customerIdentity ? { customer_id: customerIdentity } : {}),
         email: req.user.email,
         pdf_plan: requestedPlan,
+        ...(convertedFromCurrency
+          ? {
+              fx_base_currency: convertedFromCurrency,
+              fx_target_currency: paystackCurrency,
+              fx_rate: resolvedExchangeRate,
+              fx_converted_amount: amount,
+            }
+          : {}),
       },
     };
 
