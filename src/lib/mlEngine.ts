@@ -147,6 +147,8 @@ export interface ModelResult {
   tree?: DecisionTreeNode;
   forest?: DecisionTreeNode[];
   classValues?: number[];
+  logisticOvRWeights?: number[][];
+  logisticOvRBiases?: number[];
 }
 
 export interface ModelComparisonResult {
@@ -186,6 +188,7 @@ export interface ProcessedDataset {
   columns: string[];
   targetColumn: string;
   featureColumns: string[];
+  scalingMethod: ScalingMethod;
   scalingParams: Record<string, { mean: number; std: number; min: number; max: number }>;
   labelMappings: Record<string, Record<string, number>>;
   reverseLabelMappings: Record<string, Record<number, string>>;
@@ -460,11 +463,33 @@ export const preprocessDataset = (
 
   // Step 4: Drop rows that still have missing target value
   const preDropLength = cleanRows.length;
-  const validRows = cleanRows.filter(r => {
+  const nonMissingTargetRows = cleanRows.filter(r => {
     const v = r[targetColumn];
-    return v !== null && v !== undefined && v !== '' && !isNaN(Number(v));
+    return v !== null && v !== undefined && v !== '';
   });
+  const targetValues = nonMissingTargetRows.map(r => r[targetColumn]);
+  const numericTargetValues = targetValues.map(v => Number(v)).filter(v => !isNaN(v));
+  const targetIsNumeric = numericTargetValues.length >= targetValues.length * 0.85;
+
+  const validRows = targetIsNumeric
+    ? nonMissingTargetRows.filter(r => !isNaN(Number(r[targetColumn])))
+    : nonMissingTargetRows;
+
   const droppedRows = preDropLength - validRows.length;
+
+  // If target is categorical, encode it so classification works with string labels.
+  if (!targetIsNumeric) {
+    const uniqueTargetLabels = [...new Set(validRows.map(r => String(r[targetColumn])))]
+      .sort((a, b) => a.localeCompare(b));
+    const targetMapping: Record<string, number> = {};
+    const targetReverseMapping: Record<number, string> = {};
+    uniqueTargetLabels.forEach((label, idx) => {
+      targetMapping[label] = idx;
+      targetReverseMapping[idx] = label;
+    });
+    labelMappings[targetColumn] = targetMapping;
+    reverseLabelMappings[targetColumn] = targetReverseMapping;
+  }
 
   // Step 5: Label-encode categorical feature columns
   for (const col of validFeatures) {
@@ -545,6 +570,7 @@ export const preprocessDataset = (
     columns: allNumericCols,
     targetColumn,
     featureColumns: validFeatures,
+    scalingMethod: options.scalingMethod,
     scalingParams,
     labelMappings,
     reverseLabelMappings,
@@ -665,11 +691,14 @@ export const computeRegressionMetrics = (
   const adjustedRSquared = n > numFeatures + 1
     ? Math.max(0, 1 - (1 - rSquared) * (n - 1) / (n - numFeatures - 1))
     : rSquared;
-  const nonZeroActuals = actuals.filter(a => Math.abs(a) > 0.001);
-  const mape = nonZeroActuals.length > 0
-    ? mean(predictions.filter((_, i) => Math.abs(actuals[i]) > 0.001)
-        .map((p, i) => Math.abs((p - nonZeroActuals[i]) / nonZeroActuals[i]))) * 100
-    : 0;
+  const ape: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const actual = actuals[i];
+    if (Math.abs(actual) > 0.001) {
+      ape.push(Math.abs((predictions[i] - actual) / actual));
+    }
+  }
+  const mape = ape.length > 0 ? mean(ape) * 100 : 0;
 
   return { rmse, mae, rSquared, adjustedRSquared, mape: Math.min(mape, 9999) };
 };
@@ -722,15 +751,97 @@ export const computeClassificationMetrics = (
 // E. Algorithm Trainers
 // ============================================================
 
-const splitData = (data: Record<string, number>[], splitRatio: number) => {
-  const trainSize = Math.floor(data.length * splitRatio);
-  // Shuffle deterministically
-  const shuffled = [...data].sort((a, b) => {
-    const hashA = Object.values(a).reduce((s, v) => s + v, 0);
-    const hashB = Object.values(b).reduce((s, v) => s + v, 0);
-    return hashA - hashB;
-  });
-  return { train: shuffled.slice(0, trainSize), test: shuffled.slice(trainSize) };
+interface SplitDataOptions {
+  seed?: number;
+  stratifyBy?: string;
+}
+
+const makeSplitSeededRng = (seed: number): (() => number) => {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+const shuffleWithSeed = <T>(items: T[], seed: number): T[] => {
+  const rng = makeSplitSeededRng(seed);
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
+};
+
+const clampSplitRatio = (splitRatio: number): number => {
+  if (!Number.isFinite(splitRatio)) return 0.8;
+  return Math.max(0.5, Math.min(0.95, splitRatio));
+};
+
+const splitData = (
+  data: Record<string, number>[],
+  splitRatio: number,
+  options?: SplitDataOptions
+) => {
+  if (data.length <= 1) {
+    return { train: [...data], test: [] as Record<string, number>[] };
+  }
+
+  const ratio = clampSplitRatio(splitRatio);
+  const seed = options?.seed ?? 20260220;
+  const stratifyBy = options?.stratifyBy;
+
+  if (!stratifyBy) {
+    const shuffled = shuffleWithSeed(data, seed);
+    let trainSize = Math.floor(shuffled.length * ratio);
+    trainSize = Math.max(1, Math.min(shuffled.length - 1, trainSize));
+    return { train: shuffled.slice(0, trainSize), test: shuffled.slice(trainSize) };
+  }
+
+  const groups = new Map<string, Record<string, number>[]>();
+  for (const row of data) {
+    const key = String(row[stratifyBy]);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(row);
+  }
+
+  const train: Record<string, number>[] = [];
+  const test: Record<string, number>[] = [];
+  let groupOffset = 0;
+
+  for (const groupRows of groups.values()) {
+    const shuffledGroup = shuffleWithSeed(groupRows, seed + groupOffset * 97 + groupRows.length);
+    groupOffset++;
+
+    let groupTrainSize = Math.floor(shuffledGroup.length * ratio);
+    if (shuffledGroup.length > 1) {
+      groupTrainSize = Math.max(1, Math.min(shuffledGroup.length - 1, groupTrainSize));
+    } else {
+      groupTrainSize = 1;
+    }
+
+    train.push(...shuffledGroup.slice(0, groupTrainSize));
+    test.push(...shuffledGroup.slice(groupTrainSize));
+  }
+
+  const shuffledTrain = shuffleWithSeed(train, seed + 13);
+  const shuffledTest = shuffleWithSeed(test, seed + 29);
+
+  if (shuffledTrain.length === 0) {
+    const fallback = shuffleWithSeed(data, seed + 41);
+    return { train: [fallback[0]], test: fallback.slice(1) };
+  }
+  if (shuffledTest.length === 0) {
+    const fallback = shuffleWithSeed(shuffledTrain, seed + 53);
+    return { train: fallback.slice(0, fallback.length - 1), test: [fallback[fallback.length - 1]] };
+  }
+
+  return { train: shuffledTrain, test: shuffledTest };
 };
 
 const datasetFromRows = (rows: Record<string, number>[], columns: string[], target: string, features: string[]): Dataset => ({
@@ -755,7 +866,7 @@ const trainLinearRegression = (
 ): ModelResult => {
   const start = Date.now();
   const { data, targetColumn, featureColumns } = processedDataset;
-  const { train, test } = splitData(data, trainTestSplit);
+  const { train, test } = splitData(data, trainTestSplit, { seed: 20260220 });
 
   const trainDS = datasetFromRows(train, processedDataset.columns, targetColumn, featureColumns);
   const regResult = multipleRegression(trainDS, targetColumn, featureColumns);
@@ -803,14 +914,15 @@ const trainLogisticRegression = (
 ): ModelResult => {
   const start = Date.now();
   const { data, targetColumn, featureColumns } = processedDataset;
-  const { train, test } = splitData(data, trainTestSplit);
+  const { train, test } = splitData(data, trainTestSplit, {
+    seed: 20260221,
+    stratifyBy: targetColumn,
+  });
 
   // Get class labels
   const allTargets = data.map(r => r[targetColumn]);
   const uniqueClasses = [...new Set(allTargets.map(v => Math.round(v)))].sort((a, b) => a - b);
-  const nClasses = Math.min(uniqueClasses.length, 10);
-  const classMap: Record<number, number> = {};
-  uniqueClasses.slice(0, nClasses).forEach((c, i) => { classMap[c] = i; });
+  const nClasses = uniqueClasses.length;
 
   const nFeatures = featureColumns.length;
   const lr = 0.05;
@@ -825,10 +937,17 @@ const trainLogisticRegression = (
     let bias = 0;
 
     const yBinary = train.map(r => Math.round(r[targetColumn]) === uniqueClasses[ci] ? 1 : 0);
+    const posCount = yBinary.reduce((s, y) => s + y, 0);
+    const negCount = Math.max(0, train.length - posCount);
+    const posWeight = posCount > 0 ? train.length / (2 * posCount) : 1;
+    const negWeight = negCount > 0 ? train.length / (2 * negCount) : 1;
+    let previousLoss = Number.POSITIVE_INFINITY;
+    let stagnantChecks = 0;
 
     for (let iter = 0; iter < maxIter; iter++) {
       let dBias = 0;
       const dWeights = new Array(nFeatures).fill(0);
+      let weightedLoss = 0;
 
       for (let i = 0; i < train.length; i++) {
         const row = train[i];
@@ -837,16 +956,31 @@ const trainLogisticRegression = (
           z += weights[j] * (row[featureColumns[j]] || 0);
         }
         const pred = sigmoid(z);
-        const error = pred - yBinary[i];
+        const y = yBinary[i];
+        const sampleWeight = y === 1 ? posWeight : negWeight;
+        const error = (pred - y) * sampleWeight;
         dBias += error;
         for (let j = 0; j < nFeatures; j++) {
           dWeights[j] += error * (row[featureColumns[j]] || 0);
         }
+        const clippedPred = Math.min(1 - 1e-12, Math.max(1e-12, pred));
+        weightedLoss += sampleWeight * (-(y * Math.log(clippedPred) + (1 - y) * Math.log(1 - clippedPred)));
       }
 
       bias -= lr * dBias / train.length;
       for (let j = 0; j < nFeatures; j++) {
         weights[j] -= lr * dWeights[j] / train.length;
+      }
+
+      if (iter % 25 === 0 || iter === maxIter - 1) {
+        const normalizedLoss = weightedLoss / train.length;
+        if (previousLoss - normalizedLoss < 1e-6) {
+          stagnantChecks++;
+        } else {
+          stagnantChecks = 0;
+        }
+        previousLoss = normalizedLoss;
+        if (stagnantChecks >= 3) break;
       }
     }
 
@@ -869,7 +1003,7 @@ const trainLogisticRegression = (
   const actuals = test.map(r => Math.round(r[targetColumn]));
 
   const reverseLM = processedDataset.reverseLabelMappings[targetColumn] || {};
-  const classLabels = uniqueClasses.slice(0, nClasses).map(c =>
+  const classLabels = uniqueClasses.map(c =>
     reverseLM[c] !== undefined ? reverseLM[c] : String(c)
   );
 
@@ -906,6 +1040,9 @@ const trainLogisticRegression = (
     featureImportance: avgWeights,
     interpretation: `Logistic Regression achieved accuracy = ${(metrics.accuracy * 100).toFixed(1)}%, F1 = ${metrics.f1.toFixed(3)}.`,
     isTopModel: false,
+    classValues: uniqueClasses,
+    logisticOvRWeights: allWeights,
+    logisticOvRBiases: allBiases,
   };
 };
 
@@ -1252,7 +1389,10 @@ const trainDecisionTree = (
 ): ModelResult => {
   const start = Date.now();
   const { data, targetColumn, featureColumns } = processedDataset;
-  const { train, test } = splitData(data, trainTestSplit);
+  const { train, test } = splitData(data, trainTestSplit, {
+    seed: 20260222,
+    stratifyBy: problemType === 'classification' ? targetColumn : undefined,
+  });
   const featureGain: Record<string, number> = {};
   featureColumns.forEach(f => { featureGain[f] = 0; });
 
@@ -1262,8 +1402,7 @@ const trainDecisionTree = (
 
   if (problemType === 'classification') {
     const classValues = [...new Set(data.map(r => Math.round(r[targetColumn])))]
-      .sort((a, b) => a - b)
-      .slice(0, 20);
+      .sort((a, b) => a - b);
     const classIndexByValue: Record<number, number> = {};
     classValues.forEach((v, i) => { classIndexByValue[v] = i; });
     const nClasses = classValues.length;
@@ -1345,8 +1484,11 @@ const trainRandomForest = (
 ): ModelResult => {
   const start = Date.now();
   const { data, targetColumn, featureColumns } = processedDataset;
-  const { train, test } = splitData(data, trainTestSplit);
-  const nTrees = train.length > 3000 ? 9 : 11;
+  const { train, test } = splitData(data, trainTestSplit, {
+    seed: 20260223,
+    stratifyBy: problemType === 'classification' ? targetColumn : undefined,
+  });
+  const nTrees = train.length > 8000 ? 11 : train.length > 3000 ? 15 : 21;
   const forest: DecisionTreeNode[] = [];
   const cumulativeGain: Record<string, number> = {};
   featureColumns.forEach(f => { cumulativeGain[f] = 0; });
@@ -1360,8 +1502,7 @@ const trainRandomForest = (
 
   if (problemType === 'classification') {
     const classValues = [...new Set(data.map(r => Math.round(r[targetColumn])))]
-      .sort((a, b) => a - b)
-      .slice(0, 20);
+      .sort((a, b) => a - b);
     const classIndexByValue: Record<number, number> = {};
     classValues.forEach((v, i) => { classIndexByValue[v] = i; });
     const nClasses = classValues.length;
@@ -1613,7 +1754,7 @@ export const makePrediction = (
   processedDataset: ProcessedDataset
 ): PredictionResult => {
   const { featureValues, model, featureColumns, targetColumn } = request;
-  const { labelMappings, scalingParams, reverseLabelMappings } = processedDataset;
+  const { labelMappings, scalingParams, reverseLabelMappings, scalingMethod } = processedDataset;
 
   // Convert inputs to numeric (apply same scaling as training)
   const numericInputs: Record<string, number> = {};
@@ -1627,14 +1768,12 @@ export const makePrediction = (
     }
 
     const sp = scalingParams[col];
-    if (sp && processedDataset.data.length > 0) {
-      const sampleVal = processedDataset.data[0][col];
-      const originalScale = sp.min + sampleVal * (sp.max - sp.min);
-      const isMinMax = Math.abs(originalScale - sp.mean) < Math.abs(processedDataset.data[0][col] - sp.mean);
-      if (isMinMax) {
-        val = (val - sp.min) / (sp.max - sp.min);
-      } else {
-        val = (val - sp.mean) / sp.std;
+    if (sp && scalingMethod !== 'none') {
+      if (scalingMethod === 'min_max') {
+        const range = sp.max - sp.min;
+        val = range === 0 ? 0 : (val - sp.min) / range;
+      } else if (scalingMethod === 'z_score') {
+        val = (val - sp.mean) / (sp.std || 1);
       }
     }
 
@@ -1661,6 +1800,48 @@ export const makePrediction = (
   const topFromContrib = (items: { feature: string; contribution: number; direction: 'positive' | 'negative' }[]) => {
     return [...items].sort((a, b) => b.contribution - a.contribution)[0];
   };
+
+  if (
+    model.algorithm === 'logistic_regression' &&
+    model.logisticOvRWeights &&
+    model.logisticOvRBiases &&
+    model.classValues &&
+    model.classValues.length > 0
+  ) {
+    const rawScores = model.logisticOvRWeights.map((weights, ci) => {
+      let z = model.logisticOvRBiases?.[ci] ?? 0;
+      for (let j = 0; j < featureColumns.length; j++) {
+        z += (weights[j] || 0) * (numericInputs[featureColumns[j]] || 0);
+      }
+      return sigmoid(z);
+    });
+
+    const bestClassIdx = rawScores.indexOf(Math.max(...rawScores));
+    const normalizer = rawScores.reduce((s, v) => s + v, 0);
+    const confidence = normalizer > 0 ? rawScores[bestClassIdx] / normalizer : 0.5;
+    const classValue = model.classValues[bestClassIdx];
+    const label = reverseLabelMappings[targetColumn]?.[classValue] ?? String(classValue);
+
+    const winningWeights = model.logisticOvRWeights[bestClassIdx] || [];
+    const featureContributions = featureColumns.map((feature, idx) => {
+      const signed = (winningWeights[idx] || 0) * (numericInputs[feature] || 0);
+      return {
+        feature,
+        contribution: Math.abs(signed),
+        direction: signed >= 0 ? 'positive' as const : 'negative' as const,
+      };
+    });
+    const topContributor = topFromContrib(featureContributions);
+
+    return {
+      predictedValue: label,
+      confidence: Math.max(0.35, Math.min(0.99, confidence)),
+      featureContributions,
+      explanation: topContributor
+        ? `Logistic Regression score was influenced most by "${topContributor.feature}".`
+        : `Prediction made using ${model.algorithmLabel}.`,
+    };
+  }
 
   if (model.algorithm === 'decision_tree' && model.tree) {
     const detail = predictWithTreeDetail(model.tree, numericInputs);
@@ -1830,13 +2011,15 @@ export const generateDeploymentGuidance = (
     feature_columns: featureColumns,
     problem_type: model.problemType,
     preprocessing: {
-      scaling: processedDataset.scalingParams[featureColumns[0]] ? 'z_score' : 'none',
+      scaling: processedDataset.scalingMethod,
       scaling_params: scalingParams,
       label_mappings: labelMappings,
     },
     parameters: {
       intercept: model.intercept ?? null,
       coefficients: model.coefficients ?? null,
+      logistic_ovr_weights: model.logisticOvRWeights ?? null,
+      logistic_ovr_biases: model.logisticOvRBiases ?? null,
       centroids: model.centroids ?? null,
       tree: model.tree ?? null,
       forest: model.forest ?? null,
