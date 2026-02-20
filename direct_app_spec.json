@@ -21,6 +21,10 @@
           "type": "SECRET"
         },
         {
+          "key": "VITE_BACKEND_URL",
+          "value": "https://clownfish-app-3hmi3.ondigitalocean.app"
+        },
+        {
           "key": "NODE_ENV",
           "value": "production"
         }
@@ -65,6 +69,10 @@
           "type": "SECRET"
         },
         {
+          "key": "FRONTEND_URL",
+          "value": "https://www.dataafrik.com"
+        },
+        {
           "key": "NODE_ENV",
           "value": "production"
         },
@@ -79,7 +87,7 @@
         }
       ],
       "health_check": {
-        "http_path": "/api/health",
+        "http_path": "/health",
         "initial_delay_seconds": 10,
         "interval_seconds": 10,
         "timeout_seconds": 5,

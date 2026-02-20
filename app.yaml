@@ -4,7 +4,7 @@ services:
   - name: frontend
     source_dir: /
     github:
-      repo: wlivinston/dataweb
+      repo: wlivinston/dataweb1
       branch: master
     build_command: npm install --legacy-peer-deps && npm run build
     run_command: npx serve -s dist -l $PORT
@@ -36,7 +36,7 @@ services:
   - name: backend
     source_dir: backend
     github:
-      repo: wlivinston/dataweb
+      repo: wlivinston/dataweb1
       branch: master
     # force clean, lockfile-based install so deps (e.g., gray-matter) are present
     build_command: npm_config_ci=true npm ci --omit=dev --no-audit --loglevel=error
@@ -67,7 +67,7 @@ services:
   - name: ml-hub
     source_dir: streamlit_apps
     github:
-      repo: wlivinston/dataweb
+      repo: wlivinston/dataweb1
       branch: master
     build_command: pip install -r requirements.txt
     # Run Streamlit directly without health check for now
