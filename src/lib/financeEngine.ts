@@ -1076,6 +1076,30 @@ export function generateCashFlow(
   };
 }
 
+function getBalanceSheetCashTotal(bs: BalanceSheet): number {
+  const cashLike = [...bs.currentAssets, ...bs.nonCurrentAssets]
+    .filter(item => /(cash|bank|cash equivalents?)/i.test(item.label))
+    .reduce((sum, item) => sum + item.amount, 0);
+  return Math.round(cashLike * 100) / 100;
+}
+
+function detectBalanceSheetClassificationCaveats(bs: BalanceSheet): string[] {
+  const caveats: string[] = [];
+
+  const longTermAssetKeywords = /(building|land|equipment|goodwill|intangible|leasehold|vehicle|plant|machinery|furniture|fixture)/i;
+  const currentAssetOutliers = bs.currentAssets
+    .filter(item => longTermAssetKeywords.test(item.label))
+    .map(item => item.label);
+
+  if (currentAssetOutliers.length > 0) {
+    caveats.push(
+      `Caveat: ${currentAssetOutliers.length} likely long-term asset account(s) appear under Current Assets (${currentAssetOutliers.slice(0, 3).join(', ')}${currentAssetOutliers.length > 3 ? ', ...' : ''}). Review mapping.`
+    );
+  }
+
+  return caveats;
+}
+
 // ============================================================
 // 8. FINANCIAL RATIOS
 // ============================================================
@@ -1334,14 +1358,46 @@ export async function generateFinancialReport(
 ): Promise<FinancialReport> {
   const warnings: string[] = [];
   const yieldToBrowser = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
+  const SYNTHETIC_SOURCE_COLUMNS = new Set(['Single_Entry_Offset', 'Opening_Balance_Fix']);
 
   // Step 1: Parse transactions
   onProgress?.(10, 'Parsing and classifying transactions...');
   await yieldToBrowser();
   const transactions = parseTransactions(data, mapping);
 
+  const syntheticRowIndexes = new Set<number>();
+  for (let index = 0; index < data.length; index++) {
+    const row = data[index];
+    const sourceColumn = String(row.SourceColumn || '').trim();
+    const accountText = String(row.Account || '').toLowerCase();
+    const descriptionText = String(row.Description || '').toLowerCase();
+
+    const syntheticBySource = SYNTHETIC_SOURCE_COLUMNS.has(sourceColumn);
+    const syntheticByAccount = accountText.includes('system clearing account');
+    const syntheticByDescription =
+      descriptionText.includes('auto-generated opening initialization offset') ||
+      descriptionText.includes('auto-generated opening balance');
+
+    if (syntheticBySource || syntheticByAccount || syntheticByDescription) {
+      syntheticRowIndexes.add(index);
+    }
+  }
+
+  const syntheticTransactions = transactions.filter(
+    tx => tx.originalRow != null && syntheticRowIndexes.has(tx.originalRow)
+  );
+  const transactionsForCashAnalysis = transactions.filter(
+    tx => tx.originalRow == null || !syntheticRowIndexes.has(tx.originalRow)
+  );
+
   if (transactions.length === 0) {
     warnings.push('No valid transactions were found. Please check your column mapping.');
+  }
+
+  if (syntheticTransactions.length > 0) {
+    warnings.push(
+      `Caveat: ${syntheticTransactions.length} synthetic balancing row(s) detected (e.g., System Clearing / Single_Entry_Offset). They are excluded from Cash Flow and cash-driven ratio analysis.`
+    );
   }
 
   // Step 2: Generate P&L
@@ -1419,18 +1475,62 @@ export async function generateFinancialReport(
   // Step 4: Generate Cash Flow
   onProgress?.(70, 'Generating Cash Flow Statement...');
   await yieldToBrowser();
-  const cf = generateCashFlow(transactions, periodLabel, pnl.netIncome);
+  const cashFlowSource = transactionsForCashAnalysis.length > 0
+    ? transactionsForCashAnalysis
+    : transactions;
+  if (transactionsForCashAnalysis.length === 0 && syntheticTransactions.length > 0) {
+    warnings.push('Caveat: all rows were detected as synthetic; Cash Flow fallback used full journal and may be unreliable.');
+  }
+  const cf = generateCashFlow(cashFlowSource, periodLabel, pnl.netIncome);
+
+  const uniqueDatesForCash = new Set(
+    cashFlowSource
+      .map(tx => (tx.date || '').trim())
+      .filter(date => date.length > 0)
+  );
+  if (cashFlowSource.length >= 20 && uniqueDatesForCash.size <= 2) {
+    warnings.push(
+      'Caveat: dataset appears to be a period summary (very few transaction dates). Cash Flow and cash ratios may not reflect real movement timing.'
+    );
+  }
+
+  const balanceSheetCash = getBalanceSheetCashTotal(bs);
+  const cashGap = Math.round((cf.endingCash - balanceSheetCash) * 100) / 100;
+  if (Math.abs(cashGap) > 0.01) {
+    warnings.push(
+      `Caveat: Cash Flow ending cash (${cf.endingCash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}) differs from Balance Sheet cash (${balanceSheetCash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}) by ${cashGap.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`
+    );
+  }
+
+  if (cf.endingCash < 0) {
+    warnings.push(
+      'Caveat: ending cash is negative. This may indicate a true funding gap or data-quality issues (mapping/opening offsets). Verify cash accounts and financing entries.'
+    );
+  }
 
   // Step 5: Calculate Ratios
   onProgress?.(85, 'Calculating Financial Ratios...');
   await yieldToBrowser();
   const ratios = calculateFinancialRatios(pnl, bs, cf);
   const ratioInterpretations = interpretRatios(ratios);
+  warnings.push(...detectBalanceSheetClassificationCaveats(bs));
 
   // Step 6: Health Score
   onProgress?.(95, 'Computing Financial Health Score...');
   await yieldToBrowser();
-  const healthScore = calculateHealthScore(ratios, bs);
+  let healthScore = calculateHealthScore(ratios, bs);
+  let healthAdjustment = 0;
+  if (syntheticTransactions.length > 0) healthAdjustment -= 8;
+  if (Math.abs(cashGap) > 0.01) healthAdjustment -= 10;
+  if (cf.endingCash < 0) healthAdjustment -= 7;
+  if (cashFlowSource.length >= 20 && uniqueDatesForCash.size <= 2) healthAdjustment -= 6;
+
+  if (healthAdjustment !== 0) {
+    healthScore = Math.max(0, Math.min(100, healthScore + healthAdjustment));
+    warnings.push(
+      `Health score adjusted by ${healthAdjustment} points due to cash/data reliability caveats.`
+    );
+  }
 
   onProgress?.(100, 'Complete!');
   await yieldToBrowser();
