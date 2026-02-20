@@ -98,6 +98,46 @@ const EXPENSE_COLUMN_HINTS = [
   'interest expense',
 ];
 
+const INCOME_TYPE_HINTS = [
+  'income',
+  'revenue',
+  'sales',
+  'credit',
+  'cr',
+  'gain',
+  'other income',
+  'liability',
+  'payable',
+  'loan',
+  'debt',
+  'equity',
+  'capital',
+  'retained earnings',
+  'deferred revenue',
+  'unearned revenue',
+];
+
+const EXPENSE_TYPE_HINTS = [
+  'expense',
+  'debit',
+  'dr',
+  'cost',
+  'cogs',
+  'opex',
+  'tax',
+  'loss',
+  'other expense',
+  'asset',
+  'cash',
+  'bank',
+  'receivable',
+  'inventory',
+  'prepaid',
+  'fixed asset',
+  'property',
+  'equipment',
+];
+
 const FINANCIAL_CATEGORY_HINTS = [
   ...INCOME_COLUMN_HINTS,
   ...EXPENSE_COLUMN_HINTS,
@@ -203,21 +243,142 @@ function inferTypeFromTypeField(rawType: any): CanonicalTransactionType | null {
   if (rawType == null || rawType === '') return null;
 
   const typeText = normalizeName(String(rawType));
-  if (['income', 'revenue', 'credit', 'cr', 'sales'].includes(typeText)) {
-    return 'Income';
-  }
-  if (['expense', 'debit', 'dr', 'cost'].includes(typeText)) {
-    return 'Expense';
+  if (!typeText) return null;
+
+  let incomeScore = 0;
+  let expenseScore = 0;
+
+  for (const keyword of INCOME_TYPE_HINTS) {
+    if (typeText.includes(keyword)) {
+      incomeScore += keyword.length > 3 ? 2 : 1;
+    }
   }
 
-  if (typeText.includes('income') || typeText.includes('revenue') || typeText.includes('credit')) {
-    return 'Income';
+  for (const keyword of EXPENSE_TYPE_HINTS) {
+    if (typeText.includes(keyword)) {
+      expenseScore += keyword.length > 3 ? 2 : 1;
+    }
   }
-  if (typeText.includes('expense') || typeText.includes('debit') || typeText.includes('cost')) {
-    return 'Expense';
+
+  if (incomeScore === 0 && expenseScore === 0) return null;
+  if (incomeScore === expenseScore) return null;
+  return incomeScore > expenseScore ? 'Income' : 'Expense';
+}
+
+function inferTypeFromContext(values: any[]): CanonicalTransactionType | null {
+  const context = normalizeName(
+    values
+      .filter(value => value != null && String(value).trim() !== '')
+      .map(value => String(value))
+      .join(' | ')
+  );
+
+  if (!context) return null;
+
+  let incomeScore = 0;
+  let expenseScore = 0;
+
+  for (const keyword of INCOME_TYPE_HINTS) {
+    if (context.includes(keyword)) {
+      incomeScore += keyword.length > 3 ? 2 : 1;
+    }
+  }
+
+  for (const keyword of EXPENSE_TYPE_HINTS) {
+    if (context.includes(keyword)) {
+      expenseScore += keyword.length > 3 ? 2 : 1;
+    }
+  }
+
+  if (incomeScore === 0 && expenseScore === 0) return null;
+  if (incomeScore === expenseScore) return null;
+  return incomeScore > expenseScore ? 'Income' : 'Expense';
+}
+
+function quarterEndDate(year: number, quarter: number): string {
+  const month = quarter * 3;
+  const day = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function inferDateFromText(text: string): string | null {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  const quarterPrefix = raw.match(/\bq([1-4])\s*[-_/ ]?\s*(20\d{2}|19\d{2})\b/i);
+  if (quarterPrefix) {
+    return quarterEndDate(Number(quarterPrefix[2]), Number(quarterPrefix[1]));
+  }
+
+  const quarterSuffix = raw.match(/\b(20\d{2}|19\d{2})\s*[-_/ ]?\s*q([1-4])\b/i);
+  if (quarterSuffix) {
+    return quarterEndDate(Number(quarterSuffix[1]), Number(quarterSuffix[2]));
+  }
+
+  const fiscalYear = raw.match(/\bfy\s*[-_/ ]?\s*(20\d{2}|19\d{2})\b/i);
+  if (fiscalYear) {
+    return `${fiscalYear[1]}-12-31`;
+  }
+
+  const monthYear = raw.match(
+    /\b(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b[^0-9]*(20\d{2}|19\d{2})\b/i
+  );
+  if (monthYear) {
+    const parsed = Date.parse(`1 ${monthYear[1]} ${monthYear[2]}`);
+    if (!Number.isNaN(parsed)) {
+      const monthDate = new Date(parsed);
+      const year = monthDate.getUTCFullYear();
+      const month = monthDate.getUTCMonth() + 1;
+      const day = new Date(Date.UTC(year, month, 0)).getUTCDate();
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
+
+  const explicitYear = raw.match(/\b(20\d{2}|19\d{2})\b/);
+  if (explicitYear) {
+    return `${explicitYear[1]}-12-31`;
   }
 
   return null;
+}
+
+function inferFallbackDateForLongImport(data: Record<string, any>[], mapping: FinanceColumnMapping): string {
+  const candidates = [mapping.date, mapping.amount, mapping.debit, mapping.credit].filter(Boolean) as string[];
+
+  for (const column of candidates) {
+    const inferredFromHeader = inferDateFromText(column);
+    if (inferredFromHeader) return inferredFromHeader;
+  }
+
+  if (mapping.date) {
+    for (const row of data.slice(0, 200)) {
+      const parsed = parseDateValue(row[mapping.date]);
+      if (parsed) return parsed;
+    }
+  }
+
+  return new Date().toISOString().slice(0, 10);
+}
+
+function isLikelyAggregateLabel(text: string): boolean {
+  const normalized = normalizeName(text);
+  if (!normalized) return false;
+
+  return (
+    /^(grand total|subtotal|sub total|total)\b/.test(normalized) ||
+    /^(net income|net loss|net profit)\b/.test(normalized) ||
+    /^(gross profit|operating income|operating profit|operating loss)\b/.test(normalized) ||
+    /^(ebitda|ebit)\b/.test(normalized) ||
+    /total$/.test(normalized)
+  );
+}
+
+function hasLikelyAccountCodeValue(row: Record<string, any>): boolean {
+  return Object.entries(row).some(([key, value]) => {
+    if (!/account.?code|gl.?code|ledger.?code|code|id/i.test(key)) return false;
+    if (value == null) return false;
+    return String(value).trim().length > 0;
+  });
 }
 
 function inferColumnIntent(column: string): 'income' | 'expense' | 'unknown' {
@@ -446,11 +607,25 @@ export function transformLongDatasetToCanonical(
   );
 
   if (data.length > 0) {
-    const allColumns = Object.keys(data[0]);
+    const allColumns = Array.from(
+      new Set(
+        data
+          .slice(0, 300)
+          .flatMap(row => Object.keys(row))
+      )
+    );
     const unmappedColumns = allColumns.filter(column => !mappedColumns.has(column));
     if (unmappedColumns.length > 0) {
       auditLog.push(`Transformation layer: unmapped columns retained for traceability -> ${unmappedColumns.join(', ')}.`);
     }
+  }
+
+  const fallbackDate = inferFallbackDateForLongImport(data, mapping);
+  let fallbackDateRows = 0;
+  let skippedAggregateRows = 0;
+
+  if (!mapping.date) {
+    auditLog.push(`Transformation layer: no date column mapped; fallback date "${fallbackDate}" will be applied.`);
   }
 
   for (let index = 0; index < data.length; index++) {
@@ -458,7 +633,9 @@ export function transformLongDatasetToCanonical(
     const flags: string[] = [];
 
     const rawDate = mapping.date ? row[mapping.date] : row.Date;
-    const parsedDate = parseDateValue(rawDate) || String(rawDate ?? '').trim();
+    const parsedDateFromRow = parseDateValue(rawDate);
+    const parsedDate = parsedDateFromRow || fallbackDate;
+    const usedDateFallback = !parsedDateFromRow;
 
     const account =
       (mapping.account ? String(row[mapping.account] ?? '').trim() : '') ||
@@ -503,6 +680,10 @@ export function transformLongDatasetToCanonical(
             ? mapping.credit || 'Credit'
             : mapping.debit || 'Debit';
 
+      if (usedDateFallback) {
+        flags.push('date_fallback_applied');
+      }
+
       transactions.push({
         Date: parsedDate,
         Account: account,
@@ -516,6 +697,10 @@ export function transformLongDatasetToCanonical(
         Flags: flags.length > 0 ? flags : undefined,
       });
 
+      if (usedDateFallback) {
+        fallbackDateRows += 1;
+      }
+
       continue;
     }
 
@@ -523,16 +708,45 @@ export function transformLongDatasetToCanonical(
       const rawAmount = parseNumericValue(row[mapping.amount]);
       if (rawAmount == null || rawAmount === 0) continue;
 
+      const looksLikeAggregate =
+        isLikelyAggregateLabel(account) ||
+        isLikelyAggregateLabel(category) ||
+        (description ? isLikelyAggregateLabel(description) : false);
+      if (looksLikeAggregate && !hasLikelyAccountCodeValue(row)) {
+        skippedAggregateRows += 1;
+        continue;
+      }
+
       const typeFromField = mapping.type ? inferTypeFromTypeField(row[mapping.type]) : null;
-      const type: CanonicalTransactionType = typeFromField || (rawAmount >= 0 ? 'Income' : 'Expense');
+      const typeFromContext = inferTypeFromContext([
+        mapping.type ? row[mapping.type] : null,
+        mapping.category ? row[mapping.category] : null,
+        mapping.account ? row[mapping.account] : null,
+        mapping.description ? row[mapping.description] : null,
+        account,
+        category,
+        description,
+      ]);
+      const inferredType = typeFromField || typeFromContext;
+      let type: CanonicalTransactionType = inferredType || (rawAmount >= 0 ? 'Income' : 'Expense');
 
       if (rawAmount < 0) {
         flags.push('negative_value_normalized');
+        // When type is inferred from labels (e.g., Revenue/COGS sections), negative values
+        // usually mean contra entries and should reverse direction.
+        if (inferredType) {
+          type = inferredType === 'Income' ? 'Expense' : 'Income';
+          flags.push('negative_sign_flipped_type');
+        }
       }
 
       const normalizedAmount = Math.abs(rawAmount);
       const debit = type === 'Expense' ? normalizedAmount : 0;
       const credit = type === 'Income' ? normalizedAmount : 0;
+
+      if (usedDateFallback) {
+        flags.push('date_fallback_applied');
+      }
 
       transactions.push({
         Date: parsedDate,
@@ -546,7 +760,21 @@ export function transformLongDatasetToCanonical(
         SourceRow: index,
         Flags: flags.length > 0 ? flags : undefined,
       });
+
+      if (usedDateFallback) {
+        fallbackDateRows += 1;
+      }
     }
+  }
+
+  if (fallbackDateRows > 0) {
+    warnings.push(`${fallbackDateRows} rows used fallback date ${fallbackDate}.`);
+    auditLog.push(`Transformation layer: applied fallback date "${fallbackDate}" to ${fallbackDateRows} rows.`);
+  }
+
+  if (skippedAggregateRows > 0) {
+    warnings.push(`${skippedAggregateRows} aggregate/summary rows were skipped to avoid double-counting.`);
+    auditLog.push(`Transformation layer: skipped ${skippedAggregateRows} aggregate rows without account codes.`);
   }
 
   const normalizedRows = transactions.filter(tx => tx.Flags?.includes('negative_value_normalized')).length;
@@ -591,9 +819,22 @@ export function transformWideDatasetToCanonical(
     warnings.push(`Columns selected as both income and expense: ${duplicateSelections.join(', ')}.`);
   }
 
+  const fallbackWideDate =
+    inferDateFromText(config.dateColumn) ||
+    (() => {
+      for (const row of data.slice(0, 200)) {
+        const parsed = parseDateValue(row[config.dateColumn]);
+        if (parsed) return parsed;
+      }
+      return new Date().toISOString().slice(0, 10);
+    })();
+  let fallbackWideDateRows = 0;
+
   for (let rowIndex = 0; rowIndex < data.length; rowIndex++) {
     const row = data[rowIndex];
-    const parsedDate = parseDateValue(row[config.dateColumn]) || String(row[config.dateColumn] ?? '').trim();
+    const parsedDateFromRow = parseDateValue(row[config.dateColumn]);
+    const parsedDate = parsedDateFromRow || fallbackWideDate;
+    const usedDateFallback = !parsedDateFromRow;
 
     for (const sourceColumn of config.incomeColumns) {
       const rawAmount = parseNumericValue(row[sourceColumn]);
@@ -602,6 +843,9 @@ export function transformWideDatasetToCanonical(
       const flags: string[] = [];
       if (rawAmount < 0) {
         flags.push('negative_value_normalized');
+      }
+      if (usedDateFallback) {
+        flags.push('date_fallback_applied');
       }
 
       const normalizedAmount = Math.abs(rawAmount);
@@ -618,6 +862,10 @@ export function transformWideDatasetToCanonical(
         SourceRow: rowIndex,
         Flags: flags.length > 0 ? flags : undefined,
       });
+
+      if (usedDateFallback) {
+        fallbackWideDateRows += 1;
+      }
     }
 
     for (const sourceColumn of config.expenseColumns) {
@@ -627,6 +875,9 @@ export function transformWideDatasetToCanonical(
       const flags: string[] = [];
       if (rawAmount < 0) {
         flags.push('negative_value_normalized');
+      }
+      if (usedDateFallback) {
+        flags.push('date_fallback_applied');
       }
 
       const normalizedAmount = Math.abs(rawAmount);
@@ -643,7 +894,16 @@ export function transformWideDatasetToCanonical(
         SourceRow: rowIndex,
         Flags: flags.length > 0 ? flags : undefined,
       });
+
+      if (usedDateFallback) {
+        fallbackWideDateRows += 1;
+      }
     }
+  }
+
+  if (fallbackWideDateRows > 0) {
+    warnings.push(`${fallbackWideDateRows} wide-format rows used fallback date ${fallbackWideDate}.`);
+    auditLog.push(`Transformation layer: applied fallback date "${fallbackWideDate}" to ${fallbackWideDateRows} wide rows.`);
   }
 
   const normalizedRows = transactions.filter(tx => tx.Flags?.includes('negative_value_normalized')).length;

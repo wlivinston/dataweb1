@@ -568,10 +568,23 @@ const FinanceDashboard: React.FC = () => {
   const buildColumnsFromData = (dataset: Record<string, any>[]): ColumnInfo[] => {
     if (dataset.length === 0) return [];
 
-    return Object.keys(dataset[0]).map(name => ({
+    // Build columns from a union of keys because finance statements often contain
+    // sparse rows (e.g., section headers) where the first data row does not include all headers.
+    const columnNames: string[] = [];
+    const seen = new Set<string>();
+    for (const row of dataset.slice(0, 500)) {
+      for (const key of Object.keys(row)) {
+        if (!seen.has(key)) {
+          seen.add(key);
+          columnNames.push(key);
+        }
+      }
+    }
+
+    return columnNames.map(name => ({
       name,
       type: detectColumnType(dataset, name),
-      sampleValues: dataset.slice(0, 5).map(row => row[name]),
+      sampleValues: dataset.map(row => row[name]).filter(value => value != null && value !== '').slice(0, 5),
       nullCount: dataset.filter(row => row[name] == null || row[name] === '').length,
       uniqueCount: new Set(dataset.map(row => row[name])).size,
     }));
@@ -599,7 +612,16 @@ const FinanceDashboard: React.FC = () => {
         const buffer = await file.arrayBuffer();
         const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
         parsedSheets = workbook.SheetNames.map(sheetName => {
-          const json = XLSX.utils.sheet_to_json<Record<string, any>>(workbook.Sheets[sheetName]);
+          const sheet = workbook.Sheets[sheetName];
+          // Detect real header row — skip preamble/title rows (e.g. merged title cells)
+          // by finding the first row that has ≥2 non-empty cells.
+          const rawRows = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, defval: null });
+          let headerRow = 0;
+          for (let i = 0; i < Math.min(rawRows.length, 20); i++) {
+            const nonEmpty = (rawRows[i] ?? []).filter((c: any) => c !== null && c !== undefined && c !== '');
+            if (nonEmpty.length >= 2) { headerRow = i; break; }
+          }
+          const json = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { range: headerRow });
           return {
             sheetName,
             data: json,
@@ -766,7 +788,17 @@ const FinanceDashboard: React.FC = () => {
     const sample = data.slice(0, 20).map(r => r[name]).filter(v => v != null && v !== '');
     if (sample.length === 0) return 'string';
 
-    const numCount = sample.filter(v => !isNaN(Number(v))).length;
+    const numCount = sample.filter(v => {
+      if (typeof v === 'number') return Number.isFinite(v);
+      const raw = String(v).trim();
+      if (!raw) return false;
+      const normalized = raw
+        .replace(/[,$€£\s]/g, '')
+        .replace(/[()]/g, '')
+        .replace(/[^0-9.-]/g, '');
+      if (!normalized || normalized === '-' || normalized === '.') return false;
+      return !isNaN(Number(normalized));
+    }).length;
     if (numCount / sample.length > 0.7) return 'number';
 
     const dateCount = sample.filter(v => !isNaN(Date.parse(String(v)))).length;
@@ -1402,10 +1434,28 @@ const FinanceDashboard: React.FC = () => {
     try {
       const base = buildBaseCanonicalJournal();
       const hasLiabilitySignals = Boolean(liabilityDetection?.detected && liabilityDetection.signals.length > 0);
+      const isLikelyLiabilityAccount = (accountName: string) => {
+        const account = String(accountName || '').toLowerCase().trim();
+        if (!account) return false;
+        if (
+          account.includes('deferred tax expense') ||
+          account.includes('deferred tax benefit') ||
+          account.includes('deferred tax asset')
+        ) {
+          return false;
+        }
+        if (/(payable|loan|debt|accrued|unearned|liability|deferred revenue|deferred income|deferred tax liability)/i.test(account)) {
+          return true;
+        }
+        if (account.includes('deferred')) {
+          return account.includes('revenue') || account.includes('income') || account.includes('liability');
+        }
+        return false;
+      };
       const hasLiabilityJournalEntries = base.transactions.some(
         row =>
           row.Category.toLowerCase().includes('liability') ||
-          /(payable|loan|debt|accrued|deferred|unearned|liability)/i.test(row.Account)
+          isLikelyLiabilityAccount(row.Account)
       );
       const hasAssetJournalEntries = base.transactions.some(
         row =>
@@ -4206,4 +4256,3 @@ const FinanceDashboard: React.FC = () => {
 };
 
 export default FinanceDashboard;
-

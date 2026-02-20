@@ -29,14 +29,117 @@ import { SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATIVE_CHART_COLOR } from
 
 const COLUMN_PATTERNS: Record<keyof FinanceColumnMapping, RegExp[]> = {
   date: [/date/i, /period/i, /month/i, /posting.?date/i, /trans.?date/i, /invoice.?date/i],
-  account: [/account/i, /ledger/i, /gl.?account/i, /chart.?of.?accounts/i, /account.?name/i, /line.?item/i],
-  category: [/category/i, /classification/i, /group/i, /class/i, /account.?type/i],
+  account: [/account.?name/i, /line.?item/i, /account/i, /ledger/i, /gl.?account/i, /chart.?of.?accounts/i],
+  category: [/category/i, /classification/i, /group/i, /class/i, /account.?type/i, /section/i],
   amount: [/amount/i, /value/i, /total/i, /balance/i, /sum/i],
   debit: [/debit/i, /dr/i],
   credit: [/credit/i, /cr/i],
-  type: [/type/i, /transaction.?type/i, /entry.?type/i, /income.?expense/i],
-  description: [/description/i, /memo/i, /narration/i, /details/i, /notes/i, /particular/i],
+  type: [/type/i, /transaction.?type/i, /entry.?type/i, /income.?expense/i, /section/i],
+  description: [/description/i, /memo/i, /narration/i, /details/i, /notes?/i, /particular/i],
 };
+
+const TYPE_VALUE_HINTS = [
+  'income',
+  'revenue',
+  'sales',
+  'expense',
+  'cost',
+  'cogs',
+  'opex',
+  'tax',
+  'gain',
+  'loss',
+  'debit',
+  'credit',
+];
+
+function normalizeColumnName(value: string): string {
+  return value.toLowerCase().replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function parsePotentialNumber(value: any): number | null {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const normalized = raw
+    .replace(/[,$€£\s]/g, '')
+    .replace(/[()]/g, '')
+    .replace(/[^0-9.-]/g, '');
+
+  if (!normalized || normalized === '-' || normalized === '.') return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getNumericSignalStrength(columnName: string, sampleData: Record<string, any>[]): number {
+  const sample = sampleData
+    .slice(0, 120)
+    .map(row => row[columnName])
+    .filter(value => value != null && value !== '');
+
+  if (sample.length === 0) return 0;
+
+  const numericCount = sample.filter(value => parsePotentialNumber(value) != null).length;
+  return numericCount / sample.length;
+}
+
+function getTypeSignalStrength(columnName: string, sampleData: Record<string, any>[]): number {
+  const sample = sampleData
+    .slice(0, 120)
+    .map(row => row[columnName])
+    .filter(value => value != null && String(value).trim() !== '')
+    .map(value => normalizeColumnName(String(value)));
+
+  if (sample.length === 0) return 0;
+
+  const signalHits = sample.filter(value => TYPE_VALUE_HINTS.some(hint => value.includes(hint))).length;
+  if (signalHits === 0) return 0;
+
+  return signalHits / sample.length;
+}
+
+function scoreAmountCandidate(column: ColumnInfo, sampleData: Record<string, any>[]): number {
+  const normalized = normalizeColumnName(column.name);
+  let score = 0;
+
+  if (/(^| )amount( |$)|value|total|balance|sum/.test(normalized)) score += 8;
+  if (/fy\s*\d{4}/i.test(column.name)) score += 6;
+  if (column.type === 'number') score += 4;
+  score += getNumericSignalStrength(column.name, sampleData) * 4;
+
+  const years = (column.name.match(/(19|20)\d{2}/g) || []).map(Number).filter(Number.isFinite);
+  if (years.length > 0) {
+    score += Math.max(...years) / 1000;
+  }
+
+  if (/variance|var\b|%|pct|percent|ratio/.test(normalized)) score -= 12;
+  if (/\baccount\b|\bcode\b|\bid\b|\bnumber\b/.test(normalized)) score -= 8;
+
+  return score;
+}
+
+function pickBestAmountColumn(
+  columns: ColumnInfo[],
+  sampleData: Record<string, any>[],
+  excluded: Set<string>
+): string | undefined {
+  let best: string | undefined;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const column of columns) {
+    if (excluded.has(column.name)) continue;
+
+    const score = scoreAmountCandidate(column, sampleData);
+    if (score > bestScore) {
+      bestScore = score;
+      best = column.name;
+    }
+  }
+
+  return best && bestScore > 2 ? best : undefined;
+}
 
 export function detectFinanceColumns(
   columns: ColumnInfo[],
@@ -48,19 +151,42 @@ export function detectFinanceColumns(
   // Score each column against each pattern group
   const matchColumn = (patternKey: keyof FinanceColumnMapping): string | undefined => {
     let bestCol: string | undefined;
-    let bestScore = 0;
+    let bestScore = Number.NEGATIVE_INFINITY;
 
     for (const col of columns) {
       if (used.has(col.name)) continue;
       const patterns = COLUMN_PATTERNS[patternKey];
-      for (const pattern of patterns) {
-        if (pattern.test(col.name)) {
-          const score = col.name.toLowerCase() === patternKey ? 10 : 5;
-          if (score > bestScore) {
-            bestScore = score;
-            bestCol = col.name;
-          }
+      const normalized = normalizeColumnName(col.name);
+      const matchedCount = patterns.reduce((count, pattern) => count + (pattern.test(col.name) ? 1 : 0), 0);
+      if (matchedCount === 0) continue;
+
+      let score = matchedCount * 5 + (normalized === patternKey ? 6 : 0);
+
+      if (patternKey === 'account') {
+        if (/\baccount\s*name\b/.test(normalized)) score += 8;
+        if (/\bname\b/.test(normalized)) score += 3;
+        if (/\bcode\b/.test(normalized)) score -= 4;
+      } else if (patternKey === 'amount') {
+        score += scoreAmountCandidate(col, sampleData);
+      } else if (patternKey === 'type') {
+        score += getTypeSignalStrength(col.name, sampleData) * 8;
+      } else if (patternKey === 'category') {
+        if (/\bsection\b/.test(normalized)) score += 4;
+      } else if (patternKey === 'date') {
+        const dateSignals = sampleData
+          .slice(0, 120)
+          .map(row => row[col.name])
+          .filter(value => value != null && value !== '')
+          .filter(value => !Number.isNaN(Date.parse(String(value))))
+          .length;
+        if (dateSignals > 0) {
+          score += (dateSignals / Math.max(1, sampleData.length)) * 6;
         }
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestCol = col.name;
       }
     }
 
@@ -77,6 +203,36 @@ export function detectFinanceColumns(
   mapping.category = matchColumn('category');
   mapping.type = matchColumn('type');
   mapping.description = matchColumn('description');
+
+  const accountNameCol = columns.find(c => /account.?name/i.test(c.name));
+  if (accountNameCol) {
+    if (!mapping.account) {
+      mapping.account = accountNameCol.name;
+      used.add(accountNameCol.name);
+    } else if (/account.?code/i.test(mapping.account) && !used.has(accountNameCol.name)) {
+      used.delete(mapping.account);
+      mapping.account = accountNameCol.name;
+      used.add(accountNameCol.name);
+    }
+  }
+
+  const sectionCol = columns.find(c => /section/i.test(c.name));
+  if (!mapping.category && sectionCol) {
+    mapping.category = sectionCol.name;
+    used.add(sectionCol.name);
+  }
+
+  if (!mapping.type) {
+    const typeCandidates = columns
+      .map(column => ({ name: column.name, signal: getTypeSignalStrength(column.name, sampleData) }))
+      .sort((a, b) => b.signal - a.signal);
+    const bestType = typeCandidates[0];
+    if (bestType && bestType.signal >= 0.2) {
+      mapping.type = bestType.name;
+    } else if (mapping.category && getTypeSignalStrength(mapping.category, sampleData) >= 0.2) {
+      mapping.type = mapping.category;
+    }
+  }
 
   // If no amount but debit+credit exist, that's fine — we'll merge them
   // If no date, try to find a date-typed column
@@ -97,12 +253,41 @@ export function detectFinanceColumns(
     }
   }
 
-  // If no amount and no debit/credit, try first number column
+  // If no amount and no debit/credit, choose the best numeric amount-like column.
   if (!mapping.amount && !mapping.debit && !mapping.credit) {
-    const numCol = columns.find(c => c.type === 'number' && !used.has(c.name));
-    if (numCol) {
-      mapping.amount = numCol.name;
-      used.add(numCol.name);
+    const excluded = new Set(
+      [mapping.date, mapping.account, mapping.category, mapping.type, mapping.description]
+        .filter(Boolean) as string[]
+    );
+    const bestAmount = pickBestAmountColumn(columns, sampleData, excluded);
+    if (bestAmount) {
+      mapping.amount = bestAmount;
+      used.add(bestAmount);
+    } else {
+      const numCol = columns.find(c => c.type === 'number' && !used.has(c.name));
+      if (numCol) {
+        mapping.amount = numCol.name;
+        used.add(numCol.name);
+      }
+    }
+  }
+
+  // Avoid choosing variance or percent columns as the primary amount by default.
+  if (mapping.amount && /variance|var\b|%|pct|percent|ratio/i.test(mapping.amount)) {
+    const excluded = new Set(
+      [mapping.date, mapping.account, mapping.category, mapping.type, mapping.description]
+        .filter(Boolean) as string[]
+    );
+    const bestAmount = pickBestAmountColumn(columns, sampleData, excluded);
+    if (bestAmount && bestAmount !== mapping.amount) {
+      mapping.amount = bestAmount;
+    }
+  }
+
+  if (!mapping.description) {
+    const descriptionCol = columns.find(c => /description|memo|narration|details?|notes?|particular/i.test(c.name));
+    if (descriptionCol) {
+      mapping.description = descriptionCol.name;
     }
   }
 

@@ -149,8 +149,32 @@ const LIABILITY_COLUMN_PATTERNS = {
 
 const LIABILITY_SHEET_PATTERNS = /(liabilit|loan schedule|payables|accrued|deferred)/i;
 
-const LIABILITY_ACCOUNT_KEYWORDS = /(payable|loan|debt|accrued|deferred|unearned|liability)/i;
+const LIABILITY_ACCOUNT_KEYWORDS = /(payable|loan|debt|accrued|unearned|liability|deferred revenue|deferred income|deferred tax liability)/i;
 const PNL_CATEGORY_KEYWORDS = /(revenue|income|expense|cogs|tax)/i;
+
+function isLikelyLiabilityAccount(accountName: string): boolean {
+  const account = String(accountName || '').toLowerCase().trim();
+  if (!account) return false;
+
+  // Avoid false positives on legitimate P&L/tax lines.
+  if (
+    account.includes('deferred tax expense') ||
+    account.includes('deferred tax benefit') ||
+    account.includes('deferred tax asset')
+  ) {
+    return false;
+  }
+
+  if (LIABILITY_ACCOUNT_KEYWORDS.test(account)) {
+    return true;
+  }
+
+  if (account.includes('deferred')) {
+    return account.includes('revenue') || account.includes('income') || account.includes('liability');
+  }
+
+  return false;
+}
 
 function normalizeHeader(value: string): string {
   return value
@@ -994,7 +1018,7 @@ export function validate_liability_journal(journal: CanonicalTransaction[]): Lia
     const account = String(row.Account || '');
     const category = String(row.Category || '');
     const categoryNormalized = normalizeHeader(category);
-    const isLiabilityAccount = LIABILITY_ACCOUNT_KEYWORDS.test(account);
+    const isLiabilityAccount = isLikelyLiabilityAccount(account);
     const isLiabilityCategory = categoryNormalized.includes('liability');
     const isPnlCategory = PNL_CATEGORY_KEYWORDS.test(categoryNormalized);
 
