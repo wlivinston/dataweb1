@@ -81,6 +81,18 @@ interface Visualization {
   datasetId: string;
 }
 
+const PDF_ACCESS_CACHE_TTL_MS = 10 * 60 * 1000;
+const PAID_SUBSCRIPTION_STATUSES = new Set([
+  'professional',
+  'enterprise',
+  'admin',
+  'paid',
+  'premium',
+  'pro',
+  'monthly',
+  'annual',
+]);
+
 const FunctionalDataUpload: React.FC = () => {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [activeDataset, setActiveDataset] = useState<string | null>(null);
@@ -108,6 +120,10 @@ const FunctionalDataUpload: React.FC = () => {
   const [showPaywall, setShowPaywall] = useState(false);
   const [checkoutLoadingProvider, setCheckoutLoadingProvider] = useState<'stripe' | 'paystack' | null>(null);
   const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
+  const [paidPdfAccessCache, setPaidPdfAccessCache] = useState<{
+    hasAccess: boolean;
+    checkedAt: number;
+  } | null>(null);
   const { user, session } = useAuth();
   // Loading states for file processing
   const [isUploading, setIsUploading] = useState(false);
@@ -119,6 +135,10 @@ const FunctionalDataUpload: React.FC = () => {
   const prevDatasetCount = useRef(0);
 
   const colorSchemes = CHART_COLOR_SCHEMES;
+
+  useEffect(() => {
+    setPaidPdfAccessCache(null);
+  }, [user?.email]);
 
   const getAccessToken = async (): Promise<string | null> => {
     if (!supabase) {
@@ -142,27 +162,59 @@ const FunctionalDataUpload: React.FC = () => {
   };
 
   const hasPaidPDFAccess = async (): Promise<boolean> => {
+    if (paidPdfAccessCache?.hasAccess) {
+      const cacheAge = Date.now() - paidPdfAccessCache.checkedAt;
+      if (cacheAge <= PDF_ACCESS_CACHE_TTL_MS) {
+        return true;
+      }
+    }
+
     const token = await getAccessToken();
     if (!token) return false;
 
-    try {
+    const fetchAccessFromBackend = async (timeoutMs: number): Promise<boolean | null> => {
       const controller = new AbortController();
-      const timeoutId = window.setTimeout(() => controller.abort(), 8000);
-      const response = await fetch(getApiUrl('/api/subscriptions/pdf-access'), {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        signal: controller.signal,
-      });
-      window.clearTimeout(timeoutId);
+      const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
-      const payload = await response.json().catch(() => null);
-      if (response.ok && typeof payload?.has_access === 'boolean') {
-        return payload.has_access;
+      try {
+        const response = await fetch(getApiUrl('/api/subscriptions/pdf-access'), {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          signal: controller.signal,
+        });
+
+        const payload = await response.json().catch(() => null);
+        if (response.ok && typeof payload?.has_access === 'boolean') {
+          return payload.has_access;
+        }
+
+        if (response.status === 401 || response.status === 403) {
+          return false;
+        }
+
+        return null;
+      } catch (apiError) {
+        console.error('PDF access check via backend failed:', apiError);
+        return null;
+      } finally {
+        window.clearTimeout(timeoutId);
       }
-    } catch (apiError) {
-      console.error('PDF access check via backend failed:', apiError);
+    };
+
+    try {
+      let backendAccess = await fetchAccessFromBackend(7000);
+      if (backendAccess === null) {
+        backendAccess = await fetchAccessFromBackend(12000);
+      }
+
+      if (backendAccess !== null) {
+        setPaidPdfAccessCache({ hasAccess: backendAccess, checkedAt: Date.now() });
+        return backendAccess;
+      }
+    } catch (apiRetryError) {
+      console.error('PDF access check retry failed:', apiRetryError);
     }
 
     // Fallback to direct Supabase lookup if backend access check is unavailable.
@@ -173,14 +225,26 @@ const FunctionalDataUpload: React.FC = () => {
         .from('customers')
         .select('subscription_status')
         .eq('email', user.email)
-        .single();
+        .limit(5);
 
-      if (error || !data?.subscription_status) return false;
+      if (error || !data || data.length === 0) {
+        if (paidPdfAccessCache?.hasAccess) {
+          return true;
+        }
+        return false;
+      }
 
-      const status = String(data.subscription_status).toLowerCase().trim();
-      return ['professional', 'enterprise', 'admin', 'paid', 'premium', 'pro', 'monthly', 'annual'].includes(status);
+      const hasAccess = data.some((row) => {
+        const status = String(row.subscription_status || '').toLowerCase().trim();
+        return PAID_SUBSCRIPTION_STATUSES.has(status);
+      });
+      setPaidPdfAccessCache({ hasAccess, checkedAt: Date.now() });
+      return hasAccess;
     } catch (fallbackError) {
       console.error('Subscription status fallback lookup failed:', fallbackError);
+      if (paidPdfAccessCache?.hasAccess) {
+        return true;
+      }
       return false;
     }
   };
@@ -273,6 +337,7 @@ const FunctionalDataUpload: React.FC = () => {
         throw new Error(payload?.error || 'Payment verification failed.');
       }
 
+      setPaidPdfAccessCache({ hasAccess: true, checkedAt: Date.now() });
       toast.success(`Payment verified via ${provider}. PDF access unlocked.`);
       const nextUrl = `${window.location.pathname}${window.location.hash || ''}`;
       window.history.replaceState({}, document.title, nextUrl);
