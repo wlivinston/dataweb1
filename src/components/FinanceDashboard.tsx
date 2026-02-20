@@ -278,6 +278,7 @@ const FinanceDashboard: React.FC = () => {
   const [showPaywall, setShowPaywall] = useState(false);
   const [checkoutLoadingProvider, setCheckoutLoadingProvider] = useState<'stripe' | 'paystack' | null>(null);
   const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
+  const [paymentServiceUnavailable, setPaymentServiceUnavailable] = useState(false);
   const [paidPdfAccessCache, setPaidPdfAccessCache] = useState<{
     hasAccess: boolean;
     checkedAt: number;
@@ -1625,6 +1626,26 @@ const FinanceDashboard: React.FC = () => {
     return refreshed.session?.access_token || session?.access_token || null;
   };
 
+  const isPaymentConnectionError = (error: unknown): boolean =>
+    error instanceof TypeError &&
+    /failed to fetch|networkerror|load failed/i.test(String(error.message || ''));
+
+  const getPaymentApiOrigin = (): string => {
+    const checkoutUrl = getApiUrl('/api/subscriptions/pdf-checkout');
+    try {
+      return new URL(checkoutUrl, window.location.origin).origin;
+    } catch {
+      return checkoutUrl;
+    }
+  };
+
+  const showPaymentServiceUnavailableToast = () => {
+    const target = getPaymentApiOrigin();
+    toast.error(
+      `Payment service is unreachable (${target}). Start backend on port 3001 or set VITE_BACKEND_URL to your live API.`
+    );
+  };
+
   const hasPaidPDFAccess = async (): Promise<boolean> => {
     if (paidPdfAccessCache?.hasAccess) {
       const cacheAge = Date.now() - paidPdfAccessCache.checkedAt;
@@ -1635,6 +1656,7 @@ const FinanceDashboard: React.FC = () => {
 
     const token = await getAccessToken();
     if (!token) return false;
+    let backendUnreachable = false;
 
     const fetchAccessFromBackend = async (timeoutMs: number): Promise<boolean | null> => {
       const controller = new AbortController();
@@ -1651,6 +1673,7 @@ const FinanceDashboard: React.FC = () => {
 
         const payload = await response.json().catch(() => null);
         if (response.ok && typeof payload?.has_access === 'boolean') {
+          setPaymentServiceUnavailable(false);
           return payload.has_access;
         }
 
@@ -1661,6 +1684,9 @@ const FinanceDashboard: React.FC = () => {
         return null;
       } catch (apiError) {
         console.error('PDF access check via backend failed:', apiError);
+        if (isPaymentConnectionError(apiError)) {
+          backendUnreachable = true;
+        }
         return null;
       } finally {
         window.clearTimeout(timeoutId);
@@ -1674,6 +1700,7 @@ const FinanceDashboard: React.FC = () => {
       }
 
       if (backendAccess !== null) {
+        setPaymentServiceUnavailable(false);
         setPaidPdfAccessCache({ hasAccess: backendAccess, checkedAt: Date.now() });
         return backendAccess;
       }
@@ -1692,6 +1719,9 @@ const FinanceDashboard: React.FC = () => {
         .limit(5);
 
       if (error || !data || data.length === 0) {
+        if (backendUnreachable) {
+          setPaymentServiceUnavailable(true);
+        }
         if (paidPdfAccessCache?.hasAccess) {
           return true;
         }
@@ -1702,10 +1732,14 @@ const FinanceDashboard: React.FC = () => {
         const status = String(row.subscription_status || '').toLowerCase().trim();
         return PAID_SUBSCRIPTION_STATUSES.has(status);
       });
+      setPaymentServiceUnavailable(false);
       setPaidPdfAccessCache({ hasAccess, checkedAt: Date.now() });
       return hasAccess;
     } catch (fallbackError) {
       console.error('Subscription status fallback lookup failed:', fallbackError);
+      if (backendUnreachable) {
+        setPaymentServiceUnavailable(true);
+      }
       if (paidPdfAccessCache?.hasAccess) {
         return true;
       }
@@ -1752,7 +1786,12 @@ const FinanceDashboard: React.FC = () => {
       window.location.href = payload.checkout_url;
     } catch (error: any) {
       console.error('Checkout initialization error:', error);
-      toast.error(error?.message || 'Could not start payment checkout.');
+      if (isPaymentConnectionError(error)) {
+        setPaymentServiceUnavailable(true);
+        showPaymentServiceUnavailableToast();
+      } else {
+        toast.error(error?.message || 'Could not start payment checkout.');
+      }
       setCheckoutLoadingProvider(null);
     }
   };
@@ -1845,6 +1884,10 @@ const FinanceDashboard: React.FC = () => {
 
     const hasAccess = await hasPaidPDFAccess();
     if (!hasAccess) {
+      if (paymentServiceUnavailable) {
+        showPaymentServiceUnavailableToast();
+        return;
+      }
       setShowPaywall(true);
       return;
     }
