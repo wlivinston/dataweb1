@@ -3403,28 +3403,28 @@ const FinanceDashboard: React.FC = () => {
 
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="w-full justify-start rounded-none border-b bg-transparent p-0 flex-wrap">
-          <TabsTrigger value="pnl" className="rounded-none border-b-2 border-transparent data-[state=active]:border-emerald-500 data-[state=active]:bg-transparent">
+        <TabsList className="h-auto w-full justify-start gap-1.5 rounded-2xl border border-border/80 bg-gradient-to-r from-background via-background to-primary/5 p-1.5 shadow-[0_10px_30px_rgba(15,23,42,0.06)] flex-nowrap overflow-x-auto">
+          <TabsTrigger value="pnl" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <DollarSign className="h-4 w-4 mr-2" />
             Profit &amp; Loss
           </TabsTrigger>
-          <TabsTrigger value="cashflow" className="rounded-none border-b-2 border-transparent data-[state=active]:border-emerald-500 data-[state=active]:bg-transparent">
+          <TabsTrigger value="cashflow" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <Activity className="h-4 w-4 mr-2" />
             Cash Flow
           </TabsTrigger>
-          <TabsTrigger value="balance" className="rounded-none border-b-2 border-transparent data-[state=active]:border-emerald-500 data-[state=active]:bg-transparent">
+          <TabsTrigger value="balance" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <Scale className="h-4 w-4 mr-2" />
             Balance Sheet
           </TabsTrigger>
-          <TabsTrigger value="ratios" className="rounded-none border-b-2 border-transparent data-[state=active]:border-emerald-500 data-[state=active]:bg-transparent">
+          <TabsTrigger value="ratios" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <Shield className="h-4 w-4 mr-2" />
             Ratios &amp; Health
           </TabsTrigger>
-          <TabsTrigger value="charts" className="rounded-none border-b-2 border-transparent data-[state=active]:border-emerald-500 data-[state=active]:bg-transparent">
+          <TabsTrigger value="charts" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <BarChart3 className="h-4 w-4 mr-2" />
             Visualizations
           </TabsTrigger>
-          <TabsTrigger value="written" className="rounded-none border-b-2 border-transparent data-[state=active]:border-emerald-500 data-[state=active]:bg-transparent">
+          <TabsTrigger value="written" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <FileText className="h-4 w-4 mr-2" />
             Written Report
           </TabsTrigger>
