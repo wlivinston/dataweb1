@@ -185,6 +185,73 @@ function getPdfPlanConfig(plan) {
   };
 }
 
+async function resolvePaystackPricingForPlan(planKey) {
+  const requestedPlan = planKey === 'monthly' ? 'monthly' : 'single';
+  const plan = getPdfPlanConfig(requestedPlan);
+
+  const configuredPaystackCurrency = String(process.env.PAYSTACK_CURRENCY || '')
+    .trim()
+    .toUpperCase();
+  const paystackAccountCurrency = String(process.env.PAYSTACK_ACCOUNT_CURRENCY || '')
+    .trim()
+    .toUpperCase();
+  const targetCurrency = configuredPaystackCurrency || paystackAccountCurrency;
+  const baseCurrency = String(
+    process.env.PAYSTACK_BASE_CURRENCY || process.env.STRIPE_CURRENCY || 'USD'
+  )
+    .trim()
+    .toUpperCase();
+  const autoConvert = isTruthyEnv(process.env.PAYSTACK_AUTO_CONVERT, true);
+
+  const paystackSingleAmountOverride = toPositiveNumber(process.env.PAYSTACK_PDF_SINGLE_AMOUNT);
+  const paystackMonthlyAmountOverride = toPositiveNumber(process.env.PAYSTACK_PDF_MONTHLY_AMOUNT);
+  const overrideAmount =
+    requestedPlan === 'monthly' ? paystackMonthlyAmountOverride : paystackSingleAmountOverride;
+
+  let amount = overrideAmount ?? plan.amount;
+  let resolvedExchangeRate = null;
+  let convertedFromCurrency = null;
+  let conversionApplied = false;
+
+  // Convert base pricing (usually USD) into target Paystack currency by default.
+  if (
+    autoConvert &&
+    targetCurrency &&
+    baseCurrency &&
+    targetCurrency !== baseCurrency
+  ) {
+    try {
+      const rate = await getExchangeRate(baseCurrency, targetCurrency);
+      const convertedAmount = Number((plan.amount * rate).toFixed(2));
+      if (Number.isFinite(convertedAmount) && convertedAmount > 0) {
+        amount = convertedAmount;
+        resolvedExchangeRate = rate;
+        convertedFromCurrency = baseCurrency;
+        conversionApplied = true;
+      }
+    } catch (exchangeError) {
+      console.warn(
+        `Paystack FX conversion failed (${baseCurrency} -> ${targetCurrency}). Falling back to configured amount.`,
+        exchangeError?.message || exchangeError
+      );
+    }
+  }
+
+  return {
+    requestedPlan,
+    amount,
+    chargeCurrency: configuredPaystackCurrency, // empty means use Paystack account default
+    displayCurrency: targetCurrency || baseCurrency || 'USD',
+    baseCurrency,
+    autoConvert,
+    conversionApplied,
+    convertedFromCurrency,
+    exchangeRate: resolvedExchangeRate,
+    overrideAmount,
+    plan,
+  };
+}
+
 async function updateCustomerSubscriptionStatus(customerId, nextStatus) {
   if (supabase) {
     const { error } = await supabase
@@ -523,6 +590,56 @@ router.get('/plans', async (req, res) => {
   }
 });
 
+// Public pricing preview for PDF checkout (provider-specific display amounts)
+router.get('/pdf-pricing', async (_req, res) => {
+  try {
+    const stripeCurrency = String(process.env.STRIPE_CURRENCY || 'USD').trim().toUpperCase();
+    const singlePlan = getPdfPlanConfig('single');
+    const monthlyPlan = getPdfPlanConfig('monthly');
+    const singlePaystack = await resolvePaystackPricingForPlan('single');
+    const monthlyPaystack = await resolvePaystackPricingForPlan('monthly');
+
+    return res.json({
+      single: {
+        stripe: {
+          amount: singlePlan.amount,
+          currency: stripeCurrency,
+        },
+        paystack: {
+          amount: singlePaystack.amount,
+          currency: singlePaystack.displayCurrency,
+          base_currency: singlePaystack.baseCurrency,
+          converted_from_currency: singlePaystack.convertedFromCurrency,
+          exchange_rate: singlePaystack.exchangeRate,
+          auto_converted: singlePaystack.conversionApplied,
+        },
+      },
+      monthly: {
+        stripe: {
+          amount: monthlyPlan.amount,
+          currency: stripeCurrency,
+        },
+        paystack: {
+          amount: monthlyPaystack.amount,
+          currency: monthlyPaystack.displayCurrency,
+          base_currency: monthlyPaystack.baseCurrency,
+          converted_from_currency: monthlyPaystack.convertedFromCurrency,
+          exchange_rate: monthlyPaystack.exchangeRate,
+          auto_converted: monthlyPaystack.conversionApplied,
+        },
+      },
+      providers: {
+        stripe_enabled: Boolean(String(process.env.STRIPE_SECRET_KEY || '').trim()),
+        paystack_enabled: Boolean(String(process.env.PAYSTACK_SECRET_KEY || '').trim()),
+      },
+      generated_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Get PDF pricing preview error:', error);
+    return res.status(500).json({ error: 'Failed to fetch PDF pricing preview' });
+  }
+});
+
 // Stripe webhook for PDF payment entitlement updates
 router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
@@ -733,41 +850,12 @@ router.post('/pdf-checkout', authenticateToken, [
       return res.status(500).json({ error: 'Paystack is not configured. Set PAYSTACK_SECRET_KEY.' });
     }
 
-    const paystackCurrency = String(process.env.PAYSTACK_CURRENCY || '').trim().toUpperCase();
-    const paystackBaseCurrency = String(process.env.PAYSTACK_BASE_CURRENCY || 'USD').trim().toUpperCase();
-    const paystackAutoConvert = isTruthyEnv(process.env.PAYSTACK_AUTO_CONVERT, false);
-    const paystackSingleAmountOverride = toPositiveNumber(process.env.PAYSTACK_PDF_SINGLE_AMOUNT);
-    const paystackMonthlyAmountOverride = toPositiveNumber(process.env.PAYSTACK_PDF_MONTHLY_AMOUNT);
-    const overrideAmount =
-      requestedPlan === 'monthly' ? paystackMonthlyAmountOverride : paystackSingleAmountOverride;
+    const paystackPricing = await resolvePaystackPricingForPlan(requestedPlan);
+    const amount = paystackPricing.amount;
+    const paystackCurrency = paystackPricing.chargeCurrency;
+    const resolvedExchangeRate = paystackPricing.exchangeRate;
+    const convertedFromCurrency = paystackPricing.convertedFromCurrency;
 
-    let amount = overrideAmount ?? plan.amount;
-    let resolvedExchangeRate = null;
-    let convertedFromCurrency = null;
-
-    // Optional dynamic conversion from base pricing currency (e.g. USD) to
-    // PAYSTACK_CURRENCY using live exchange rates.
-    if (
-      paystackAutoConvert &&
-      paystackCurrency &&
-      paystackBaseCurrency &&
-      paystackCurrency !== paystackBaseCurrency
-    ) {
-      try {
-        const rate = await getExchangeRate(paystackBaseCurrency, paystackCurrency);
-        const convertedAmount = Number((plan.amount * rate).toFixed(2));
-        if (Number.isFinite(convertedAmount) && convertedAmount > 0) {
-          amount = convertedAmount;
-          resolvedExchangeRate = rate;
-          convertedFromCurrency = paystackBaseCurrency;
-        }
-      } catch (exchangeError) {
-        console.warn(
-          `Paystack FX conversion failed (${paystackBaseCurrency} -> ${paystackCurrency}). Falling back to configured amount.`,
-          exchangeError?.message || exchangeError
-        );
-      }
-    }
     const callbackUrl = `${frontendBase}${returnPath}?pdfPayment=success&provider=paystack`;
     const referenceIdentity =
       customerIdentity ? String(customerIdentity).replace(/[^a-zA-Z0-9_-]/g, '') : 'guest';
@@ -839,6 +927,11 @@ router.post('/pdf-checkout', authenticateToken, [
       plan: requestedPlan,
       checkout_url: paystackPayload.data.authorization_url,
       reference: paystackPayload.data.reference,
+      amount,
+      currency: paystackPricing.displayCurrency,
+      auto_converted: paystackPricing.conversionApplied,
+      exchange_rate: paystackPricing.exchangeRate,
+      converted_from_currency: paystackPricing.convertedFromCurrency,
     });
   } catch (error) {
     console.error('Create PDF checkout error:', error);

@@ -1,10 +1,10 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Check, FileText, Mail, ArrowRight, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { createSupportMailto } from '@/lib/publicConfig';
+import { createSupportMailto, getApiUrl } from '@/lib/publicConfig';
 
 interface PDFPaywallDialogProps {
   open: boolean;
@@ -15,6 +15,26 @@ interface PDFPaywallDialogProps {
   checkoutLoadingProvider?: 'stripe' | 'paystack' | null;
 }
 
+interface ProviderPricePreview {
+  amount: number;
+  currency: string;
+  base_currency?: string | null;
+  converted_from_currency?: string | null;
+  exchange_rate?: number | null;
+  auto_converted?: boolean;
+}
+
+interface PDFPricingPreviewPayload {
+  single?: {
+    stripe?: ProviderPricePreview;
+    paystack?: ProviderPricePreview;
+  };
+  monthly?: {
+    stripe?: ProviderPricePreview;
+    paystack?: ProviderPricePreview;
+  };
+}
+
 const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
   open,
   onOpenChange,
@@ -23,8 +43,63 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
   onPaystackCheckout,
   checkoutLoadingProvider = null,
 }) => {
+  const [pricingPreview, setPricingPreview] = useState<PDFPricingPreviewPayload | null>(null);
   const showDirectCheckout = Boolean(onStripeCheckout || onPaystackCheckout);
   const isBusy = checkoutLoadingProvider !== null;
+
+  useEffect(() => {
+    if (!open) return;
+
+    const controller = new AbortController();
+    const loadPricingPreview = async () => {
+      try {
+        const response = await fetch(getApiUrl('/api/subscriptions/pdf-pricing'), {
+          method: 'GET',
+          signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload) return;
+        setPricingPreview(payload);
+      } catch (_error) {
+        // Keep fallback static display prices when preview endpoint is unavailable.
+      }
+    };
+
+    loadPricingPreview();
+    return () => controller.abort();
+  }, [open]);
+
+  const formatMoney = (amount: number, currency: string) => {
+    const normalizedCurrency = String(currency || 'USD').toUpperCase();
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: 'currency',
+        currency: normalizedCurrency,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(amount);
+    } catch (_error) {
+      const fallbackSymbol = normalizedCurrency === 'GHS' ? 'GH¢' : normalizedCurrency === 'NGN' ? '₦' : '$';
+      return `${fallbackSymbol}${amount.toFixed(2)}`;
+    }
+  };
+
+  const singleStripePrice = useMemo(
+    () => formatMoney(pricingPreview?.single?.stripe?.amount ?? 29, pricingPreview?.single?.stripe?.currency ?? 'USD'),
+    [pricingPreview]
+  );
+  const singlePaystackPrice = useMemo(
+    () => formatMoney(pricingPreview?.single?.paystack?.amount ?? 29, pricingPreview?.single?.paystack?.currency ?? 'USD'),
+    [pricingPreview]
+  );
+  const monthlyStripePrice = useMemo(
+    () => formatMoney(pricingPreview?.monthly?.stripe?.amount ?? 49, pricingPreview?.monthly?.stripe?.currency ?? 'USD'),
+    [pricingPreview]
+  );
+  const monthlyPaystackPrice = useMemo(
+    () => formatMoney(pricingPreview?.monthly?.paystack?.amount ?? 49, pricingPreview?.monthly?.paystack?.currency ?? 'USD'),
+    [pricingPreview]
+  );
 
   const handleContact = (subject: string) => {
     window.location.href = createSupportMailto(subject,
@@ -57,8 +132,9 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
                 <p className="text-sm text-gray-600 mt-1">Full PDF with all visualizations & insights</p>
               </div>
               <div className="text-right">
-                <span className="text-2xl font-bold text-gray-900">$29</span>
+                <span className="text-2xl font-bold text-gray-900">{singleStripePrice}</span>
                 <span className="text-gray-500 text-sm block">per report</span>
+                <span className="text-gray-500 text-xs block">Paystack: {singlePaystackPrice}</span>
               </div>
             </div>
             <ul className="mt-3 space-y-1">
@@ -82,7 +158,7 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
                   {checkoutLoadingProvider === 'stripe' ? (
                     <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
                   ) : (
-                    'Pay with Stripe'
+                    `Pay with Stripe (${singleStripePrice})`
                   )}
                 </Button>
                 <Button
@@ -93,7 +169,7 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
                   {checkoutLoadingProvider === 'paystack' ? (
                     <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
                   ) : (
-                    'Pay with Paystack'
+                    `Pay with Paystack (${singlePaystackPrice})`
                   )}
                 </Button>
               </div>
@@ -103,7 +179,7 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
                 onClick={() => handleContact('PDF Report Purchase - Single Report ($29)')}
               >
                 <Mail className="h-4 w-4 mr-2" />
-                Get This Report &mdash; $29
+                Get This Report &mdash; {singleStripePrice}
               </Button>
             )}
           </div>
@@ -116,8 +192,9 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
                 <p className="text-sm text-gray-600 mt-1">Unlimited PDF reports per month</p>
               </div>
               <div className="text-right">
-                <span className="text-2xl font-bold text-gray-900">$49</span>
+                <span className="text-2xl font-bold text-gray-900">{monthlyStripePrice}</span>
                 <span className="text-gray-500 text-sm block">per month</span>
+                <span className="text-gray-500 text-xs block">Paystack: {monthlyPaystackPrice}</span>
               </div>
             </div>
             {showDirectCheckout ? (
@@ -130,7 +207,7 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
                   {checkoutLoadingProvider === 'stripe' ? (
                     <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
                   ) : (
-                    'Stripe Monthly'
+                    `Stripe Monthly (${monthlyStripePrice})`
                   )}
                 </Button>
                 <Button
@@ -141,7 +218,7 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
                   {checkoutLoadingProvider === 'paystack' ? (
                     <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
                   ) : (
-                    'Paystack Monthly'
+                    `Paystack Monthly (${monthlyPaystackPrice})`
                   )}
                 </Button>
               </div>
