@@ -214,3 +214,128 @@ export interface ManualEntryRow {
   amount: number | '';
   description: string;
 }
+
+// ============================================================
+// === Trial Balance ===
+// ============================================================
+
+export interface TrialBalanceRow {
+  account: string;
+  category: AccountCategory;
+  /** Raw sum of all debit-side entries for this account */
+  totalDebits: number;
+  /** Raw sum of all credit-side entries for this account */
+  totalCredits: number;
+  /** Net debit balance (positive when debits exceed credits, else 0) */
+  debitBalance: number;
+  /** Net credit balance (positive when credits exceed debits, else 0) */
+  creditBalance: number;
+}
+
+export interface TrialBalance {
+  asOfDate: string;
+  rows: TrialBalanceRow[];
+  /** Sum of all debitBalance values across accounts */
+  totalDebits: number;
+  /** Sum of all creditBalance values across accounts */
+  totalCredits: number;
+  isBalanced: boolean;
+  /** Math.abs(totalDebits - totalCredits) */
+  difference: number;
+  /** Same account name posted to multiple categories in source transactions */
+  categoryConflicts: Array<{
+    account: string;
+    categories: AccountCategory[];
+  }>;
+}
+
+// ============================================================
+// === Bank Reconciliation ===
+// ============================================================
+
+export type BankReconItemType =
+  | 'matched'          // present in both bank statement and books
+  | 'bank_only'        // in bank statement only (e.g. bank charges, bank interest)
+  | 'book_only'        // in books only (e.g. outstanding cheques, deposits in transit)
+  | 'amount_mismatch'; // same transaction, different amounts
+
+export interface BankStatementRow {
+  id: string;
+  date: string;
+  description: string;
+  /** Amount flowing out of the account (e.g. payments, withdrawals) */
+  debit: number;
+  /** Amount flowing into the account (e.g. deposits, receipts) */
+  credit: number;
+  /** Running balance from the bank statement, if available */
+  balance?: number;
+  rawRow?: number;
+}
+
+export interface ReconciliationMatch {
+  bankRow?: BankStatementRow;
+  bookTransaction?: ClassifiedTransaction;
+  type: BankReconItemType;
+  /** Absolute transaction amount */
+  amount: number;
+  /** Amount difference between bank and book sides (0 when matched) */
+  variance: number;
+}
+
+export interface BankReconciliation {
+  statementDate: string;
+  bankClosingBalance: number;
+  bookClosingBalance: number;
+  /** Which book account scope was used ('auto' or a concrete account name) */
+  bookAccountScope: 'auto' | string;
+  /** Book cash/bank accounts used in reconciliation */
+  bookAccountsUsed: string[];
+  /** Book cash debits not yet cleared by bank (deposits in transit) */
+  depositsInTransit: ReconciliationMatch[];
+  /** Book cash credits not yet cleared by bank (outstanding checks/payments) */
+  outstandingCheques: ReconciliationMatch[];
+  /** Bank debits not recorded in books (e.g. bank fees, charges) */
+  bankChargesUnrecorded: ReconciliationMatch[];
+  /** Bank credits not recorded in books (e.g. interest earned) */
+  bankCreditsUnrecorded: ReconciliationMatch[];
+  /** Transactions matched by amount but with a small date/value discrepancy */
+  amountMismatches: ReconciliationMatch[];
+  /** Fully matched transactions */
+  matchedItems: ReconciliationMatch[];
+  adjustedBankBalance: number;
+  adjustedBookBalance: number;
+  isReconciled: boolean;
+  /** Math.abs(adjustedBankBalance - adjustedBookBalance) */
+  difference: number;
+  totalTransactionsMatched: number;
+  totalTransactionsUnmatched: number;
+  /** Caveats and assumptions made during reconciliation */
+  notes: string[];
+}
+
+export interface BankStatementColumnMapping {
+  date?: string;
+  description?: string;
+  /** Column holding withdrawal / debit amounts */
+  debit?: string;
+  /** Column holding deposit / credit amounts */
+  credit?: string;
+  /** Single net-amount column (negative = debit, positive = credit) */
+  amount?: string;
+  balance?: string;
+}
+
+export type BankStatementDateFormat = 'auto' | 'mdy' | 'dmy' | 'ymd';
+
+export interface ParsedBankStatementResult {
+  rows: BankStatementRow[];
+  droppedRowCount: number;
+  unparseableDateRows: number;
+  zeroAmountRows: number;
+  warnings: string[];
+}
+
+export interface BankReconciliationOptions {
+  statementDate?: string;
+  bookAccountScope?: 'auto' | string;
+}

@@ -56,7 +56,17 @@ import {
   NetIncomeAutoMediumSignalDefault,
   NetIncomeToEquityMode,
   ReportPeriod,
+  TrialBalance,
+  BankReconciliation,
+  BankStatementColumnMapping,
+  BankStatementDateFormat,
 } from '@/lib/financeTypes';
+import { generateTrialBalance, TRIAL_BALANCE_CATEGORY_LABELS } from '@/lib/financeTrialBalance';
+import {
+  detectBankStatementColumns,
+  parseBankStatement,
+  reconcileBank,
+} from '@/lib/financeBankRecon';
 import { ColumnInfo } from '@/lib/types';
 import {
   detectFinanceColumns,
@@ -283,6 +293,20 @@ const FinanceDashboard: React.FC = () => {
     hasAccess: boolean;
     checkedAt: number;
   } | null>(null);
+
+  // ---- Trial Balance state ----
+  const [trialBalance, setTrialBalance] = useState<TrialBalance | null>(null);
+
+  // ---- Bank Reconciliation state ----
+  const [bankRawData, setBankRawData] = useState<Record<string, unknown>[]>([]);
+  const [bankStatementColumns, setBankStatementColumns] = useState<string[]>([]);
+  const [bankStatementMapping, setBankStatementMapping] = useState<BankStatementColumnMapping>({});
+  const [bankStatementFileName, setBankStatementFileName] = useState('');
+  const [bankStatementDate, setBankStatementDate] = useState('');
+  const [bankStatementDateFormat, setBankStatementDateFormat] = useState<BankStatementDateFormat>('auto');
+  const [bankBookAccountScope, setBankBookAccountScope] = useState<'auto' | string>('auto');
+  const [bankRecon, setBankRecon] = useState<BankReconciliation | null>(null);
+  const [isBankReconLoading, setIsBankReconLoading] = useState(false);
 
   // Overlay
   const [showOverlay, setShowOverlay] = useState(false);
@@ -1372,6 +1396,8 @@ const FinanceDashboard: React.FC = () => {
 
       setReport(result);
       setChartData(generateFinanceChartData(result));
+      // Auto-generate trial balance from the same transaction set
+      setTrialBalance(generateTrialBalance(result.transactions, result.balanceSheet.asOfDate));
       setView('dashboard');
 
       if (result.warnings.length > 0) {
@@ -1993,6 +2019,100 @@ const FinanceDashboard: React.FC = () => {
   };
 
   // ============================================================
+  // BANK RECONCILIATION HANDLERS
+  // ============================================================
+
+  const handleBankStatementUpload = async (file: File) => {
+    setBankStatementFileName(file.name);
+    setBankRecon(null);
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        defval: '',
+        raw: false,
+      });
+      if (raw.length === 0) {
+        toast.error('Bank statement file appears to be empty.');
+        return;
+      }
+      const cols = Array.from(
+        new Set(
+          raw
+            .slice(0, 400)
+            .flatMap(row => Object.keys(row)),
+        ),
+      );
+      setBankStatementColumns(cols);
+      setBankRawData(raw);
+      const autoMapping = detectBankStatementColumns(cols);
+      setBankStatementMapping(autoMapping);
+      toast.success(`Bank statement loaded: ${raw.length} rows detected.`);
+    } catch (err) {
+      console.error('Bank statement parse error:', err);
+      toast.error('Could not parse bank statement. Please check the file format.');
+    }
+  };
+
+  const runBankReconciliation = () => {
+    if (!report) {
+      toast.error('Generate a financial report first.');
+      return;
+    }
+    if (bankRawData.length === 0) {
+      toast.error('Upload a bank statement first.');
+      return;
+    }
+    if (!bankStatementMapping.date) {
+      toast.error('Map the Date column before running reconciliation.');
+      return;
+    }
+    if (!bankStatementMapping.amount && !bankStatementMapping.debit && !bankStatementMapping.credit) {
+      toast.error('Map Debit/Credit or a signed Amount column before running reconciliation.');
+      return;
+    }
+
+    setIsBankReconLoading(true);
+    try {
+      const parsedStatement = parseBankStatement(bankRawData, bankStatementMapping, {
+        dateFormat: bankStatementDateFormat,
+      });
+      parsedStatement.warnings.slice(0, 5).forEach(warning => toast.warning(warning));
+
+      if (parsedStatement.rows.length === 0) {
+        toast.error('No valid rows parsed from bank statement. Check your column mapping.');
+        return;
+      }
+
+      const recon = reconcileBank(
+        parsedStatement.rows,
+        report.transactions,
+        {
+          statementDate: bankStatementDate || undefined,
+          bookAccountScope: bankBookAccountScope,
+        },
+      );
+      setBankRecon(recon);
+      recon.notes.slice(0, 5).forEach(note => toast.warning(note));
+
+      if (recon.isReconciled) {
+        toast.success('Bank reconciliation complete; adjusted bank and book balances are aligned.');
+      } else {
+        toast.warning(
+          `Reconciliation complete; unresolved difference ${formatCurrency(recon.difference)}.`,
+        );
+      }
+    } catch (err) {
+      console.error('Bank reconciliation error:', err);
+      toast.error('Reconciliation failed. Please review your column mapping.');
+    } finally {
+      setIsBankReconLoading(false);
+    }
+  };
+
+  // ============================================================
   // HELPERS
   // ============================================================
 
@@ -2000,6 +2120,14 @@ const FinanceDashboard: React.FC = () => {
     if (amount < 0) return `-$${Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     return `$${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
+
+  const bankReconAccountOptions = report
+    ? [...new Set(
+        report.transactions
+          .filter(tx => /(cash|bank|checking|cheque|savings|current account|petty cash|cash equivalents?)/i.test(tx.account))
+          .map(tx => tx.account),
+      )].sort((a, b) => a.localeCompare(b))
+    : [];
 
   const computeStartingPositionSnapshot = () => {
     if (!report || canonicalTransactions.length === 0) return null;
@@ -3347,6 +3475,15 @@ const FinanceDashboard: React.FC = () => {
               setView('upload');
               setReport(null);
               setChartData(null);
+              setTrialBalance(null);
+              setBankRawData([]);
+              setBankStatementColumns([]);
+              setBankStatementMapping({});
+              setBankStatementFileName('');
+              setBankStatementDate('');
+              setBankStatementDateFormat('auto');
+              setBankBookAccountScope('auto');
+              setBankRecon(null);
               resetImportSession();
             }}
           >
@@ -3536,6 +3673,14 @@ const FinanceDashboard: React.FC = () => {
           <TabsTrigger value="written" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <FileText className="h-4 w-4 mr-2" />
             Written Report
+          </TabsTrigger>
+          <TabsTrigger value="trial-balance" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+            <CheckCircle className="h-4 w-4 mr-2" />
+            Trial Balance
+          </TabsTrigger>
+          <TabsTrigger value="bank-recon" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+            <Landmark className="h-4 w-4 mr-2" />
+            Bank Reconciliation
           </TabsTrigger>
         </TabsList>
 
@@ -4297,6 +4442,517 @@ const FinanceDashboard: React.FC = () => {
                 </ResponsiveContainer>
               )}
             </Card>
+          </div>
+        </TabsContent>
+
+        {/* ---- Trial Balance Tab ---- */}
+        <TabsContent value="trial-balance" className="p-6">
+          <Card>
+            <CardHeader className="bg-gradient-to-r from-violet-500/10 to-purple-500/10 border-b">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-lg">
+                    <CheckCircle className="h-5 w-5 text-violet-600" />
+                    Trial Balance
+                  </CardTitle>
+                  <p className="text-sm text-gray-500 mt-1">
+                    As of {trialBalance?.asOfDate ?? report.balanceSheet.asOfDate} — Aggregated debit and credit balances per account.
+                  </p>
+                </div>
+                {trialBalance && (
+                  <Badge
+                    className={
+                      trialBalance.isBalanced
+                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-200 text-sm px-3 py-1'
+                        : 'bg-red-100 text-red-800 border border-red-200 text-sm px-3 py-1'
+                    }
+                  >
+                    {trialBalance.isBalanced
+                      ? '✓ Balanced'
+                      : `⚠ Off by ${formatCurrency(trialBalance.difference)}`}
+                  </Badge>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {trialBalance ? (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-slate-50">
+                        <TableHead className="w-2/5">Account</TableHead>
+                        <TableHead className="text-xs text-slate-500 uppercase tracking-wide">Category</TableHead>
+                        <TableHead className="text-right">Debit (DR)</TableHead>
+                        <TableHead className="text-right">Credit (CR)</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(() => {
+                        const rendered: React.ReactNode[] = [];
+                        let lastCategory: AccountCategory | null = null;
+                        for (const row of trialBalance.rows) {
+                          if (row.category !== lastCategory) {
+                            lastCategory = row.category;
+                            rendered.push(
+                              <TableRow key={`hdr-${row.category}`} className="bg-slate-100/70 hover:bg-slate-100/70">
+                                <TableCell
+                                  colSpan={4}
+                                  className="py-1.5 px-4 text-xs font-semibold uppercase tracking-wider text-slate-500"
+                                >
+                                  {TRIAL_BALANCE_CATEGORY_LABELS[row.category]}
+                                </TableCell>
+                              </TableRow>,
+                            );
+                          }
+                          rendered.push(
+                            <TableRow key={row.account} className="hover:bg-slate-50/60">
+                              <TableCell className="pl-6 font-medium text-sm">{row.account}</TableCell>
+                              <TableCell className="text-xs text-slate-400">
+                                {TRIAL_BALANCE_CATEGORY_LABELS[row.category]}
+                              </TableCell>
+                              <TableCell className="text-right font-mono text-sm">
+                                {row.debitBalance > 0 ? formatCurrency(row.debitBalance) : <span className="text-slate-300">—</span>}
+                              </TableCell>
+                              <TableCell className="text-right font-mono text-sm">
+                                {row.creditBalance > 0 ? formatCurrency(row.creditBalance) : <span className="text-slate-300">—</span>}
+                              </TableCell>
+                            </TableRow>,
+                          );
+                        }
+                        return rendered;
+                      })()}
+                    </TableBody>
+                    <tfoot>
+                      <tr className="border-t-2 border-slate-300">
+                        <td colSpan={2} className="px-4 py-3 text-sm font-bold text-slate-700">
+                          Totals
+                        </td>
+                        <td
+                          className={`px-4 py-3 text-right font-mono font-bold text-sm ${!trialBalance.isBalanced ? 'text-red-600' : 'text-slate-900'}`}
+                        >
+                          {formatCurrency(trialBalance.totalDebits)}
+                        </td>
+                        <td
+                          className={`px-4 py-3 text-right font-mono font-bold text-sm ${!trialBalance.isBalanced ? 'text-red-600' : 'text-slate-900'}`}
+                        >
+                          {formatCurrency(trialBalance.totalCredits)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </Table>
+                  {!trialBalance.isBalanced && (
+                    <div className="mt-4 flex items-start gap-2 rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">
+                      <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                      <span>
+                        Trial balance does not balance. Difference:{' '}
+                        <strong>{formatCurrency(trialBalance.difference)}</strong>. This usually indicates
+                        missing transactions, a partial import, or unprocessed closing entries.
+                      </span>
+                    </div>
+                  )}
+                  {trialBalance.categoryConflicts.length > 0 && (
+                    <div className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">
+                      <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                      <span>
+                        {trialBalance.categoryConflicts.length} account(s) were posted under multiple categories in source
+                        data. Trial Balance used the dominant category per account; review mappings for those accounts.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+                  <CheckCircle className="h-10 w-10 mb-3 opacity-30" />
+                  <p className="text-sm">Generate a financial report to view the trial balance.</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ---- Bank Reconciliation Tab ---- */}
+        <TabsContent value="bank-recon" className="p-6">
+          <div className="space-y-6">
+            {/* Upload card */}
+            <Card>
+              <CardHeader className="bg-gradient-to-r from-sky-500/10 to-cyan-500/10 border-b">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-lg">
+                    <Landmark className="h-5 w-5 text-sky-600" />
+                    Bank Reconciliation
+                  </CardTitle>
+                  <p className="text-sm text-gray-500 mt-1">
+                    Upload your bank statement to reconcile against your book transactions.
+                  </p>
+                </div>
+              </CardHeader>
+              <CardContent className="pt-6 space-y-4">
+                {/* Drop zone */}
+                <div className="space-y-2">
+                  <Label className="text-sm font-semibold">Bank Statement (CSV or XLSX)</Label>
+                  <div
+                    className="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer hover:border-sky-400 hover:bg-sky-50/40 transition-colors"
+                    onDragOver={e => e.preventDefault()}
+                    onDrop={e => {
+                      e.preventDefault();
+                      const file = e.dataTransfer.files?.[0];
+                      if (file) handleBankStatementUpload(file);
+                    }}
+                    onClick={() => document.getElementById('bank-stmt-input')?.click()}
+                  >
+                    <Upload className="h-8 w-8 mx-auto mb-2 text-sky-400" />
+                    <p className="text-sm font-medium text-slate-600">
+                      {bankStatementFileName || 'Drop your bank statement here or click to browse'}
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">Supports CSV and XLSX — auto-detects columns</p>
+                    <input
+                      id="bank-stmt-input"
+                      type="file"
+                      accept=".csv,.xlsx,.xls"
+                      className="hidden"
+                      onChange={e => {
+                        const file = e.target.files?.[0];
+                        if (file) handleBankStatementUpload(file);
+                        e.target.value = '';
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Column mapping */}
+                {bankStatementColumns.length > 0 && (
+                  <>
+                    <Separator />
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      Column Mapping — verify auto-detected fields
+                    </p>
+                    <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
+                      {(
+                        [
+                          { field: 'date', label: 'Date' },
+                          { field: 'description', label: 'Description' },
+                          { field: 'debit', label: 'Debit (Out)' },
+                          { field: 'credit', label: 'Credit (In)' },
+                          { field: 'amount', label: 'Signed Amount' },
+                          { field: 'balance', label: 'Balance' },
+                        ] as const
+                      ).map(({ field, label }) => (
+                        <div key={field} className="space-y-1">
+                          <Label className="text-xs text-slate-500">{label}</Label>
+                          <Select
+                            value={(bankStatementMapping as Record<string, string | undefined>)[field] ?? '__none__'}
+                            onValueChange={val =>
+                              setBankStatementMapping(prev => ({
+                                ...prev,
+                                [field]: val === '__none__' ? undefined : val,
+                              }))
+                            }
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder="— none —" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__none__">— none —</SelectItem>
+                              {bankStatementColumns.map(col => (
+                                <SelectItem key={col} value={col}>
+                                  {col}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ))}
+                      <div className="space-y-1">
+                        <Label className="text-xs text-slate-500">Date Format</Label>
+                        <Select
+                          value={bankStatementDateFormat}
+                          onValueChange={value => setBankStatementDateFormat(value as BankStatementDateFormat)}
+                        >
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue placeholder="Auto (strict)" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">Auto (strict)</SelectItem>
+                            <SelectItem value="mdy">MM/DD/YYYY</SelectItem>
+                            <SelectItem value="dmy">DD/MM/YYYY</SelectItem>
+                            <SelectItem value="ymd">YYYY-MM-DD</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-slate-500">Book Cash/Bank Account Scope</Label>
+                        <Select
+                          value={bankBookAccountScope || 'auto'}
+                          onValueChange={value => setBankBookAccountScope(value)}
+                        >
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue placeholder="Auto-detect bank/cash accounts" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">Auto-detect bank/cash accounts</SelectItem>
+                            {bankReconAccountOptions.map(account => (
+                              <SelectItem key={account} value={account}>
+                                {account}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-slate-500">Statement Date (optional)</Label>
+                        <Input
+                          type="date"
+                          className="h-8 text-xs"
+                          value={bankStatementDate}
+                          onChange={e => setBankStatementDate(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <Button
+                      className="w-full mt-2"
+                      disabled={
+                        isBankReconLoading ||
+                        !bankStatementMapping.date ||
+                        (!bankStatementMapping.amount && !bankStatementMapping.debit && !bankStatementMapping.credit)
+                      }
+                      onClick={runBankReconciliation}
+                    >
+                      {isBankReconLoading ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Reconciling...
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="h-4 w-4 mr-2" />
+                          Run Reconciliation
+                        </>
+                      )}
+                    </Button>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Results */}
+            {bankRecon && (
+              <div className="space-y-4">
+                {/* Summary banner */}
+                <Card
+                  className={
+                    bankRecon.isReconciled
+                      ? 'border-emerald-300 bg-emerald-50'
+                      : 'border-amber-300 bg-amber-50'
+                  }
+                >
+                  <CardContent className="py-5">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-5">
+                      <div className="flex items-center gap-3">
+                        {bankRecon.isReconciled ? (
+                          <CheckCircle className="h-7 w-7 text-emerald-600 shrink-0" />
+                        ) : (
+                          <AlertTriangle className="h-7 w-7 text-amber-600 shrink-0" />
+                        )}
+                        <div>
+                          <p className="font-semibold text-sm">
+                            {bankRecon.isReconciled
+                              ? 'Reconciled — Books and bank balance!'
+                              : 'Not Yet Reconciled'}
+                          </p>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            {bankRecon.totalTransactionsMatched} matched &middot;{' '}
+                            {bankRecon.totalTransactionsUnmatched} unmatched &middot; Statement date:{' '}
+                            {bankRecon.statementDate} &middot; Scope:{' '}
+                            {bankRecon.bookAccountScope === 'auto'
+                              ? `Auto (${bankRecon.bookAccountsUsed.length} account${bankRecon.bookAccountsUsed.length === 1 ? '' : 's'})`
+                              : bankRecon.bookAccountScope}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center text-sm">
+                        <div className="rounded-lg bg-white/70 border px-3 py-2">
+                          <p className="text-xs text-slate-400 mb-0.5">Bank Balance</p>
+                          <p className="font-mono font-bold">{formatCurrency(bankRecon.bankClosingBalance)}</p>
+                        </div>
+                        <div className="rounded-lg bg-white/70 border px-3 py-2">
+                          <p className="text-xs text-slate-400 mb-0.5">Book Balance</p>
+                          <p className="font-mono font-bold">{formatCurrency(bankRecon.bookClosingBalance)}</p>
+                        </div>
+                        <div className="rounded-lg bg-sky-100/80 border border-sky-200 px-3 py-2">
+                          <p className="text-xs text-sky-500 mb-0.5">Adj. Bank</p>
+                          <p className="font-mono font-bold text-sky-700">
+                            {formatCurrency(bankRecon.adjustedBankBalance)}
+                          </p>
+                        </div>
+                        <div className="rounded-lg bg-sky-100/80 border border-sky-200 px-3 py-2">
+                          <p className="text-xs text-sky-500 mb-0.5">Adj. Book</p>
+                          <p className="font-mono font-bold text-sky-700">
+                            {formatCurrency(bankRecon.adjustedBookBalance)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    {!bankRecon.isReconciled && (
+                      <p className="mt-3 text-xs text-amber-700 flex items-center gap-1.5 border-t border-amber-200 pt-3">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                        Unexplained difference: <strong>{formatCurrency(bankRecon.difference)}</strong>.
+                        Review amount mismatches and unmatched items below.
+                      </p>
+                    )}
+                    {bankRecon.notes.length > 0 && (
+                      <div className="mt-3 border-t border-slate-200 pt-3 space-y-1">
+                        {bankRecon.notes.slice(0, 6).map((note, index) => (
+                          <p key={`${note}-${index}`} className="text-xs text-slate-600">
+                            {note}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Detail sections */}
+                {(
+                  [
+                    {
+                      key: 'deposits',
+                      title: 'Deposits in Transit',
+                      badge: 'bg-emerald-100 text-emerald-800',
+                      items: bankRecon.depositsInTransit,
+                      note: 'In books, not yet cleared by bank',
+                    },
+                    {
+                      key: 'cheques',
+                      title: 'Outstanding Cheques / Payments',
+                      badge: 'bg-red-100 text-red-800',
+                      items: bankRecon.outstandingCheques,
+                      note: 'Issued in books, not yet presented to bank',
+                    },
+                    {
+                      key: 'bank-charges',
+                      title: 'Bank Charges Not in Books',
+                      badge: 'bg-orange-100 text-orange-800',
+                      items: bankRecon.bankChargesUnrecorded,
+                      note: 'Deducted by bank, not yet recorded in books',
+                    },
+                    {
+                      key: 'bank-credits',
+                      title: 'Bank Credits Not in Books',
+                      badge: 'bg-teal-100 text-teal-800',
+                      items: bankRecon.bankCreditsUnrecorded,
+                      note: 'Credited by bank, not yet recorded',
+                    },
+                    {
+                      key: 'mismatches',
+                      title: 'Amount Mismatches',
+                      badge: 'bg-purple-100 text-purple-800',
+                      items: bankRecon.amountMismatches,
+                      note: 'Matched by proximity — review manually',
+                    },
+                  ] as const
+                )
+                  .filter(s => s.items.length > 0)
+                  .map(section => (
+                    <Card key={section.key}>
+                      <CardHeader className="pb-2 pt-4 px-4">
+                        <div className="flex items-center gap-2">
+                          <Badge className={`${section.badge} text-xs`}>{section.items.length}</Badge>
+                          <CardTitle className="text-sm font-semibold">{section.title}</CardTitle>
+                          <span className="text-xs text-slate-400 font-normal">{section.note}</span>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="bg-slate-50">
+                              <TableHead>Date</TableHead>
+                              <TableHead>Description / Account</TableHead>
+                              <TableHead className="text-right">Amount</TableHead>
+                              {section.key === 'mismatches' && (
+                                <TableHead className="text-right">Variance</TableHead>
+                              )}
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {section.items.map((item, idx) => (
+                              <TableRow key={idx} className="text-sm">
+                                <TableCell className="font-mono text-xs">
+                                  {item.bankRow?.date ?? item.bookTransaction?.date ?? '—'}
+                                </TableCell>
+                                <TableCell className="max-w-xs truncate text-sm">
+                                  {item.bankRow?.description ||
+                                    item.bookTransaction?.description ||
+                                    item.bookTransaction?.account ||
+                                    '—'}
+                                </TableCell>
+                                <TableCell className="text-right font-mono">
+                                  {formatCurrency(item.amount)}
+                                </TableCell>
+                                {section.key === 'mismatches' && (
+                                  <TableCell className="text-right font-mono text-orange-600">
+                                    {formatCurrency(item.variance)}
+                                  </TableCell>
+                                )}
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  ))}
+
+                {/* Matched transactions */}
+                {bankRecon.matchedItems.length > 0 && (
+                  <Card>
+                    <CardHeader className="pb-2 pt-4 px-4">
+                      <div className="flex items-center gap-2">
+                        <Badge className="bg-emerald-100 text-emerald-800 text-xs">
+                          {bankRecon.matchedItems.length}
+                        </Badge>
+                        <CardTitle className="text-sm font-semibold text-emerald-700">
+                          Matched Transactions
+                        </CardTitle>
+                        <span className="text-xs text-slate-400 font-normal">
+                          Confirmed in both bank statement and books
+                        </span>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="p-0">
+                      <ScrollArea className="h-64">
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="bg-slate-50">
+                              <TableHead>Date</TableHead>
+                              <TableHead>Bank Description</TableHead>
+                              <TableHead>Book Account</TableHead>
+                              <TableHead className="text-right">Amount</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {bankRecon.matchedItems.map((item, idx) => (
+                              <TableRow key={idx} className="text-sm">
+                                <TableCell className="font-mono text-xs">
+                                  {item.bankRow?.date ?? '—'}
+                                </TableCell>
+                                <TableCell className="max-w-xs truncate">
+                                  {item.bankRow?.description ?? '—'}
+                                </TableCell>
+                                <TableCell className="text-xs text-slate-500">
+                                  {item.bookTransaction?.account ?? '—'}
+                                </TableCell>
+                                <TableCell className="text-right font-mono">
+                                  {formatCurrency(item.amount)}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </ScrollArea>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
+            )}
           </div>
         </TabsContent>
 
