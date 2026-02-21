@@ -38,6 +38,20 @@ const configuredOrigins = (process.env.ALLOWED_ORIGINS || '')
 
 if (process.env.FRONTEND_URL) {
   configuredOrigins.push(process.env.FRONTEND_URL.trim());
+
+  // Accept both apex and www variants to avoid production-only CORS failures
+  // when users switch between https://dataafrik.com and https://www.dataafrik.com.
+  try {
+    const frontendUrl = new URL(process.env.FRONTEND_URL.trim());
+    const host = frontendUrl.hostname || '';
+    if (host.startsWith('www.')) {
+      configuredOrigins.push(`${frontendUrl.protocol}//${host.slice(4)}`);
+    } else if (!['localhost', '127.0.0.1'].includes(host)) {
+      configuredOrigins.push(`${frontendUrl.protocol}//www.${host}`);
+    }
+  } catch (_error) {
+    // Ignore invalid FRONTEND_URL here; existing origin checks will handle it.
+  }
 }
 
 if ((process.env.NODE_ENV || 'development') !== 'production') {

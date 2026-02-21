@@ -38,6 +38,43 @@ function normalizeReturnPath(value) {
   return raw;
 }
 
+function resolveFrontendBase(req) {
+  const configuredBase = normalizeBaseUrl(process.env.FRONTEND_URL || '');
+  const requestOrigin = normalizeBaseUrl(req?.headers?.origin || '');
+
+  const allowedOrigins = new Set(
+    String(process.env.ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((origin) => normalizeBaseUrl(origin))
+      .filter(Boolean)
+  );
+
+  if (configuredBase) {
+    allowedOrigins.add(configuredBase);
+    try {
+      const configuredUrl = new URL(configuredBase);
+      const host = configuredUrl.hostname || '';
+      if (host.startsWith('www.')) {
+        allowedOrigins.add(`${configuredUrl.protocol}//${host.slice(4)}`);
+      } else if (!['localhost', '127.0.0.1'].includes(host)) {
+        allowedOrigins.add(`${configuredUrl.protocol}//www.${host}`);
+      }
+    } catch (_error) {
+      // Ignore malformed configured base URL and fall back to defaults below.
+    }
+  }
+
+  if (requestOrigin && allowedOrigins.has(requestOrigin)) {
+    return requestOrigin;
+  }
+
+  if (configuredBase) {
+    return configuredBase;
+  }
+
+  return requestOrigin || 'http://localhost:5173';
+}
+
 function isLikelyEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
 }
@@ -626,7 +663,7 @@ router.post('/pdf-checkout', authenticateToken, [
       null;
 
     const plan = getPdfPlanConfig(requestedPlan);
-    const frontendBase = normalizeBaseUrl(process.env.FRONTEND_URL || 'http://localhost:5173');
+    const frontendBase = resolveFrontendBase(req);
     const returnPath = normalizeReturnPath(req.body.return_path);
 
     if (provider === 'stripe') {

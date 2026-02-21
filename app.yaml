@@ -53,6 +53,8 @@ services:
         type: SECRET
       - key: FRONTEND_URL
         value: https://www.dataafrik.com
+      - key: ALLOWED_ORIGINS
+        value: https://www.dataafrik.com,https://dataafrik.com
       - key: NODE_ENV
         value: production
       - key: FORCE_REFRESH
