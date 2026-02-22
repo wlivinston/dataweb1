@@ -2070,7 +2070,7 @@ const FinanceDashboard: React.FC = () => {
       return;
     }
     if (!bankStatementMapping.amount && !bankStatementMapping.debit && !bankStatementMapping.credit) {
-      toast.error('Map Debit/Credit or a signed Amount column before running reconciliation.');
+      toast.error('Map Debit/Credit or an Amount column before running reconciliation.');
       return;
     }
 
@@ -2079,7 +2079,13 @@ const FinanceDashboard: React.FC = () => {
       const parsedStatement = parseBankStatement(bankRawData, bankStatementMapping, {
         dateFormat: bankStatementDateFormat,
       });
-      parsedStatement.warnings.slice(0, 5).forEach(warning => toast.warning(warning));
+      if (parsedStatement.warnings.length > 0) {
+        const preview = parsedStatement.warnings.slice(0, 2).join(' ');
+        const extra = parsedStatement.warnings.length - 2;
+        toast.warning(
+          extra > 0 ? `${preview} (+${extra} additional warning${extra === 1 ? '' : 's'})` : preview,
+        );
+      }
 
       if (parsedStatement.rows.length === 0) {
         toast.error('No valid rows parsed from bank statement. Check your column mapping.');
@@ -2095,14 +2101,21 @@ const FinanceDashboard: React.FC = () => {
         },
       );
       setBankRecon(recon);
-      recon.notes.slice(0, 5).forEach(note => toast.warning(note));
-
-      if (recon.isReconciled) {
-        toast.success('Bank reconciliation complete; adjusted bank and book balances are aligned.');
-      } else {
-        toast.warning(
-          `Reconciliation complete; unresolved difference ${formatCurrency(recon.difference)}.`,
+      if (recon.quality.bookRowsMatchingPool === 0) {
+        toast.error(
+          'Book match pool is empty. Upload/map GL cash journal (Date, Account, Debit/Credit, Reference) and check statement window.',
         );
+      } else if (recon.quality.bankRowsMatchingPool === 0) {
+        toast.error('Bank match pool is empty after filtering. Check statement date format and period window.');
+      } else {
+        toast.success(
+          recon.isReconciled
+            ? 'Reconciliation complete; adjusted bank and book balances are aligned.'
+            : 'Reconciliation run completed. Review unresolved differences in the results panel.',
+        );
+        if (!recon.isReconciled) {
+          toast.warning(`Unresolved difference: ${formatCurrency(recon.difference)}.`);
+        }
       }
     } catch (err) {
       console.error('Bank reconciliation error:', err);
@@ -2120,6 +2133,17 @@ const FinanceDashboard: React.FC = () => {
     if (amount < 0) return `-$${Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     return `$${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
+
+  const formatCurrencyCompact = (amount: number): string => {
+    const abs = Math.abs(amount);
+    if (abs < 1_000_000) return formatCurrency(amount);
+    const sign = amount < 0 ? '-' : '';
+    if (abs >= 1_000_000_000_000) return `${sign}$${(abs / 1_000_000_000_000).toFixed(2)}T`;
+    if (abs >= 1_000_000_000) return `${sign}$${(abs / 1_000_000_000).toFixed(2)}B`;
+    return `${sign}$${(abs / 1_000_000).toFixed(2)}M`;
+  };
+
+  const formatPercent = (value: number): string => `${value.toFixed(1)}%`;
 
   const bankReconAccountOptions = report
     ? [...new Set(
@@ -2236,15 +2260,15 @@ const FinanceDashboard: React.FC = () => {
         {title}
       </h4>
       {items.map((item, idx) => (
-        <div key={idx} className="flex justify-between py-1.5 px-4 text-sm hover:bg-gray-50 rounded">
-          <span className="text-gray-600">{item.label}</span>
-          <span className="font-mono text-gray-800">{formatCurrency(item.amount)}</span>
+        <div key={idx} className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-1.5 px-4 text-sm hover:bg-gray-50 rounded">
+          <span className="min-w-0 text-gray-600 break-words">{item.label}</span>
+          <span className="font-mono text-gray-800 text-right break-all">{formatCurrency(item.amount)}</span>
         </div>
       ))}
       {items.length > 0 && (
-        <div className={`flex justify-between py-2 px-4 text-sm font-bold border-t border-b ${isPositive !== undefined ? (isPositive ? 'text-green-700' : 'text-red-700') : 'text-gray-900'}`}>
+        <div className={`grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-2 px-4 text-sm font-bold border-t border-b ${isPositive !== undefined ? (isPositive ? 'text-green-700' : 'text-red-700') : 'text-gray-900'}`}>
           <span>{totalLabel}</span>
-          <span className="font-mono">{formatCurrency(total)}</span>
+          <span className="font-mono text-right break-all">{formatCurrency(total)}</span>
         </div>
       )}
     </div>
@@ -2460,79 +2484,81 @@ const FinanceDashboard: React.FC = () => {
             </CardHeader>
             <CardContent>
               <ScrollArea className="max-h-[400px]">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-[120px]">Date</TableHead>
-                      <TableHead>Account Name</TableHead>
-                      <TableHead className="w-[180px]">Category</TableHead>
-                      <TableHead className="w-[120px]">Amount</TableHead>
-                      <TableHead>Description</TableHead>
-                      <TableHead className="w-[50px]"></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {manualRows.map(row => (
-                      <TableRow key={row.id}>
-                        <TableCell>
-                          <Input
-                            type="date"
-                            value={row.date}
-                            onChange={(e) => updateManualRow(row.id, 'date', e.target.value)}
-                            className="h-8 text-xs"
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            placeholder="e.g., Sales Revenue"
-                            value={row.account}
-                            onChange={(e) => updateManualRow(row.id, 'account', e.target.value)}
-                            className="h-8 text-xs"
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Select
-                            value={row.category}
-                            onValueChange={(v) => updateManualRow(row.id, 'category', v)}
-                          >
-                            <SelectTrigger className="h-8 text-xs">
-                              <SelectValue placeholder="Auto-detect" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {CATEGORY_OPTIONS.map(opt => (
-                                <SelectItem key={opt.value} value={opt.value || 'auto'}>{opt.label}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            type="number"
-                            placeholder="0.00"
-                            value={row.amount}
-                            onChange={(e) => updateManualRow(row.id, 'amount', e.target.value)}
-                            className="h-8 text-xs"
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            placeholder="Optional"
-                            value={row.description}
-                            onChange={(e) => updateManualRow(row.id, 'description', e.target.value)}
-                            className="h-8 text-xs"
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Button variant="ghost" size="sm" onClick={() => removeManualRow(row.id)} className="h-7 w-7 p-0">
-                            <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                          </Button>
-                        </TableCell>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-[120px]">Date</TableHead>
+                        <TableHead>Account Name</TableHead>
+                        <TableHead className="w-[180px]">Category</TableHead>
+                        <TableHead className="w-[120px]">Amount</TableHead>
+                        <TableHead>Description</TableHead>
+                        <TableHead className="w-[50px]"></TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                    </TableHeader>
+                    <TableBody>
+                      {manualRows.map(row => (
+                        <TableRow key={row.id}>
+                          <TableCell>
+                            <Input
+                              type="date"
+                              value={row.date}
+                              onChange={(e) => updateManualRow(row.id, 'date', e.target.value)}
+                              className="h-8 text-xs"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              placeholder="e.g., Sales Revenue"
+                              value={row.account}
+                              onChange={(e) => updateManualRow(row.id, 'account', e.target.value)}
+                              className="h-8 text-xs"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Select
+                              value={row.category}
+                              onValueChange={(v) => updateManualRow(row.id, 'category', v)}
+                            >
+                              <SelectTrigger className="h-8 text-xs">
+                                <SelectValue placeholder="Auto-detect" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {CATEGORY_OPTIONS.map(opt => (
+                                  <SelectItem key={opt.value} value={opt.value || 'auto'}>{opt.label}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              placeholder="0.00"
+                              value={row.amount}
+                              onChange={(e) => updateManualRow(row.id, 'amount', e.target.value)}
+                              className="h-8 text-xs"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              placeholder="Optional"
+                              value={row.description}
+                              onChange={(e) => updateManualRow(row.id, 'description', e.target.value)}
+                              className="h-8 text-xs"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Button variant="ghost" size="sm" onClick={() => removeManualRow(row.id)} className="h-7 w-7 p-0">
+                              <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
               </ScrollArea>
-              <div className="flex justify-between mt-4">
+              <div className="flex flex-col sm:flex-row justify-between gap-2 mt-4">
                 <Button variant="outline" size="sm" onClick={addManualRow}>
                   <Plus className="h-4 w-4 mr-1" /> Add Row
                 </Button>
@@ -2696,69 +2722,71 @@ const FinanceDashboard: React.FC = () => {
           </CardHeader>
           <CardContent>
             <ScrollArea className="max-h-[320px]">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Source Column</TableHead>
-                    <TableHead className="w-[180px]">Role</TableHead>
-                    <TableHead>Account (Optional)</TableHead>
-                    <TableHead>Category (Optional)</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {measureColumns.map(column => {
-                    const role = wideConfig.incomeColumns.includes(column)
-                      ? 'income'
-                      : wideConfig.expenseColumns.includes(column)
-                        ? 'expense'
-                        : 'ignore';
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Source Column</TableHead>
+                      <TableHead className="w-[180px]">Role</TableHead>
+                      <TableHead>Account (Optional)</TableHead>
+                      <TableHead>Category (Optional)</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {measureColumns.map(column => {
+                      const role = wideConfig.incomeColumns.includes(column)
+                        ? 'income'
+                        : wideConfig.expenseColumns.includes(column)
+                          ? 'expense'
+                          : 'ignore';
 
-                    return (
-                      <TableRow key={column}>
-                        <TableCell className="font-medium">{column}</TableCell>
-                        <TableCell>
-                          <Select
-                            value={role}
-                            onValueChange={(value) => {
-                              if (value === 'ignore') {
-                                clearWideColumnSelection(column);
-                                return;
-                              }
+                      return (
+                        <TableRow key={column}>
+                          <TableCell className="font-medium">{column}</TableCell>
+                          <TableCell>
+                            <Select
+                              value={role}
+                              onValueChange={(value) => {
+                                if (value === 'ignore') {
+                                  clearWideColumnSelection(column);
+                                  return;
+                                }
 
-                              toggleWideColumnSelection(column, value as 'income' | 'expense');
-                            }}
-                          >
-                            <SelectTrigger className="h-8">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="ignore">Ignore</SelectItem>
-                              <SelectItem value="income">Income (Credit)</SelectItem>
-                              <SelectItem value="expense">Expense (Debit)</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            value={wideConfig.accountMappings[column] || ''}
-                            onChange={(event) => updateWideColumnMapping(column, 'account', event.target.value)}
-                            placeholder={column}
-                            className="h-8"
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            value={wideConfig.categoryMappings[column] || ''}
-                            onChange={(event) => updateWideColumnMapping(column, 'category', event.target.value)}
-                            placeholder={column}
-                            className="h-8"
-                          />
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+                                toggleWideColumnSelection(column, value as 'income' | 'expense');
+                              }}
+                            >
+                              <SelectTrigger className="h-8">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="ignore">Ignore</SelectItem>
+                                <SelectItem value="income">Income (Credit)</SelectItem>
+                                <SelectItem value="expense">Expense (Debit)</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              value={wideConfig.accountMappings[column] || ''}
+                              onChange={(event) => updateWideColumnMapping(column, 'account', event.target.value)}
+                              placeholder={column}
+                              className="h-8"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              value={wideConfig.categoryMappings[column] || ''}
+                              onChange={(event) => updateWideColumnMapping(column, 'category', event.target.value)}
+                              placeholder={column}
+                              className="h-8"
+                            />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
             </ScrollArea>
           </CardContent>
         </Card>
@@ -2777,34 +2805,36 @@ const FinanceDashboard: React.FC = () => {
             ) : (
               <>
                 <ScrollArea className="max-h-[300px] border rounded">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Date</TableHead>
-                        <TableHead>Account</TableHead>
-                        <TableHead>Category</TableHead>
-                        <TableHead>Type</TableHead>
-                        <TableHead>Debit</TableHead>
-                        <TableHead>Credit</TableHead>
-                        <TableHead>Description</TableHead>
-                        <TableHead>SourceColumn</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {previewTransactions.map((transaction, index) => (
-                        <TableRow key={`${transaction.SourceRow}-${transaction.SourceColumn}-${index}`}>
-                          <TableCell className="text-xs">{transaction.Date}</TableCell>
-                          <TableCell className="text-xs">{transaction.Account}</TableCell>
-                          <TableCell className="text-xs">{transaction.Category}</TableCell>
-                          <TableCell className="text-xs">{transaction.Type}</TableCell>
-                          <TableCell className="text-xs">{transaction.Debit}</TableCell>
-                          <TableCell className="text-xs">{transaction.Credit}</TableCell>
-                          <TableCell className="text-xs">{transaction.Description}</TableCell>
-                          <TableCell className="text-xs">{transaction.SourceColumn}</TableCell>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Date</TableHead>
+                          <TableHead>Account</TableHead>
+                          <TableHead>Category</TableHead>
+                          <TableHead>Type</TableHead>
+                          <TableHead>Debit</TableHead>
+                          <TableHead>Credit</TableHead>
+                          <TableHead>Description</TableHead>
+                          <TableHead>SourceColumn</TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                      </TableHeader>
+                      <TableBody>
+                        {previewTransactions.map((transaction, index) => (
+                          <TableRow key={`${transaction.SourceRow}-${transaction.SourceColumn}-${index}`}>
+                            <TableCell className="text-xs whitespace-nowrap">{transaction.Date}</TableCell>
+                            <TableCell className="text-xs">{transaction.Account}</TableCell>
+                            <TableCell className="text-xs">{transaction.Category}</TableCell>
+                            <TableCell className="text-xs">{transaction.Type}</TableCell>
+                            <TableCell className="text-xs whitespace-nowrap">{transaction.Debit}</TableCell>
+                            <TableCell className="text-xs whitespace-nowrap">{transaction.Credit}</TableCell>
+                            <TableCell className="text-xs">{transaction.Description}</TableCell>
+                            <TableCell className="text-xs">{transaction.SourceColumn}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
                 </ScrollArea>
                 <p className="text-xs text-gray-500">
                   Showing first {previewTransactions.length} generated transactions. Conversion only happens after confirmation.
@@ -2822,9 +2852,10 @@ const FinanceDashboard: React.FC = () => {
           </CardContent>
         </Card>
 
-        <div className="flex justify-between">
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2">
           <Button
             variant="outline"
+            className="w-full sm:w-auto"
             onClick={() => {
               setView('upload');
               resetImportSession();
@@ -2834,7 +2865,7 @@ const FinanceDashboard: React.FC = () => {
           </Button>
           <Button
             onClick={generateReport}
-            className="bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-700 hover:to-blue-700"
+            className="w-full sm:w-auto bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-700 hover:to-blue-700"
           >
             <BarChart3 className="h-4 w-4 mr-2" />
             Confirm Conversion &amp; Generate Statements
@@ -3151,13 +3182,13 @@ const FinanceDashboard: React.FC = () => {
           </CardContent>
         </Card>
 
-        <div className="flex justify-between">
-          <Button variant="outline" onClick={() => setView(fallbackView)}>
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2">
+          <Button variant="outline" className="w-full sm:w-auto" onClick={() => setView(fallbackView)}>
             Back
           </Button>
           <Button
             onClick={confirmAssetJournalGeneration}
-            className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700"
+            className="w-full sm:w-auto bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700"
           >
             <CheckCircle className="h-4 w-4 mr-2" />
             Confirm Preview &amp; Continue
@@ -3230,11 +3261,11 @@ const FinanceDashboard: React.FC = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4 pt-2 border-t">
-              {(['date', 'account', 'category', 'type', 'debit', 'credit', 'description', 'amount'] as const).map(field => (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t">
+              {(['date', 'account', 'category', 'type', 'debit', 'credit', 'description', 'reference', 'amount'] as const).map(field => (
                 <div key={field}>
                   <Label className="text-sm font-medium text-gray-700 capitalize">
-                    {field === 'type' ? 'Type (Income/Expense)' : field}
+                    {field === 'type' ? 'Type (Income/Expense)' : field === 'reference' ? 'Reference (JournalRef)' : field}
                   </Label>
                   <Select
                     value={mapping[field] || 'none'}
@@ -3330,9 +3361,10 @@ const FinanceDashboard: React.FC = () => {
           </CardContent>
         </Card>
 
-        <div className="flex justify-between">
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2">
           <Button
             variant="outline"
+            className="w-full sm:w-auto"
             onClick={() => {
               setView('upload');
               resetImportSession();
@@ -3340,7 +3372,7 @@ const FinanceDashboard: React.FC = () => {
           >
             Back
           </Button>
-          <Button onClick={generateReport} className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700">
+          <Button onClick={generateReport} className="w-full sm:w-auto bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700">
             <BarChart3 className="h-4 w-4 mr-2" />
             Generate Financial Statements
           </Button>
@@ -3397,13 +3429,13 @@ const FinanceDashboard: React.FC = () => {
       />
 
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-800 flex items-center gap-2 break-words">
             <Building2 className="h-6 w-6 text-emerald-600" />
             {report.companyName}
           </h1>
-          <p className="text-sm text-gray-500">{report.reportPeriod} &middot; Generated {report.generatedAt.toLocaleDateString()}</p>
+          <p className="text-sm text-gray-500 break-words">{report.reportPeriod} &middot; Generated {report.generatedAt.toLocaleDateString()}</p>
           {isSingleEntryAdjusted && (
             <UiTooltip>
               <UiTooltipTrigger asChild>
@@ -3417,7 +3449,7 @@ const FinanceDashboard: React.FC = () => {
             </UiTooltip>
           )}
         </div>
-        <div className="flex gap-2 flex-wrap justify-end">
+        <div className="flex gap-2 flex-wrap sm:justify-end">
           {isSingleEntryAdjusted && (
             <>
               <Button
@@ -3557,7 +3589,7 @@ const FinanceDashboard: React.FC = () => {
             <p className="text-xs text-slate-700">{startingPosition.description}</p>
 
             {startingPosition.sourceType === 'synthetic' && (
-              <p className="text-xs text-amber-900">
+              <p className="text-xs text-amber-900 break-all">
                 Synthetic balancing totals: Debit {formatCurrency(startingPosition.syntheticDebit)} | Credit {formatCurrency(startingPosition.syntheticCredit)}.
               </p>
             )}
@@ -3579,67 +3611,75 @@ const FinanceDashboard: React.FC = () => {
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card className="p-4 bg-gradient-to-br from-emerald-50 to-white border-emerald-100">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <Card className="min-w-0 p-4 bg-gradient-to-br from-emerald-50 to-white border-emerald-100">
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-gray-500 font-medium">Total Revenue</span>
             <DollarSign className="h-4 w-4 text-emerald-500" />
           </div>
-          <p className="text-xl font-bold text-emerald-700">{formatCurrency(pnl.totalRevenue)}</p>
+          <p className="text-base sm:text-xl font-bold text-emerald-700 leading-tight whitespace-nowrap" title={formatCurrency(pnl.totalRevenue)}>
+            {formatCurrencyCompact(pnl.totalRevenue)}
+          </p>
+          <p className="mt-1 hidden sm:block text-[11px] text-emerald-700/80 font-mono break-all">{formatCurrency(pnl.totalRevenue)}</p>
         </Card>
 
-        <Card className={`p-4 bg-gradient-to-br ${pnl.netIncome >= 0 ? 'from-green-50 to-white border-green-100' : 'from-red-50 to-white border-red-100'}`}>
+        <Card className={`min-w-0 p-4 bg-gradient-to-br ${pnl.netIncome >= 0 ? 'from-green-50 to-white border-green-100' : 'from-red-50 to-white border-red-100'}`}>
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-gray-500 font-medium">Net Income</span>
             {pnl.netIncome >= 0 ? <ArrowUpRight className="h-4 w-4 text-green-500" /> : <ArrowDownRight className="h-4 w-4 text-red-500" />}
           </div>
-          <p className={`text-xl font-bold ${pnl.netIncome >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-            {formatCurrency(pnl.netIncome)}
+          <p className={`text-base sm:text-xl font-bold leading-tight whitespace-nowrap ${pnl.netIncome >= 0 ? 'text-green-700' : 'text-red-700'}`} title={formatCurrency(pnl.netIncome)}>
+            {formatCurrencyCompact(pnl.netIncome)}
           </p>
+          <p className={`mt-1 hidden sm:block text-[11px] font-mono break-all ${pnl.netIncome >= 0 ? 'text-green-700/80' : 'text-red-700/80'}`}>{formatCurrency(pnl.netIncome)}</p>
           <p className="text-xs text-gray-400">{pnl.netMargin.toFixed(1)}% margin</p>
         </Card>
 
-        <Card className="p-4 bg-gradient-to-br from-blue-50 to-white border-blue-100">
+        <Card className="min-w-0 p-4 bg-gradient-to-br from-blue-50 to-white border-blue-100">
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-gray-500 font-medium">Total Assets</span>
             <Landmark className="h-4 w-4 text-blue-500" />
           </div>
-          <p className="text-xl font-bold text-blue-700">{formatCurrency(bs.totalAssets)}</p>
+          <p className="text-base sm:text-xl font-bold text-blue-700 leading-tight whitespace-nowrap" title={formatCurrency(bs.totalAssets)}>
+            {formatCurrencyCompact(bs.totalAssets)}
+          </p>
+          <p className="mt-1 hidden sm:block text-[11px] text-blue-700/80 font-mono break-all">{formatCurrency(bs.totalAssets)}</p>
         </Card>
 
-        <Card className={`p-4 bg-gradient-to-br ${cf.netCashChange >= 0 ? 'from-cyan-50 to-white border-cyan-100' : 'from-orange-50 to-white border-orange-100'}`}>
+        <Card className={`min-w-0 p-4 bg-gradient-to-br ${cf.netCashChange >= 0 ? 'from-cyan-50 to-white border-cyan-100' : 'from-orange-50 to-white border-orange-100'}`}>
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-gray-500 font-medium">Net Cash Flow</span>
             <Wallet className="h-4 w-4 text-cyan-500" />
           </div>
-          <p className={`text-xl font-bold ${cf.netCashChange >= 0 ? 'text-cyan-700' : 'text-orange-700'}`}>
-            {formatCurrency(cf.netCashChange)}
+          <p className={`text-base sm:text-xl font-bold leading-tight whitespace-nowrap ${cf.netCashChange >= 0 ? 'text-cyan-700' : 'text-orange-700'}`} title={formatCurrency(cf.netCashChange)}>
+            {formatCurrencyCompact(cf.netCashChange)}
           </p>
+          <p className={`mt-1 hidden sm:block text-[11px] font-mono break-all ${cf.netCashChange >= 0 ? 'text-cyan-700/80' : 'text-orange-700/80'}`}>{formatCurrency(cf.netCashChange)}</p>
         </Card>
       </div>
 
       {/* Financial Health Score */}
       <Card className="p-4 bg-gradient-to-r from-violet-50 via-purple-50 to-fuchsia-50 border-violet-200">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className={`w-14 h-14 rounded-full flex items-center justify-center text-lg font-bold text-white ${
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3 min-w-0">
+            <div className={`w-14 h-14 rounded-full shrink-0 flex items-center justify-center text-lg font-bold text-white ${
               report.healthScore >= 70 ? 'bg-green-500' : report.healthScore >= 40 ? 'bg-yellow-500' : 'bg-red-500'
             }`}>
               {report.healthScore}
             </div>
-            <div>
+            <div className="min-w-0">
               <h3 className="font-semibold text-gray-800 flex items-center gap-2">
                 <Heart className="h-4 w-4 text-violet-500" />
                 Financial Health Score
               </h3>
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-gray-500 break-words">
                 {report.healthScore >= 70 ? 'Your business is in good financial health' :
                  report.healthScore >= 40 ? 'Some areas need attention' :
                  'Significant financial concerns detected'}
               </p>
             </div>
           </div>
-          <Badge className={`${
+          <Badge className={`self-start sm:self-auto ${
             report.healthScore >= 70 ? 'bg-green-500' : report.healthScore >= 40 ? 'bg-yellow-500' : 'bg-red-500'
           }`}>
             {report.healthScore >= 70 ? 'Strong' : report.healthScore >= 40 ? 'Fair' : 'Weak'}
@@ -3649,43 +3689,43 @@ const FinanceDashboard: React.FC = () => {
 
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="h-auto w-full justify-start gap-1.5 rounded-2xl border border-border/80 bg-gradient-to-r from-background via-background to-primary/5 p-1.5 shadow-[0_10px_30px_rgba(15,23,42,0.06)] flex-nowrap overflow-x-auto">
-          <TabsTrigger value="pnl" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+        <TabsList className="h-auto w-full justify-start gap-1.5 rounded-2xl border border-border/80 bg-gradient-to-r from-background via-background to-primary/5 p-1.5 shadow-[0_10px_30px_rgba(15,23,42,0.06)] flex-nowrap overflow-x-auto snap-x snap-mandatory [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <TabsTrigger value="pnl" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <DollarSign className="h-4 w-4 mr-2" />
             Profit &amp; Loss
           </TabsTrigger>
-          <TabsTrigger value="cashflow" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="cashflow" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <Activity className="h-4 w-4 mr-2" />
             Cash Flow
           </TabsTrigger>
-          <TabsTrigger value="balance" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="balance" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <Scale className="h-4 w-4 mr-2" />
             Balance Sheet
           </TabsTrigger>
-          <TabsTrigger value="ratios" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="ratios" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <Shield className="h-4 w-4 mr-2" />
             Ratios &amp; Health
           </TabsTrigger>
-          <TabsTrigger value="charts" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="charts" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <BarChart3 className="h-4 w-4 mr-2" />
             Visualizations
           </TabsTrigger>
-          <TabsTrigger value="written" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="written" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <FileText className="h-4 w-4 mr-2" />
             Written Report
           </TabsTrigger>
-          <TabsTrigger value="trial-balance" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="trial-balance" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <CheckCircle className="h-4 w-4 mr-2" />
             Trial Balance
           </TabsTrigger>
-          <TabsTrigger value="bank-recon" className="shrink-0 rounded-xl border border-transparent px-4 py-2.5 text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="bank-recon" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
             <Landmark className="h-4 w-4 mr-2" />
             Bank Reconciliation
           </TabsTrigger>
         </TabsList>
 
         {/* ---- P&L Tab ---- */}
-        <TabsContent value="pnl" className="p-6">
+        <TabsContent value="pnl" className="p-4 sm:p-6">
           <Card>
             <CardHeader className="bg-gradient-to-r from-emerald-500/10 to-teal-500/10 border-b">
               <CardTitle className="flex items-center gap-2 text-lg">
@@ -3698,19 +3738,19 @@ const FinanceDashboard: React.FC = () => {
               <StatementSection title="Revenue" items={pnl.revenue} total={pnl.totalRevenue} totalLabel="Total Revenue" isPositive={true} />
               <StatementSection title="Cost of Goods Sold" items={pnl.costOfGoodsSold} total={pnl.totalCOGS} totalLabel="Total COGS" />
 
-              <div className={`flex justify-between py-3 px-4 text-sm font-bold bg-emerald-50 rounded-lg mb-4 ${pnl.grossProfit >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+              <div className={`grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-3 px-4 text-sm font-bold bg-emerald-50 rounded-lg mb-4 ${pnl.grossProfit >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
                 <span>Gross Profit</span>
                 <div className="text-right">
-                  <span className="font-mono">{formatCurrency(pnl.grossProfit)}</span>
+                  <span className="font-mono break-all">{formatCurrency(pnl.grossProfit)}</span>
                   <span className="text-xs ml-2 opacity-70">({pnl.grossMargin.toFixed(1)}%)</span>
                 </div>
               </div>
 
               <StatementSection title="Operating Expenses" items={pnl.operatingExpenses} total={pnl.totalOperatingExpenses} totalLabel="Total Operating Expenses" />
 
-              <div className={`flex justify-between py-3 px-4 text-sm font-bold bg-blue-50 rounded-lg mb-4 ${pnl.operatingIncome >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
+              <div className={`grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-3 px-4 text-sm font-bold bg-blue-50 rounded-lg mb-4 ${pnl.operatingIncome >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
                 <span>Operating Income (EBIT)</span>
-                <span className="font-mono">{formatCurrency(pnl.operatingIncome)}</span>
+                <span className="font-mono text-right break-all">{formatCurrency(pnl.operatingIncome)}</span>
               </div>
 
               {pnl.otherIncome.length > 0 && (
@@ -3721,17 +3761,17 @@ const FinanceDashboard: React.FC = () => {
               )}
 
               {pnl.taxExpense > 0 && (
-                <div className="flex justify-between py-1.5 px-4 text-sm">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-1.5 px-4 text-sm">
                   <span className="text-gray-600">Income Tax Expense</span>
-                  <span className="font-mono text-gray-800">{formatCurrency(pnl.taxExpense)}</span>
+                  <span className="font-mono text-gray-800 text-right break-all">{formatCurrency(pnl.taxExpense)}</span>
                 </div>
               )}
 
               <Separator className="my-4" />
-              <div className={`flex justify-between py-4 px-4 text-lg font-bold rounded-lg ${pnl.netIncome >= 0 ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
+              <div className={`grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-4 px-4 text-lg font-bold rounded-lg ${pnl.netIncome >= 0 ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
                 <span>Net Income</span>
                 <div className="text-right">
-                  <span className="font-mono">{formatCurrency(pnl.netIncome)}</span>
+                  <span className="font-mono break-all">{formatCurrency(pnl.netIncome)}</span>
                   <span className="text-sm ml-2 opacity-70">({pnl.netMargin.toFixed(1)}% margin)</span>
                 </div>
               </div>
@@ -3740,7 +3780,7 @@ const FinanceDashboard: React.FC = () => {
         </TabsContent>
 
         {/* ---- Cash Flow Tab ---- */}
-        <TabsContent value="cashflow" className="p-6">
+        <TabsContent value="cashflow" className="p-4 sm:p-6">
           <Card>
             <CardHeader className="bg-gradient-to-r from-cyan-500/10 to-blue-500/10 border-b">
               <CardTitle className="flex items-center gap-2 text-lg">
@@ -3755,19 +3795,19 @@ const FinanceDashboard: React.FC = () => {
               <StatementSection title="Financing Activities" items={cf.financingActivities} total={cf.netFinancingCashFlow} totalLabel="Net Cash from Financing" isPositive={cf.netFinancingCashFlow >= 0} />
 
               <Separator className="my-4" />
-              <div className={`flex justify-between py-3 px-4 text-sm font-bold rounded-lg ${cf.netCashChange >= 0 ? 'bg-cyan-50 text-cyan-800' : 'bg-orange-50 text-orange-800'}`}>
+              <div className={`grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-3 px-4 text-sm font-bold rounded-lg ${cf.netCashChange >= 0 ? 'bg-cyan-50 text-cyan-800' : 'bg-orange-50 text-orange-800'}`}>
                 <span>Net Change in Cash</span>
-                <span className="font-mono">{formatCurrency(cf.netCashChange)}</span>
+                <span className="font-mono text-right break-all">{formatCurrency(cf.netCashChange)}</span>
               </div>
 
-              <div className="mt-4 grid grid-cols-2 gap-4">
-                <Card className="p-3 bg-gray-50">
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Card className="min-w-0 p-3 bg-gray-50">
                   <p className="text-xs text-gray-500">Beginning Cash</p>
-                  <p className="text-lg font-bold text-gray-700">{formatCurrency(cf.beginningCash)}</p>
+                  <p className="text-base sm:text-lg font-bold text-gray-700 break-all">{formatCurrency(cf.beginningCash)}</p>
                 </Card>
-                <Card className="p-3 bg-gray-50">
+                <Card className="min-w-0 p-3 bg-gray-50">
                   <p className="text-xs text-gray-500">Ending Cash</p>
-                  <p className="text-lg font-bold text-gray-700">{formatCurrency(cf.endingCash)}</p>
+                  <p className="text-base sm:text-lg font-bold text-gray-700 break-all">{formatCurrency(cf.endingCash)}</p>
                 </Card>
               </div>
             </CardContent>
@@ -3775,10 +3815,10 @@ const FinanceDashboard: React.FC = () => {
         </TabsContent>
 
         {/* ---- Balance Sheet Tab ---- */}
-        <TabsContent value="balance" className="p-6">
+        <TabsContent value="balance" className="p-4 sm:p-6">
           <Card>
             <CardHeader className="bg-gradient-to-r from-blue-500/10 to-indigo-500/10 border-b">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
                 <div>
                   <CardTitle className="flex items-center gap-2 text-lg">
                     <Scale className="h-5 w-5 text-blue-600" />
@@ -3803,9 +3843,9 @@ const FinanceDashboard: React.FC = () => {
                   </h3>
                   <StatementSection title="Current Assets" items={bs.currentAssets} total={bs.totalCurrentAssets} totalLabel="Total Current Assets" />
                   <StatementSection title="Non-Current Assets" items={bs.nonCurrentAssets} total={bs.totalNonCurrentAssets} totalLabel="Total Non-Current Assets" />
-                  <div className="flex justify-between py-3 px-4 text-sm font-bold bg-blue-50 text-blue-800 rounded-lg">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-3 px-4 text-sm font-bold bg-blue-50 text-blue-800 rounded-lg">
                     <span>Total Assets</span>
-                    <span className="font-mono">{formatCurrency(bs.totalAssets)}</span>
+                    <span className="font-mono text-right break-all">{formatCurrency(bs.totalAssets)}</span>
                   </div>
                 </div>
 
@@ -3818,9 +3858,9 @@ const FinanceDashboard: React.FC = () => {
                   <StatementSection title="Current Liabilities" items={bs.currentLiabilities} total={bs.totalCurrentLiabilities} totalLabel="Total Current Liabilities" />
                   <StatementSection title="Non-Current Liabilities" items={bs.nonCurrentLiabilities} total={bs.totalNonCurrentLiabilities} totalLabel="Total Non-Current Liabilities" />
                   <StatementSection title="Equity" items={bs.equity} total={bs.totalEquity} totalLabel="Total Equity" isPositive={true} />
-                  <div className="flex justify-between py-3 px-4 text-sm font-bold bg-indigo-50 text-indigo-800 rounded-lg">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-3 px-4 text-sm font-bold bg-indigo-50 text-indigo-800 rounded-lg">
                     <span>Total Liabilities &amp; Equity</span>
-                    <span className="font-mono">{formatCurrency(bs.totalLiabilitiesAndEquity)}</span>
+                    <span className="font-mono text-right break-all">{formatCurrency(bs.totalLiabilitiesAndEquity)}</span>
                   </div>
                 </div>
               </div>
@@ -3829,12 +3869,12 @@ const FinanceDashboard: React.FC = () => {
         </TabsContent>
 
         {/* ---- Ratios Tab ---- */}
-        <TabsContent value="ratios" className="p-6">
+        <TabsContent value="ratios" className="p-4 sm:p-6">
           <div className="grid md:grid-cols-3 gap-4">
             {report.ratioInterpretations.map((ratio, idx) => (
               <Card key={idx} className="p-4 hover:shadow-md transition-shadow">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-gray-700">{ratio.name}</span>
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <span className="text-sm font-medium text-gray-700 min-w-0 break-words">{ratio.name}</span>
                   <StatusBadge status={ratio.status} />
                 </div>
                 <p className="text-2xl font-bold text-gray-900 mb-1">{ratio.formatted}</p>
@@ -3845,11 +3885,11 @@ const FinanceDashboard: React.FC = () => {
         </TabsContent>
 
         {/* ---- Charts Tab ---- */}
-        <TabsContent value="charts" className="p-6">
+        <TabsContent value="charts" className="p-4 sm:p-6">
           <div className="grid md:grid-cols-2 gap-6">
             {/* Revenue vs Expenses */}
             <Card className="p-4">
-              <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="font-semibold text-gray-700 flex items-center gap-2">
                   <BarChart3 className="h-4 w-4 text-emerald-500" />
                   Revenue vs Expenses
@@ -3860,7 +3900,7 @@ const FinanceDashboard: React.FC = () => {
                     setFinanceChartMode('revenueVsExpenses', value as FinanceChartVisualType)
                   }
                 >
-                  <SelectTrigger className="h-8 w-[100px] text-xs">
+                  <SelectTrigger className="h-8 w-full sm:w-[100px] text-xs">
                     <SelectValue placeholder="Visual" />
                   </SelectTrigger>
                   <SelectContent>
@@ -3970,7 +4010,7 @@ const FinanceDashboard: React.FC = () => {
 
             {/* Expense Breakdown */}
             <Card className="p-4">
-              <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="font-semibold text-gray-700 flex items-center gap-2">
                   <PieIcon className="h-4 w-4 text-violet-500" />
                   Expense Breakdown
@@ -3981,7 +4021,7 @@ const FinanceDashboard: React.FC = () => {
                     setFinanceChartMode('expenseBreakdown', value as FinanceChartVisualType)
                   }
                 >
-                  <SelectTrigger className="h-8 w-[100px] text-xs">
+                  <SelectTrigger className="h-8 w-full sm:w-[100px] text-xs">
                     <SelectValue placeholder="Visual" />
                   </SelectTrigger>
                   <SelectContent>
@@ -4092,7 +4132,7 @@ const FinanceDashboard: React.FC = () => {
 
             {/* Cash Flow Waterfall */}
             <Card className="p-4">
-              <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="font-semibold text-gray-700 flex items-center gap-2">
                   <Activity className="h-4 w-4 text-cyan-500" />
                   Cash Flow Components
@@ -4103,7 +4143,7 @@ const FinanceDashboard: React.FC = () => {
                     setFinanceChartMode('cashFlowComponents', value as FinanceChartVisualType)
                   }
                 >
-                  <SelectTrigger className="h-8 w-[100px] text-xs">
+                  <SelectTrigger className="h-8 w-full sm:w-[100px] text-xs">
                     <SelectValue placeholder="Visual" />
                   </SelectTrigger>
                   <SelectContent>
@@ -4209,7 +4249,7 @@ const FinanceDashboard: React.FC = () => {
 
             {/* Asset Allocation */}
             <Card className="p-4">
-              <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="font-semibold text-gray-700 flex items-center gap-2">
                   <Landmark className="h-4 w-4 text-blue-500" />
                   Asset Allocation
@@ -4220,7 +4260,7 @@ const FinanceDashboard: React.FC = () => {
                     setFinanceChartMode('assetAllocation', value as FinanceChartVisualType)
                   }
                 >
-                  <SelectTrigger className="h-8 w-[100px] text-xs">
+                  <SelectTrigger className="h-8 w-full sm:w-[100px] text-xs">
                     <SelectValue placeholder="Visual" />
                   </SelectTrigger>
                   <SelectContent>
@@ -4331,7 +4371,7 @@ const FinanceDashboard: React.FC = () => {
 
             {/* Profitability Margins */}
             <Card className="p-4 md:col-span-2">
-              <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="font-semibold text-gray-700 flex items-center gap-2">
                   <TrendingUp className="h-4 w-4 text-green-500" />
                   Profitability Margins
@@ -4342,7 +4382,7 @@ const FinanceDashboard: React.FC = () => {
                     setFinanceChartMode('profitabilityMargins', value as FinanceChartVisualType)
                   }
                 >
-                  <SelectTrigger className="h-8 w-[100px] text-xs">
+                  <SelectTrigger className="h-8 w-full sm:w-[100px] text-xs">
                     <SelectValue placeholder="Visual" />
                   </SelectTrigger>
                   <SelectContent>
@@ -4446,7 +4486,7 @@ const FinanceDashboard: React.FC = () => {
         </TabsContent>
 
         {/* ---- Trial Balance Tab ---- */}
-        <TabsContent value="trial-balance" className="p-6">
+        <TabsContent value="trial-balance" className="p-4 sm:p-6">
           <Card>
             <CardHeader className="bg-gradient-to-r from-violet-500/10 to-purple-500/10 border-b">
               <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -4571,7 +4611,7 @@ const FinanceDashboard: React.FC = () => {
         </TabsContent>
 
         {/* ---- Bank Reconciliation Tab ---- */}
-        <TabsContent value="bank-recon" className="p-6">
+        <TabsContent value="bank-recon" className="p-4 sm:p-6">
           <div className="space-y-6">
             {/* Upload card */}
             <Card>
@@ -4631,9 +4671,11 @@ const FinanceDashboard: React.FC = () => {
                         [
                           { field: 'date', label: 'Date' },
                           { field: 'description', label: 'Description' },
+                          { field: 'reference', label: 'Reference' },
                           { field: 'debit', label: 'Debit (Out)' },
                           { field: 'credit', label: 'Credit (In)' },
-                          { field: 'amount', label: 'Signed Amount' },
+                          { field: 'amount', label: 'Amount' },
+                          { field: 'type', label: 'Txn Type (Dr/Cr)' },
                           { field: 'balance', label: 'Balance' },
                         ] as const
                       ).map(({ field, label }) => (
@@ -4708,6 +4750,16 @@ const FinanceDashboard: React.FC = () => {
                         />
                       </div>
                     </div>
+                    {report && report.transactions.length === 0 && (
+                      <p className="text-xs text-red-600">
+                        No book transactions are currently loaded. Generate a report from your GL/book dataset before running reconciliation.
+                      </p>
+                    )}
+                    {report && report.transactions.length > 0 && bankReconAccountOptions.length === 0 && (
+                      <p className="text-xs text-amber-600">
+                        No cash/bank-like accounts were auto-detected from book data. Verify Account mapping or choose the correct Book Account Scope manually.
+                      </p>
+                    )}
                     <Button
                       className="w-full mt-2"
                       disabled={
@@ -4729,6 +4781,19 @@ const FinanceDashboard: React.FC = () => {
                         </>
                       )}
                     </Button>
+                    {!bankStatementMapping.debit &&
+                      !bankStatementMapping.credit &&
+                      bankStatementMapping.amount &&
+                      !bankStatementMapping.type && (
+                        <p className="text-xs text-amber-600">
+                          Tip: if your Amount values are all positive, map <strong>Txn Type (Dr/Cr)</strong> so inflow/outflow direction is parsed correctly.
+                        </p>
+                      )}
+                    {!bankStatementMapping.reference && (
+                      <p className="text-xs text-slate-500">
+                        Tip: map <strong>Reference</strong> (if available) for strongest auto-match accuracy.
+                      </p>
+                    )}
                   </>
                 )}
               </CardContent>
@@ -4769,24 +4834,64 @@ const FinanceDashboard: React.FC = () => {
                           </p>
                         </div>
                       </div>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center text-sm">
-                        <div className="rounded-lg bg-white/70 border px-3 py-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-center text-sm">
+                        <div className="min-w-0 rounded-lg bg-white/70 border px-3 py-2">
                           <p className="text-xs text-slate-400 mb-0.5">Bank Balance</p>
-                          <p className="font-mono font-bold">{formatCurrency(bankRecon.bankClosingBalance)}</p>
+                          <p
+                            className="font-mono font-bold text-sm md:text-base leading-tight whitespace-nowrap"
+                            title={formatCurrency(bankRecon.bankClosingBalance)}
+                          >
+                            {formatCurrencyCompact(bankRecon.bankClosingBalance)}
+                          </p>
+                          <p
+                            className="mt-1 hidden md:block text-[11px] text-slate-500 font-mono leading-tight break-all"
+                            title={formatCurrency(bankRecon.bankClosingBalance)}
+                          >
+                            {formatCurrency(bankRecon.bankClosingBalance)}
+                          </p>
                         </div>
-                        <div className="rounded-lg bg-white/70 border px-3 py-2">
+                        <div className="min-w-0 rounded-lg bg-white/70 border px-3 py-2">
                           <p className="text-xs text-slate-400 mb-0.5">Book Balance</p>
-                          <p className="font-mono font-bold">{formatCurrency(bankRecon.bookClosingBalance)}</p>
+                          <p
+                            className="font-mono font-bold text-sm md:text-base leading-tight whitespace-nowrap"
+                            title={formatCurrency(bankRecon.bookClosingBalance)}
+                          >
+                            {formatCurrencyCompact(bankRecon.bookClosingBalance)}
+                          </p>
+                          <p
+                            className="mt-1 hidden md:block text-[11px] text-slate-500 font-mono leading-tight break-all"
+                            title={formatCurrency(bankRecon.bookClosingBalance)}
+                          >
+                            {formatCurrency(bankRecon.bookClosingBalance)}
+                          </p>
                         </div>
-                        <div className="rounded-lg bg-sky-100/80 border border-sky-200 px-3 py-2">
+                        <div className="min-w-0 rounded-lg bg-sky-100/80 border border-sky-200 px-3 py-2">
                           <p className="text-xs text-sky-500 mb-0.5">Adj. Bank</p>
-                          <p className="font-mono font-bold text-sky-700">
+                          <p
+                            className="font-mono font-bold text-sm md:text-base leading-tight whitespace-nowrap text-sky-700"
+                            title={formatCurrency(bankRecon.adjustedBankBalance)}
+                          >
+                            {formatCurrencyCompact(bankRecon.adjustedBankBalance)}
+                          </p>
+                          <p
+                            className="mt-1 hidden md:block text-[11px] text-sky-700/80 font-mono leading-tight break-all"
+                            title={formatCurrency(bankRecon.adjustedBankBalance)}
+                          >
                             {formatCurrency(bankRecon.adjustedBankBalance)}
                           </p>
                         </div>
-                        <div className="rounded-lg bg-sky-100/80 border border-sky-200 px-3 py-2">
+                        <div className="min-w-0 rounded-lg bg-sky-100/80 border border-sky-200 px-3 py-2">
                           <p className="text-xs text-sky-500 mb-0.5">Adj. Book</p>
-                          <p className="font-mono font-bold text-sky-700">
+                          <p
+                            className="font-mono font-bold text-sm md:text-base leading-tight whitespace-nowrap text-sky-700"
+                            title={formatCurrency(bankRecon.adjustedBookBalance)}
+                          >
+                            {formatCurrencyCompact(bankRecon.adjustedBookBalance)}
+                          </p>
+                          <p
+                            className="mt-1 hidden md:block text-[11px] text-sky-700/80 font-mono leading-tight break-all"
+                            title={formatCurrency(bankRecon.adjustedBookBalance)}
+                          >
                             {formatCurrency(bankRecon.adjustedBookBalance)}
                           </p>
                         </div>
@@ -4806,6 +4911,122 @@ const FinanceDashboard: React.FC = () => {
                             {note}
                           </p>
                         ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Reconciliation quality panel */}
+                <Card className="border-slate-200 bg-gradient-to-r from-slate-50 to-white">
+                  <CardHeader className="pb-2 pt-4 px-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div>
+                        <CardTitle className="text-sm font-semibold text-slate-800">
+                          Reconciliation Quality
+                        </CardTitle>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Reliability checks for mapping quality and match confidence.
+                        </p>
+                      </div>
+                      <Badge
+                        className={
+                          bankRecon.quality.verdict === 'high'
+                            ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                            : bankRecon.quality.verdict === 'medium'
+                              ? 'bg-amber-100 text-amber-700 border border-amber-200'
+                              : 'bg-red-100 text-red-700 border border-red-200'
+                        }
+                      >
+                        {bankRecon.quality.verdict === 'high'
+                          ? 'High Reliability'
+                          : bankRecon.quality.verdict === 'medium'
+                            ? 'Medium Reliability'
+                            : 'Low Reliability'} · {bankRecon.quality.reliabilityScore}/100
+                      </Badge>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pt-0 pb-4 px-4 space-y-4">
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                      <div className="rounded-lg border bg-white p-3">
+                        <p className="text-slate-500">Bank Reference Coverage</p>
+                        <p className="font-mono font-semibold text-slate-800 break-all">
+                          {formatPercent(bankRecon.quality.bankReferenceCoveragePct)}
+                        </p>
+                        <p className="text-slate-400 mt-0.5">
+                          {bankRecon.quality.bankRowsMatchingPool.toLocaleString()} candidate row(s)
+                        </p>
+                      </div>
+                      <div className="rounded-lg border bg-white p-3">
+                        <p className="text-slate-500">Book Reference Coverage</p>
+                        <p className="font-mono font-semibold text-slate-800 break-all">
+                          {formatPercent(bankRecon.quality.bookReferenceCoveragePct)}
+                        </p>
+                        <p className="text-slate-400 mt-0.5">
+                          {bankRecon.quality.bookRowsMatchingPool.toLocaleString()} candidate row(s)
+                        </p>
+                      </div>
+                      <div className="rounded-lg border bg-white p-3">
+                        <p className="text-slate-500">Excluded Rows</p>
+                        <p className="font-mono font-semibold text-slate-800 break-all">
+                          {(bankRecon.quality.bankOpeningExcluded +
+                            bankRecon.quality.bookOpeningExcluded +
+                            bankRecon.quality.bankOutOfWindowExcluded +
+                            bankRecon.quality.bookOutOfWindowExcluded).toLocaleString()}
+                        </p>
+                        <p className="text-slate-400 mt-0.5">
+                          Opening + out-of-period
+                        </p>
+                      </div>
+                      <div className="rounded-lg border bg-white p-3">
+                        <p className="text-slate-500">Fallback Matches</p>
+                        <p className="font-mono font-semibold text-slate-800 break-all">
+                          {bankRecon.quality.matchedByAmountDateFallback.toLocaleString()}
+                        </p>
+                        <p className="text-slate-400 mt-0.5">
+                          Amount + direction + ±2 business days
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid md:grid-cols-3 gap-3 text-xs">
+                      <div className="rounded-lg border bg-white p-3">
+                        <p className="text-slate-500">Matched by Reference</p>
+                        <p className="font-mono font-semibold text-emerald-700 break-all">
+                          {bankRecon.quality.matchedByReference.toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border bg-white p-3">
+                        <p className="text-slate-500">Near Matches Flagged</p>
+                        <p className="font-mono font-semibold text-amber-700 break-all">
+                          {bankRecon.quality.nearMatchesFlagged.toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border bg-white p-3">
+                        <p className="text-slate-500">Match Pool Size</p>
+                        <p className="font-mono font-semibold text-slate-800 break-all">
+                          Bank {bankRecon.quality.bankRowsMatchingPool.toLocaleString()} · Book {bankRecon.quality.bookRowsMatchingPool.toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+
+                    {bankRecon.quality.bookRowsMatchingPool === 0 && (
+                      <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 flex items-start gap-2">
+                        <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                        <span>
+                          No book rows are available for matching. Confirm your book import and mapping:
+                          Date, Account, Debit/Credit (or Amount+Type), and Reference (JournalRef), then verify statement window and account scope.
+                        </span>
+                      </div>
+                    )}
+
+                    {(bankRecon.quality.verdict === 'low' ||
+                      bankRecon.quality.bookReferenceCoveragePct < 60 ||
+                      bankRecon.quality.bankReferenceCoveragePct < 60) && (
+                      <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 flex items-start gap-2">
+                        <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                        <span>
+                          Reconciliation quality is currently low. Review Reference mapping, account scope, and period filtering before trusting final reconciliation conclusions.
+                        </span>
                       </div>
                     )}
                   </CardContent>
@@ -4862,41 +5083,48 @@ const FinanceDashboard: React.FC = () => {
                         </div>
                       </CardHeader>
                       <CardContent className="p-0">
-                        <Table>
-                          <TableHeader>
-                            <TableRow className="bg-slate-50">
-                              <TableHead>Date</TableHead>
-                              <TableHead>Description / Account</TableHead>
-                              <TableHead className="text-right">Amount</TableHead>
-                              {section.key === 'mismatches' && (
-                                <TableHead className="text-right">Variance</TableHead>
-                              )}
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {section.items.map((item, idx) => (
-                              <TableRow key={idx} className="text-sm">
-                                <TableCell className="font-mono text-xs">
-                                  {item.bankRow?.date ?? item.bookTransaction?.date ?? '—'}
-                                </TableCell>
-                                <TableCell className="max-w-xs truncate text-sm">
-                                  {item.bankRow?.description ||
-                                    item.bookTransaction?.description ||
-                                    item.bookTransaction?.account ||
-                                    '—'}
-                                </TableCell>
-                                <TableCell className="text-right font-mono">
-                                  {formatCurrency(item.amount)}
-                                </TableCell>
+                        <div className="overflow-x-auto">
+                          <Table>
+                            <TableHeader>
+                              <TableRow className="bg-slate-50">
+                                <TableHead>Date</TableHead>
+                                <TableHead>Description / Account</TableHead>
+                                <TableHead className="text-right">Amount</TableHead>
                                 {section.key === 'mismatches' && (
-                                  <TableCell className="text-right font-mono text-orange-600">
-                                    {formatCurrency(item.variance)}
-                                  </TableCell>
+                                  <TableHead className="text-right">Variance</TableHead>
                                 )}
                               </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
+                            </TableHeader>
+                            <TableBody>
+                              {section.items.map((item, idx) => (
+                                <TableRow key={idx} className="text-sm">
+                                  <TableCell className="font-mono text-xs whitespace-nowrap">
+                                    {item.bankRow?.date ?? item.bookTransaction?.date ?? '—'}
+                                  </TableCell>
+                                  <TableCell className="max-w-xs md:max-w-sm truncate text-sm">
+                                    {item.bankRow?.description ||
+                                      item.bookTransaction?.description ||
+                                      item.bookTransaction?.account ||
+                                      '—'}
+                                    {(item.bankRow?.reference || item.bookTransaction?.reference) && (
+                                      <span className="ml-1 text-[11px] text-slate-500">
+                                        · Ref {item.bankRow?.reference || item.bookTransaction?.reference}
+                                      </span>
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono whitespace-nowrap">
+                                    {formatCurrency(item.amount)}
+                                  </TableCell>
+                                  {section.key === 'mismatches' && (
+                                    <TableCell className="text-right font-mono text-orange-600 whitespace-nowrap">
+                                      {formatCurrency(item.variance)}
+                                    </TableCell>
+                                  )}
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
                       </CardContent>
                     </Card>
                   ))}
@@ -4919,34 +5147,40 @@ const FinanceDashboard: React.FC = () => {
                     </CardHeader>
                     <CardContent className="p-0">
                       <ScrollArea className="h-64">
-                        <Table>
-                          <TableHeader>
-                            <TableRow className="bg-slate-50">
-                              <TableHead>Date</TableHead>
-                              <TableHead>Bank Description</TableHead>
-                              <TableHead>Book Account</TableHead>
-                              <TableHead className="text-right">Amount</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {bankRecon.matchedItems.map((item, idx) => (
-                              <TableRow key={idx} className="text-sm">
-                                <TableCell className="font-mono text-xs">
-                                  {item.bankRow?.date ?? '—'}
-                                </TableCell>
-                                <TableCell className="max-w-xs truncate">
-                                  {item.bankRow?.description ?? '—'}
-                                </TableCell>
-                                <TableCell className="text-xs text-slate-500">
-                                  {item.bookTransaction?.account ?? '—'}
-                                </TableCell>
-                                <TableCell className="text-right font-mono">
-                                  {formatCurrency(item.amount)}
-                                </TableCell>
+                        <div className="overflow-x-auto">
+                          <Table>
+                            <TableHeader>
+                              <TableRow className="bg-slate-50">
+                                <TableHead>Date</TableHead>
+                                <TableHead>Bank Description</TableHead>
+                                <TableHead>Book Account</TableHead>
+                                <TableHead>Reference</TableHead>
+                                <TableHead className="text-right">Amount</TableHead>
                               </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
+                            </TableHeader>
+                            <TableBody>
+                              {bankRecon.matchedItems.map((item, idx) => (
+                                <TableRow key={idx} className="text-sm">
+                                  <TableCell className="font-mono text-xs whitespace-nowrap">
+                                    {item.bankRow?.date ?? '—'}
+                                  </TableCell>
+                                  <TableCell className="max-w-xs md:max-w-sm truncate">
+                                    {item.bankRow?.description ?? '—'}
+                                  </TableCell>
+                                  <TableCell className="text-xs text-slate-500">
+                                    {item.bookTransaction?.account ?? '—'}
+                                  </TableCell>
+                                  <TableCell className="font-mono text-xs text-slate-500 whitespace-nowrap">
+                                    {item.bankRow?.reference || item.bookTransaction?.reference || '—'}
+                                  </TableCell>
+                                  <TableCell className="text-right font-mono whitespace-nowrap">
+                                    {formatCurrency(item.amount)}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
                       </ScrollArea>
                     </CardContent>
                   </Card>
@@ -4957,7 +5191,7 @@ const FinanceDashboard: React.FC = () => {
         </TabsContent>
 
         {/* ---- Written Report Tab ---- */}
-        <TabsContent value="written" className="p-6">
+        <TabsContent value="written" className="p-4 sm:p-6">
           <Card>
             <CardHeader className="bg-gradient-to-r from-slate-100 to-white border-b">
               <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -4970,16 +5204,16 @@ const FinanceDashboard: React.FC = () => {
                     Automatically generated from your latest financial statements.
                   </p>
                 </div>
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm" onClick={copyWrittenReport}>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={copyWrittenReport}>
                     <ClipboardCopy className="h-4 w-4 mr-2" />
                     Copy
                   </Button>
-                  <Button variant="outline" size="sm" onClick={regenerateWrittenReport}>
+                  <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={regenerateWrittenReport}>
                     <RefreshCw className="h-4 w-4 mr-2" />
                     Regenerate
                   </Button>
-                  <Button size="sm" onClick={handleDownloadFinancePDF} disabled={isGeneratingFinancePDF}>
+                  <Button size="sm" className="w-full sm:w-auto" onClick={handleDownloadFinancePDF} disabled={isGeneratingFinancePDF}>
                     {isGeneratingFinancePDF ? (
                       <>
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />

@@ -25,6 +25,7 @@ export interface ClassifiedTransaction {
   category: AccountCategory;
   amount: number;
   description?: string;
+  reference?: string;
   type: 'debit' | 'credit';
   originalRow?: number;
 }
@@ -40,6 +41,7 @@ export interface FinanceColumnMapping {
   credit?: string;
   type?: string; // income/expense or debit/credit indicator
   description?: string;
+  reference?: string;
 }
 
 // === Line Items for Statements ===
@@ -263,12 +265,14 @@ export interface BankStatementRow {
   id: string;
   date: string;
   description: string;
+  reference?: string;
   /** Amount flowing out of the account (e.g. payments, withdrawals) */
   debit: number;
   /** Amount flowing into the account (e.g. deposits, receipts) */
   credit: number;
   /** Running balance from the bank statement, if available */
   balance?: number;
+  isOpeningBalance?: boolean;
   rawRow?: number;
 }
 
@@ -309,6 +313,23 @@ export interface BankReconciliation {
   difference: number;
   totalTransactionsMatched: number;
   totalTransactionsUnmatched: number;
+  quality: {
+    bankRowsTotal: number;
+    bankRowsMatchingPool: number;
+    bookRowsTotal: number;
+    bookRowsMatchingPool: number;
+    bankReferenceCoveragePct: number;
+    bookReferenceCoveragePct: number;
+    bankOpeningExcluded: number;
+    bookOpeningExcluded: number;
+    bankOutOfWindowExcluded: number;
+    bookOutOfWindowExcluded: number;
+    matchedByReference: number;
+    matchedByAmountDateFallback: number;
+    nearMatchesFlagged: number;
+    reliabilityScore: number;
+    verdict: 'high' | 'medium' | 'low';
+  };
   /** Caveats and assumptions made during reconciliation */
   notes: string[];
 }
@@ -316,12 +337,15 @@ export interface BankReconciliation {
 export interface BankStatementColumnMapping {
   date?: string;
   description?: string;
+  reference?: string;
   /** Column holding withdrawal / debit amounts */
   debit?: string;
   /** Column holding deposit / credit amounts */
   credit?: string;
   /** Single net-amount column (negative = debit, positive = credit) */
   amount?: string;
+  /** Optional transaction direction indicator (e.g. Debit/Credit, Dr/Cr, Out/In) */
+  type?: string;
   balance?: string;
 }
 
@@ -337,5 +361,7 @@ export interface ParsedBankStatementResult {
 
 export interface BankReconciliationOptions {
   statementDate?: string;
+  statementStartDate?: string;
+  statementEndDate?: string;
   bookAccountScope?: 'auto' | string;
 }

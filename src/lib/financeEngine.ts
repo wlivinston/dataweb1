@@ -36,6 +36,7 @@ const COLUMN_PATTERNS: Record<keyof FinanceColumnMapping, RegExp[]> = {
   credit: [/credit/i, /cr/i],
   type: [/type/i, /transaction.?type/i, /entry.?type/i, /income.?expense/i, /section/i],
   description: [/description/i, /memo/i, /narration/i, /details/i, /notes?/i, /particular/i],
+  reference: [/reference/i, /journal.?ref/i, /ref.?no/i, /voucher.?no/i, /document.?no/i, /txn.?id/i, /transaction.?id/i],
 };
 
 const TYPE_VALUE_HINTS = [
@@ -71,6 +72,15 @@ function parsePotentialNumber(value: any): number | null {
   if (!normalized || normalized === '-' || normalized === '.') return null;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeReferenceValue(value: any): string {
+  if (value == null || value === '') return '';
+  return String(value)
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '');
 }
 
 function getNumericSignalStrength(columnName: string, sampleData: Record<string, any>[]): number {
@@ -203,6 +213,7 @@ export function detectFinanceColumns(
   mapping.category = matchColumn('category');
   mapping.type = matchColumn('type');
   mapping.description = matchColumn('description');
+  mapping.reference = matchColumn('reference');
 
   const accountNameCol = columns.find(c => /account.?name/i.test(c.name));
   if (accountNameCol) {
@@ -406,6 +417,15 @@ export function parseTransactions(
 
     // Extract description
     const description = mapping.description ? String(row[mapping.description] || '').trim() : '';
+    const reference = normalizeReferenceValue(
+      (mapping.reference && row[mapping.reference]) ??
+      row.Reference ??
+      row.reference ??
+      row.JournalRef ??
+      row.journalRef ??
+      row.Ref ??
+      row.ref
+    );
 
     // Extract amount and determine debit/credit
     let amount = 0;
@@ -456,6 +476,7 @@ export function parseTransactions(
       category,
       amount,
       description,
+      reference: reference || undefined,
       type: txType,
       originalRow: i,
     });

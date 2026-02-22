@@ -13,6 +13,7 @@ export interface CanonicalTransaction {
   Debit: number;
   Credit: number;
   Description: string;
+  Reference?: string;
   SourceColumn: string;
   SourceRow: number;
   SourceSheet?: string;
@@ -183,6 +184,15 @@ function parseNumericValue(value: any): number | null {
   }
 
   return parsed;
+}
+
+function normalizeReferenceValue(value: any): string {
+  if (value == null || value === '') return '';
+  return String(value)
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '');
 }
 
 function parseDateValue(value: any): string | null {
@@ -603,6 +613,7 @@ export function transformLongDatasetToCanonical(
       mapping.credit,
       mapping.amount,
       mapping.description,
+      mapping.reference,
     ].filter(Boolean) as string[]
   );
 
@@ -649,6 +660,15 @@ export function transformLongDatasetToCanonical(
     const description =
       (mapping.description ? String(row[mapping.description] ?? '').trim() : '') ||
       `Imported transaction from source row ${index + 1}`;
+    const reference = normalizeReferenceValue(
+      (mapping.reference && row[mapping.reference]) ??
+      row.Reference ??
+      row.reference ??
+      row.JournalRef ??
+      row.journalRef ??
+      row.Ref ??
+      row.ref
+    );
 
     if (mapping.debit || mapping.credit) {
       const rawDebit = mapping.debit ? parseNumericValue(row[mapping.debit]) : null;
@@ -692,6 +712,7 @@ export function transformLongDatasetToCanonical(
         Debit: debit,
         Credit: credit,
         Description: description,
+        Reference: reference || undefined,
         SourceColumn: sourceColumn,
         SourceRow: index,
         Flags: flags.length > 0 ? flags : undefined,
@@ -756,6 +777,7 @@ export function transformLongDatasetToCanonical(
         Debit: debit,
         Credit: credit,
         Description: description,
+        Reference: reference || undefined,
         SourceColumn: mapping.amount,
         SourceRow: index,
         Flags: flags.length > 0 ? flags : undefined,
@@ -1003,6 +1025,7 @@ export function canonicalToReportInput(transactions: CanonicalTransaction[]): {
     Debit: row.Debit,
     Credit: row.Credit,
     Description: row.Description,
+    Reference: row.Reference || '',
     SourceColumn: row.SourceColumn,
     SourceSheet: row.SourceSheet || '',
     SourceAssetID: row.SourceAssetID || '',
@@ -1018,6 +1041,7 @@ export function canonicalToReportInput(transactions: CanonicalTransaction[]): {
       debit: 'Debit',
       credit: 'Credit',
       description: 'Description',
+      reference: 'Reference',
     },
   };
 }

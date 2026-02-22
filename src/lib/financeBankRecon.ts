@@ -15,8 +15,9 @@ import {
   ReconciliationMatch,
 } from './financeTypes';
 
-const DATE_MATCH_TOLERANCE_DAYS = 3;
-const AMOUNT_EXACT_TOLERANCE = 0.01;
+const DATE_MATCH_TOLERANCE_BUSINESS_DAYS = 2;
+const REFERENCE_MATCH_TOLERANCE_DAYS = 10;
+const AMOUNT_EXACT_TOLERANCE_CENTS = 1;
 const AMOUNT_NEAR_TOLERANCE_PCT = 0.05;
 const DATE_NEAR_TOLERANCE_DAYS = 7;
 const NARRATIVE_NEAR_MATCH_MIN_SCORE = 0.2;
@@ -26,6 +27,10 @@ const BANK_ACCOUNT_NAME_REGEX =
 
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function roundPercent(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 function parseAmount(value: unknown): number | null {
@@ -166,6 +171,64 @@ function dateDiffDays(left: string, right: string): number {
   return Math.abs(l - r) / (1000 * 60 * 60 * 24);
 }
 
+function toAmountCents(value: number): number {
+  return Math.round(value * 100);
+}
+
+function parseIsoDate(value: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [yearRaw, monthRaw, dayRaw] = value.split('-');
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (Number.isNaN(parsed.getTime())) return null;
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return parsed;
+}
+
+function businessDayDiff(left: string, right: string): number {
+  const l = parseIsoDate(left);
+  const r = parseIsoDate(right);
+  if (!l || !r) return Number.POSITIVE_INFINITY;
+
+  let start = l;
+  let end = r;
+  if (start.getTime() > end.getTime()) {
+    start = r;
+    end = l;
+  }
+
+  const cursor = new Date(start.getTime());
+  let businessDays = 0;
+
+  while (cursor.getTime() < end.getTime()) {
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+    const day = cursor.getUTCDay();
+    if (day !== 0 && day !== 6) {
+      businessDays += 1;
+    }
+  }
+
+  return businessDays;
+}
+
+function normalizeReference(value: unknown): string {
+  if (value == null || value === '') return '';
+  return String(value)
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '');
+}
+
 function normalizeText(value: string): string {
   return value
     .toLowerCase()
@@ -182,8 +245,12 @@ function tokenizeNarrative(value: string): string[] {
 }
 
 function extractReferenceTokens(value: string): Set<string> {
-  const matches = value.match(/\b\d{4,}\b/g) || [];
-  return new Set(matches);
+  const normalized = String(value || '').toUpperCase();
+  const tokens = normalized.match(/\b[A-Z0-9-]{4,}\b/g) || [];
+  const filtered = tokens
+    .map(token => normalizeReference(token))
+    .filter(token => token.length >= 4 && /\d/.test(token));
+  return new Set(filtered);
 }
 
 function narrativeSimilarity(left: string, right: string): number {
@@ -212,10 +279,84 @@ function hasReferenceOverlap(left: string, right: string): boolean {
   return false;
 }
 
+function inferDirectionFromTypeField(value: unknown): 'debit' | 'credit' | null {
+  if (value == null || value === '') return null;
+
+  const text = normalizeText(String(value));
+  if (!text) return null;
+
+  const hasDebitSignal =
+    /\bdr\b/.test(text) ||
+    /\bdebit\b/.test(text) ||
+    /\bwithdraw/.test(text) ||
+    /\bpayment\b/.test(text) ||
+    /\bcharge\b/.test(text) ||
+    /\bfee\b/.test(text) ||
+    /\bmoney out\b/.test(text) ||
+    /\boutflow\b/.test(text);
+
+  const hasCreditSignal =
+    /\bcr\b/.test(text) ||
+    /\bcredit\b/.test(text) ||
+    /\bdeposit\b/.test(text) ||
+    /\breceipt\b/.test(text) ||
+    /\bincome\b/.test(text) ||
+    /\binterest\b/.test(text) ||
+    /\bmoney in\b/.test(text) ||
+    /\binflow\b/.test(text);
+
+  if (hasDebitSignal === hasCreditSignal) return null;
+  return hasDebitSignal ? 'debit' : 'credit';
+}
+
 function getBankRowSignedAmount(row: BankStatementRow): number {
   if (row.credit > 0) return row.credit;
   if (row.debit > 0) return -row.debit;
   return 0;
+}
+
+function getBankRowDirection(row: BankStatementRow): 'in' | 'out' | null {
+  if (row.credit > 0 && row.debit <= 0) return 'in';
+  if (row.debit > 0 && row.credit <= 0) return 'out';
+  if (row.credit > 0 && row.debit > 0) {
+    return row.credit >= row.debit ? 'in' : 'out';
+  }
+  return null;
+}
+
+function getBookDirection(tx: ClassifiedTransaction): 'in' | 'out' {
+  return tx.type === 'debit' ? 'in' : 'out';
+}
+
+function buildMatchKey(reference: string, amountCents: number, direction: 'in' | 'out'): string {
+  return `${reference}|${amountCents}|${direction}`;
+}
+
+function isOpeningBalanceText(value: string): boolean {
+  const text = normalizeText(value);
+  if (!text) return false;
+  return (
+    /opening balance/.test(text) ||
+    /beginning balance/.test(text) ||
+    /brought forward/.test(text) ||
+    /\bb f\b/.test(text) ||
+    /opening bal/.test(text) ||
+    /opening equity/.test(text)
+  );
+}
+
+function isOpeningBankRow(row: BankStatementRow): boolean {
+  if (row.isOpeningBalance) return true;
+  return isOpeningBalanceText(`${row.description || ''} ${row.reference || ''}`);
+}
+
+function isOpeningBookTransaction(tx: ClassifiedTransaction): boolean {
+  return isOpeningBalanceText(`${tx.account || ''} ${tx.description || ''} ${tx.reference || ''}`);
+}
+
+function isWithinDateRange(date: string, startDate: string, endDate: string): boolean {
+  if (!date || !startDate || !endDate) return false;
+  return date >= startDate && date <= endDate;
 }
 
 function inferBookAccountScope(
@@ -257,6 +398,8 @@ function inferBookAccountScope(
 
 export function detectBankStatementColumns(columns: string[]): BankStatementColumnMapping {
   const mapping: BankStatementColumnMapping = {};
+  let bestBalanceColumn: string | undefined;
+  let bestBalanceScore = Number.NEGATIVE_INFINITY;
 
   for (const original of columns) {
     const header = normalizeText(original);
@@ -265,8 +408,16 @@ export function detectBankStatementColumns(columns: string[]): BankStatementColu
       mapping.date = original;
     }
     if (
+      !mapping.reference &&
+      /(reference|journal ?ref|ref ?no|voucher ?no|document ?no|txn ?id|transaction ?id|trace|utr|cheque ?no|check ?no)/.test(
+        header,
+      )
+    ) {
+      mapping.reference = original;
+    }
+    if (
       !mapping.description &&
-      /(description|narration|details|memo|reference|remarks|particulars|narrative)/.test(header)
+      /(description|narration|details|memo|remarks|particulars|narrative)/.test(header)
     ) {
       mapping.description = original;
     }
@@ -279,9 +430,30 @@ export function detectBankStatementColumns(columns: string[]): BankStatementColu
     if (!mapping.amount && /(amount|net amount|transaction amount|signed amount)/.test(header)) {
       mapping.amount = original;
     }
-    if (!mapping.balance && /(balance|running balance|closing balance|available balance|ledger balance)/.test(header)) {
-      mapping.balance = original;
+    if (
+      !mapping.type &&
+      /(transaction ?type|txn ?type|entry ?type|dr ?cr|debit ?credit|direction|money in out|in out|flow ?type)/.test(
+        header,
+      )
+    ) {
+      mapping.type = original;
     }
+
+    if (/(balance|running balance|closing balance|available balance|ledger balance|ending balance|final balance)/.test(header)) {
+      let score = 0;
+      if (/\bbalance\b/.test(header)) score += 5;
+      if (/(running|closing|ending|final|ledger|available|current)/.test(header)) score += 30;
+      if (/(opening|beginning|start|brought forward|\bb f\b)/.test(header)) score -= 20;
+
+      if (score > bestBalanceScore) {
+        bestBalanceScore = score;
+        bestBalanceColumn = original;
+      }
+    }
+  }
+
+  if (bestBalanceColumn) {
+    mapping.balance = bestBalanceColumn;
   }
 
   return mapping;
@@ -298,6 +470,7 @@ export function parseBankStatement(
 
   let unparseableDateRows = 0;
   let zeroAmountRows = 0;
+  let ambiguousDirectionRows = 0;
 
   if (!mapping.date) {
     return {
@@ -324,9 +497,13 @@ export function parseBankStatement(
     }
 
     const description = String(mapping.description ? row[mapping.description] ?? '' : '').trim();
+    const reference = normalizeReference(
+      mapping.reference ? row[mapping.reference] : undefined,
+    );
 
     let debit = 0;
     let credit = 0;
+    const directionFromType = mapping.type ? inferDirectionFromTypeField(row[mapping.type]) : null;
 
     if (hasDirectionalAmounts) {
       const rawDebit = mapping.debit ? parseAmount(row[mapping.debit]) : null;
@@ -339,10 +516,25 @@ export function parseBankStatement(
     if (debit === 0 && credit === 0 && hasNetAmount && mapping.amount) {
       const rawAmount = parseAmount(row[mapping.amount]);
       if (rawAmount != null) {
-        if (rawAmount < 0) {
-          debit = Math.abs(rawAmount);
+        const absAmount = Math.abs(rawAmount);
+
+        if (directionFromType === 'debit') {
+          debit = absAmount;
+        } else if (directionFromType === 'credit') {
+          credit = absAmount;
+        } else if (!mapping.type) {
+          if (rawAmount < 0) {
+            debit = absAmount;
+          } else if (rawAmount > 0) {
+            credit = rawAmount;
+          }
+        } else if (rawAmount < 0) {
+          // Negative signed amount still provides direction even if type text is unclear.
+          debit = absAmount;
         } else if (rawAmount > 0) {
-          credit = rawAmount;
+          // Ambiguous positive amount with unknown transaction type: drop row to prevent sign inversion.
+          ambiguousDirectionRows += 1;
+          continue;
         }
       }
     }
@@ -357,9 +549,11 @@ export function parseBankStatement(
       id: uuidv4(),
       date,
       description,
+      reference: reference || undefined,
       debit,
       credit,
       balance: balanceRaw == null ? undefined : balanceRaw,
+      isOpeningBalance: isOpeningBalanceText(`${description} ${reference}`),
       rawRow: index + 2, // header row + 1-based data row
     });
   }
@@ -372,13 +566,18 @@ export function parseBankStatement(
   if (zeroAmountRows > 0) {
     warnings.push(`${zeroAmountRows} statement row(s) were dropped because both debit and credit were zero.`);
   }
+  if (ambiguousDirectionRows > 0) {
+    warnings.push(
+      `${ambiguousDirectionRows} statement row(s) had positive Amount values but transaction direction could not be inferred from "${mapping.type}".`,
+    );
+  }
   if (rows.length === 0) {
     warnings.push('No valid bank statement rows were parsed. Review mapping and date format.');
   }
 
   return {
     rows,
-    droppedRowCount: unparseableDateRows + zeroAmountRows,
+    droppedRowCount: unparseableDateRows + zeroAmountRows + ambiguousDirectionRows,
     unparseableDateRows,
     zeroAmountRows,
     warnings,
@@ -394,46 +593,176 @@ export function reconcileBank(
   const scope = inferBookAccountScope(bookTransactions, requestedScope);
   const scopedBookTransactions = scope.scoped;
   const notes = [...scope.notes];
+  const sortedBankRows = [...bankRows].sort((a, b) => a.date.localeCompare(b.date));
+  const bankRowsWithoutOpening = sortedBankRows.filter(row => !isOpeningBankRow(row));
+  const bankRowsForWindowSeed = bankRowsWithoutOpening.length > 0 ? bankRowsWithoutOpening : sortedBankRows;
+
+  let statementStartDate =
+    options?.statementStartDate ||
+    (bankRowsForWindowSeed.length > 0 ? bankRowsForWindowSeed[0].date : '');
+  let statementEndDate =
+    options?.statementEndDate ||
+    (bankRowsForWindowSeed.length > 0
+      ? bankRowsForWindowSeed[bankRowsForWindowSeed.length - 1].date
+      : '');
+
+  if (statementStartDate && statementEndDate && statementStartDate > statementEndDate) {
+    const swapped = statementStartDate;
+    statementStartDate = statementEndDate;
+    statementEndDate = swapped;
+  }
 
   const statementDate =
     options?.statementDate ||
+    statementEndDate ||
     (bankRows.length > 0
       ? bankRows.reduce((latest, row) => (row.date > latest ? row.date : latest), bankRows[0].date)
       : new Date().toISOString().slice(0, 10));
 
-  const sortedBankRows = [...bankRows].sort((a, b) => a.date.localeCompare(b.date));
-  const lastWithBalance = [...sortedBankRows].reverse().find(row => row.balance != null);
+  const bankRowsForClosing = sortedBankRows.filter(row => {
+    if (isOpeningBankRow(row)) return false;
+    if (statementEndDate && row.date > statementEndDate) return false;
+    return true;
+  });
+
+  const lastWithBalance = [...sortedBankRows]
+    .filter(row => !statementEndDate || row.date <= statementEndDate)
+    .reverse()
+    .find(row => row.balance != null);
+
   const bankClosingBalance =
     lastWithBalance?.balance ??
-    roundMoney(sortedBankRows.reduce((sum, row) => sum + getBankRowSignedAmount(row), 0));
+    roundMoney(bankRowsForClosing.reduce((sum, row) => sum + getBankRowSignedAmount(row), 0));
+
+  const bookTransactionsForClosing = scopedBookTransactions.filter(tx => {
+    if (!statementEndDate) return true;
+    if (!tx.date) return true;
+    return tx.date <= statementEndDate;
+  });
 
   const bookClosingBalance = roundMoney(
-    scopedBookTransactions.reduce((sum, tx) => (tx.type === 'debit' ? sum + Math.abs(tx.amount) : sum - Math.abs(tx.amount)), 0),
+    bookTransactionsForClosing.reduce(
+      (sum, tx) => (tx.type === 'debit' ? sum + Math.abs(tx.amount) : sum - Math.abs(tx.amount)),
+      0,
+    ),
   );
+
+  const bankMatchingPool = bankRowsForWindowSeed.filter(row => {
+    if (!statementStartDate || !statementEndDate) return true;
+    return isWithinDateRange(row.date, statementStartDate, statementEndDate);
+  });
+
+  const bookRowsInWindow = bookTransactionsForClosing.filter(tx => {
+    if (!statementStartDate || !statementEndDate) return true;
+    if (!tx.date) return false;
+    return isWithinDateRange(tx.date, statementStartDate, statementEndDate);
+  });
+  const bookMatchingPool = bookRowsInWindow.filter(tx => !isOpeningBookTransaction(tx));
+
+  const bankOpeningExcludedCount = sortedBankRows.length - bankRowsWithoutOpening.length;
+  const bankOutOfWindowCount = bankRowsForWindowSeed.length - bankMatchingPool.length;
+  const bookOutOfWindowCount = bookTransactionsForClosing.length - bookRowsInWindow.length;
+  const bookOpeningExcludedCount = bookRowsInWindow.length - bookMatchingPool.length;
 
   const matchedBankIds = new Set<string>();
   const matchedBookIndexes = new Set<number>();
   const matchedItems: ReconciliationMatch[] = [];
   const amountMismatches: ReconciliationMatch[] = [];
 
-  // Pass 1: exact amount + same transaction direction + close date.
-  for (const bankRow of sortedBankRows) {
+  let referenceMatchedCount = 0;
+  let exactAmountDateMatchedCount = 0;
+
+  const bookReferenceMatchIndex = new Map<string, number[]>();
+  for (let index = 0; index < bookMatchingPool.length; index++) {
+    const book = bookMatchingPool[index];
+    const reference = normalizeReference(book.reference);
+    const direction = getBookDirection(book);
+    const amountCents = toAmountCents(Math.abs(book.amount));
+
+    if (!reference || amountCents <= 0) continue;
+
+    const key = buildMatchKey(reference, amountCents, direction);
+    const list = bookReferenceMatchIndex.get(key) || [];
+    list.push(index);
+    bookReferenceMatchIndex.set(key, list);
+  }
+
+  const hasExplicitReferenceConflict = (bankRow: BankStatementRow, book: ClassifiedTransaction): boolean => {
+    const bankRef = normalizeReference(bankRow.reference);
+    const bookRef = normalizeReference(book.reference);
+    return bankRef.length > 0 && bookRef.length > 0 && bankRef !== bookRef;
+  };
+
+  // Pass 0: explicit reference + amount + cash direction (reference-first).
+  for (const bankRow of bankMatchingPool) {
+    if (matchedBankIds.has(bankRow.id)) continue;
+
+    const bankDirection = getBankRowDirection(bankRow);
+    if (!bankDirection) continue;
+
     const bankAmount = bankRow.credit > 0 ? bankRow.credit : bankRow.debit;
-    if (bankAmount <= 0) continue;
+    const bankAmountCents = toAmountCents(bankAmount);
+    const bankReference = normalizeReference(bankRow.reference);
+    if (!bankReference || bankAmountCents <= 0) continue;
 
-    const expectedBookType: 'debit' | 'credit' = bankRow.credit > 0 ? 'debit' : 'credit';
+    const matchKey = buildMatchKey(bankReference, bankAmountCents, bankDirection);
+    const candidateIndexes = bookReferenceMatchIndex.get(matchKey) || [];
+    if (candidateIndexes.length === 0) continue;
 
-    for (let index = 0; index < scopedBookTransactions.length; index++) {
+    let selectedIndex = -1;
+    let smallestDayDiff = Number.POSITIVE_INFINITY;
+
+    for (const index of candidateIndexes) {
       if (matchedBookIndexes.has(index)) continue;
-      const book = scopedBookTransactions[index];
-      if (book.type !== expectedBookType) continue;
+      const book = bookMatchingPool[index];
+      const dayDiff = dateDiffDays(bankRow.date, book.date);
+      if (dayDiff > REFERENCE_MATCH_TOLERANCE_DAYS) continue;
+      if (dayDiff < smallestDayDiff) {
+        smallestDayDiff = dayDiff;
+        selectedIndex = index;
+      }
+    }
 
-      const bookAmount = Math.abs(book.amount);
-      if (Math.abs(bankAmount - bookAmount) > AMOUNT_EXACT_TOLERANCE) continue;
-      if (dateDiffDays(bankRow.date, book.date) > DATE_MATCH_TOLERANCE_DAYS) continue;
+    if (selectedIndex < 0) continue;
+
+    matchedBankIds.add(bankRow.id);
+    matchedBookIndexes.add(selectedIndex);
+    referenceMatchedCount += 1;
+    matchedItems.push({
+      bankRow,
+      bookTransaction: bookMatchingPool[selectedIndex],
+      type: 'matched',
+      amount: roundMoney(bankAmount),
+      variance: 0,
+    });
+  }
+
+  // Pass 1: fallback when exact reference match is unavailable.
+  // Uses amount + direction + +/-2 business days.
+  for (const bankRow of bankMatchingPool) {
+    if (matchedBankIds.has(bankRow.id)) continue;
+
+    const bankDirection = getBankRowDirection(bankRow);
+    if (!bankDirection) continue;
+
+    const bankAmount = bankRow.credit > 0 ? bankRow.credit : bankRow.debit;
+    const bankAmountCents = toAmountCents(bankAmount);
+    if (bankAmountCents <= 0) continue;
+
+    for (let index = 0; index < bookMatchingPool.length; index++) {
+      if (matchedBookIndexes.has(index)) continue;
+      const book = bookMatchingPool[index];
+
+      if (getBookDirection(book) !== bankDirection) continue;
+      if (hasExplicitReferenceConflict(bankRow, book)) continue;
+
+      const bookAmountCents = toAmountCents(Math.abs(book.amount));
+      if (Math.abs(bankAmountCents - bookAmountCents) > AMOUNT_EXACT_TOLERANCE_CENTS) continue;
+      if (businessDayDiff(bankRow.date, book.date) > DATE_MATCH_TOLERANCE_BUSINESS_DAYS) continue;
 
       matchedBankIds.add(bankRow.id);
       matchedBookIndexes.add(index);
+      exactAmountDateMatchedCount += 1;
       matchedItems.push({
         bankRow,
         bookTransaction: book,
@@ -445,18 +774,22 @@ export function reconcileBank(
     }
   }
 
-  // Pass 2: near amount + same direction + date window + narrative similarity.
-  for (const bankRow of sortedBankRows) {
+  // Pass 2: near amount + direction + date window + narrative/reference similarity.
+  for (const bankRow of bankMatchingPool) {
     if (matchedBankIds.has(bankRow.id)) continue;
+
+    const bankDirection = getBankRowDirection(bankRow);
+    if (!bankDirection) continue;
+
     const bankAmount = bankRow.credit > 0 ? bankRow.credit : bankRow.debit;
     if (bankAmount <= 0) continue;
 
-    const expectedBookType: 'debit' | 'credit' = bankRow.credit > 0 ? 'debit' : 'credit';
-
-    for (let index = 0; index < scopedBookTransactions.length; index++) {
+    for (let index = 0; index < bookMatchingPool.length; index++) {
       if (matchedBookIndexes.has(index)) continue;
-      const book = scopedBookTransactions[index];
-      if (book.type !== expectedBookType) continue;
+      const book = bookMatchingPool[index];
+
+      if (getBookDirection(book) !== bankDirection) continue;
+      if (hasExplicitReferenceConflict(bankRow, book)) continue;
 
       const bookAmount = Math.abs(book.amount);
       if (bookAmount <= 0) continue;
@@ -465,8 +798,8 @@ export function reconcileBank(
       if (percentDiff > AMOUNT_NEAR_TOLERANCE_PCT) continue;
       if (dateDiffDays(bankRow.date, book.date) > DATE_NEAR_TOLERANCE_DAYS) continue;
 
-      const bankText = bankRow.description || '';
-      const bookText = `${book.description || ''} ${book.account || ''}`.trim();
+      const bankText = `${bankRow.description || ''} ${bankRow.reference || ''}`.trim();
+      const bookText = `${book.description || ''} ${book.reference || ''} ${book.account || ''}`.trim();
       const similarNarrative =
         narrativeSimilarity(bankText, bookText) >= NARRATIVE_NEAR_MATCH_MIN_SCORE ||
         hasReferenceOverlap(bankText, bookText) ||
@@ -487,7 +820,7 @@ export function reconcileBank(
     }
   }
 
-  const bankOnlyItems: ReconciliationMatch[] = sortedBankRows
+  const bankOnlyItems: ReconciliationMatch[] = bankMatchingPool
     .filter(row => !matchedBankIds.has(row.id) && (row.debit > 0 || row.credit > 0))
     .map(row => ({
       bankRow: row,
@@ -496,7 +829,7 @@ export function reconcileBank(
       variance: roundMoney(row.debit > 0 ? row.debit : row.credit),
     }));
 
-  const bookOnlyItems: ReconciliationMatch[] = scopedBookTransactions
+  const bookOnlyItems: ReconciliationMatch[] = bookMatchingPool
     .filter((_, index) => !matchedBookIndexes.has(index))
     .map(book => ({
       bookTransaction: book,
@@ -519,6 +852,32 @@ export function reconcileBank(
   const adjustedBookBalance = roundMoney(bookClosingBalance + bankCreditsTotal - bankChargesTotal);
   const difference = roundMoney(Math.abs(adjustedBankBalance - adjustedBookBalance));
 
+  if (statementStartDate && statementEndDate) {
+    notes.push(`Statement window applied: ${statementStartDate} to ${statementEndDate}.`);
+  }
+  if (bankOpeningExcludedCount > 0) {
+    notes.push(
+      `${bankOpeningExcludedCount} bank opening-balance row(s) were excluded from transaction matching.`,
+    );
+  }
+  if (bookOpeningExcludedCount > 0) {
+    notes.push(
+      `${bookOpeningExcludedCount} book opening-balance row(s) were excluded from transaction matching.`,
+    );
+  }
+  if (bookOutOfWindowCount > 0 || bankOutOfWindowCount > 0) {
+    notes.push(
+      `Out-of-period rows excluded from matching: bank ${Math.max(bankOutOfWindowCount, 0)}, book ${Math.max(bookOutOfWindowCount, 0)}.`,
+    );
+  }
+  if (referenceMatchedCount > 0) {
+    notes.push(`${referenceMatchedCount} transaction(s) matched on exact Reference + Amount + Direction.`);
+  }
+  if (exactAmountDateMatchedCount > 0) {
+    notes.push(
+      `${exactAmountDateMatchedCount} transaction(s) matched on Amount + Direction + ${DATE_MATCH_TOLERANCE_BUSINESS_DAYS} business-day tolerance.`,
+    );
+  }
   if (amountMismatches.length > 0) {
     notes.push(
       `${amountMismatches.length} near-match item(s) were flagged as amount mismatches and require manual review.`,
@@ -527,12 +886,64 @@ export function reconcileBank(
   if (scope.accountsUsed.length === 0) {
     notes.push('No scoped book cash/bank accounts were available; reconciliation confidence is low.');
   }
-  if (matchedItems.length === 0 && bankRows.length > 0 && scopedBookTransactions.length > 0) {
-    notes.push('No exact matches were found. Verify date format, account scope, and statement period.');
+  if (bookMatchingPool.length === 0) {
+    if (scopedBookTransactions.length === 0) {
+      notes.push(
+        'Book matching pool is empty: no scoped cash/bank transactions were found. Verify book upload and account scope.',
+      );
+    } else if (bookRowsInWindow.length === 0 && statementStartDate && statementEndDate) {
+      notes.push(
+        `Book matching pool is empty within statement window (${statementStartDate} to ${statementEndDate}). Check statement period alignment.`,
+      );
+    } else if (bookOpeningExcludedCount > 0 && bookOpeningExcludedCount === bookRowsInWindow.length) {
+      notes.push(
+        'Book matching pool is empty because all in-window book rows were classified as opening balances. Review opening labels/flags.',
+      );
+    } else {
+      notes.push(
+        'Book matching pool is empty. Ensure Date, Account, Debit/Credit (or Amount+Type), and Reference (JournalRef) are mapped on the book dataset.',
+      );
+    }
+  }
+
+  const bankRefCount = bankMatchingPool.filter(row => normalizeReference(row.reference).length > 0).length;
+  const bookRefCount = bookMatchingPool.filter(tx => normalizeReference(tx.reference).length > 0).length;
+  const bankReferenceCoveragePct =
+    bankMatchingPool.length > 0 ? roundPercent((bankRefCount / bankMatchingPool.length) * 100) : 0;
+  const bookReferenceCoveragePct =
+    bookMatchingPool.length > 0 ? roundPercent((bookRefCount / bookMatchingPool.length) * 100) : 0;
+  if (bankRefCount > 0 && bookRefCount === 0) {
+    notes.push('Bank references were detected, but book references are missing. Map JournalRef/Reference for higher match accuracy.');
+  }
+
+  if (matchedItems.length === 0 && bankMatchingPool.length > 0 && bookMatchingPool.length > 0) {
+    notes.push('No exact matches were found. Verify reference mapping, account scope, and statement period.');
   }
   if (difference >= 1) {
-    notes.push(`Adjusted balances still differ by ${difference.toFixed(2)}.`);
+    notes.push(
+      `Adjusted balances still differ by ${difference.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}.`,
+    );
   }
+
+  let reliabilityScore = 100;
+  if (bankReferenceCoveragePct < 80) reliabilityScore -= 10;
+  if (bankReferenceCoveragePct < 60) reliabilityScore -= 15;
+  if (bookReferenceCoveragePct < 80) reliabilityScore -= 10;
+  if (bookReferenceCoveragePct < 60) reliabilityScore -= 15;
+  if (bankOpeningExcludedCount > 0) reliabilityScore -= 5;
+  if (bookOpeningExcludedCount > 0) reliabilityScore -= 5;
+  if (bankOutOfWindowCount + bookOutOfWindowCount > 0) reliabilityScore -= 10;
+  if (matchedItems.length === 0 && bankMatchingPool.length > 0 && bookMatchingPool.length > 0) reliabilityScore -= 25;
+  if (referenceMatchedCount === 0 && bankRefCount > 0 && bookRefCount > 0) reliabilityScore -= 10;
+  if (amountMismatches.length > 0) reliabilityScore -= Math.min(15, amountMismatches.length * 2);
+  if (difference >= 1) reliabilityScore -= 10;
+  reliabilityScore = Math.max(0, Math.min(100, reliabilityScore));
+
+  const verdict: 'high' | 'medium' | 'low' =
+    reliabilityScore >= 80 ? 'high' : reliabilityScore >= 55 ? 'medium' : 'low';
 
   return {
     statementDate,
@@ -552,6 +963,23 @@ export function reconcileBank(
     difference,
     totalTransactionsMatched: matchedItems.length,
     totalTransactionsUnmatched: bankOnlyItems.length + bookOnlyItems.length + amountMismatches.length,
+    quality: {
+      bankRowsTotal: sortedBankRows.length,
+      bankRowsMatchingPool: bankMatchingPool.length,
+      bookRowsTotal: scopedBookTransactions.length,
+      bookRowsMatchingPool: bookMatchingPool.length,
+      bankReferenceCoveragePct,
+      bookReferenceCoveragePct,
+      bankOpeningExcluded: Math.max(bankOpeningExcludedCount, 0),
+      bookOpeningExcluded: Math.max(bookOpeningExcludedCount, 0),
+      bankOutOfWindowExcluded: Math.max(bankOutOfWindowCount, 0),
+      bookOutOfWindowExcluded: Math.max(bookOutOfWindowCount, 0),
+      matchedByReference: referenceMatchedCount,
+      matchedByAmountDateFallback: exactAmountDateMatchedCount,
+      nearMatchesFlagged: amountMismatches.length,
+      reliabilityScore,
+      verdict,
+    },
     notes,
   };
 }
