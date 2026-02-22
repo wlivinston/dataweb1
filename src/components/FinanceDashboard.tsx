@@ -47,6 +47,7 @@ import PDFPaywallDialog from './PDFPaywallDialog';
 import { toast } from 'sonner';
 
 import {
+  ClassifiedTransaction,
   FinanceColumnMapping,
   FinancialReport,
   FinanceChartData,
@@ -73,6 +74,7 @@ import {
   generateFinancialReport,
   generateTemplateCSV,
   generateFinanceChartData,
+  parseTransactions,
 } from '@/lib/financeEngine';
 import { generateOnePageFinancialNarrative } from '@/lib/financeNarrative';
 import { generateFinanceOnePagePDF, generateOffsetEntriesAppendixPDF } from '@/lib/financePdfReport';
@@ -298,6 +300,12 @@ const FinanceDashboard: React.FC = () => {
   const [trialBalance, setTrialBalance] = useState<TrialBalance | null>(null);
 
   // ---- Bank Reconciliation state ----
+  const [bookLedgerRawData, setBookLedgerRawData] = useState<Record<string, unknown>[]>([]);
+  const [bookLedgerColumns, setBookLedgerColumns] = useState<string[]>([]);
+  const [bookLedgerMapping, setBookLedgerMapping] = useState<FinanceColumnMapping>({});
+  const [bookLedgerFileName, setBookLedgerFileName] = useState('');
+  const [bookLedgerTransactions, setBookLedgerTransactions] = useState<ClassifiedTransaction[]>([]);
+  const [bookLedgerWarnings, setBookLedgerWarnings] = useState<string[]>([]);
   const [bankRawData, setBankRawData] = useState<Record<string, unknown>[]>([]);
   const [bankStatementColumns, setBankStatementColumns] = useState<string[]>([]);
   const [bankStatementMapping, setBankStatementMapping] = useState<BankStatementColumnMapping>({});
@@ -349,6 +357,36 @@ const FinanceDashboard: React.FC = () => {
   useEffect(() => {
     setPaidPdfAccessCache(null);
   }, [user?.email]);
+
+  useEffect(() => {
+    if (bookLedgerRawData.length === 0) {
+      setBookLedgerTransactions([]);
+      setBookLedgerWarnings([]);
+      return;
+    }
+
+    if (!bookLedgerMapping.date || !bookLedgerMapping.account) {
+      setBookLedgerTransactions([]);
+      setBookLedgerWarnings(['Map Date and Account to prepare book-side reconciliation transactions.']);
+      return;
+    }
+    if (!bookLedgerMapping.amount && !bookLedgerMapping.debit && !bookLedgerMapping.credit) {
+      setBookLedgerTransactions([]);
+      setBookLedgerWarnings(['Map Debit/Credit or Amount to prepare book-side reconciliation transactions.']);
+      return;
+    }
+
+    try {
+      const transformed = transformLongDatasetToCanonical(bookLedgerRawData as Record<string, any>[], bookLedgerMapping);
+      const reportInput = canonicalToReportInput(transformed.transactions);
+      const transactions = parseTransactions(reportInput.data, reportInput.mapping);
+      setBookLedgerTransactions(transactions);
+      setBookLedgerWarnings(transformed.warnings);
+    } catch (error) {
+      setBookLedgerTransactions([]);
+      setBookLedgerWarnings(['Could not parse uploaded GL with the current mapping.']);
+    }
+  }, [bookLedgerRawData, bookLedgerMapping]);
 
   useEffect(() => {
     const hasSupplementalSignals =
@@ -607,6 +645,20 @@ const FinanceDashboard: React.FC = () => {
     setIsGeneratingOffsetPDF(false);
     setSelectedLongProfileId('none');
     setSelectedWideProfileId('none');
+    setBookLedgerRawData([]);
+    setBookLedgerColumns([]);
+    setBookLedgerMapping({});
+    setBookLedgerFileName('');
+    setBookLedgerTransactions([]);
+    setBookLedgerWarnings([]);
+    setBankRawData([]);
+    setBankStatementColumns([]);
+    setBankStatementMapping({});
+    setBankStatementFileName('');
+    setBankStatementDate('');
+    setBankStatementDateFormat('auto');
+    setBankBookAccountScope('auto');
+    setBankRecon(null);
   };
 
   const buildColumnsFromData = (dataset: Record<string, any>[]): ColumnInfo[] => {
@@ -2022,18 +2074,109 @@ const FinanceDashboard: React.FC = () => {
   // BANK RECONCILIATION HANDLERS
   // ============================================================
 
-  const handleBankStatementUpload = async (file: File) => {
-    setBankStatementFileName(file.name);
-    setBankRecon(null);
-    try {
+  const parseReconUploadFile = async (file: File): Promise<Record<string, unknown>[]> => {
+    const ext = file.name.toLowerCase().split('.').pop();
+
+    if (ext === 'csv') {
+      const text = await file.text();
+      return parseCSV(text).data as Record<string, unknown>[];
+    }
+
+    if (ext === 'xlsx' || ext === 'xls') {
       const buffer = await file.arrayBuffer();
       const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
-      const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+      if (!sheet) return [];
+
+      // Detect real header row to skip preamble/title blocks.
+      const rawRows = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, defval: null });
+      let headerRow = 0;
+      for (let i = 0; i < Math.min(rawRows.length, 20); i++) {
+        const nonEmpty = (rawRows[i] ?? []).filter((cell: any) => cell !== null && cell !== undefined && cell !== '');
+        if (nonEmpty.length >= 2) {
+          headerRow = i;
+          break;
+        }
+      }
+
+      return XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+        range: headerRow,
         defval: '',
         raw: false,
       });
+    }
+
+    throw new Error('Unsupported file format');
+  };
+
+  const parseBookLedgerTransactions = (
+    sourceRows: Record<string, unknown>[],
+    sourceMapping: FinanceColumnMapping,
+  ): { transactions: ClassifiedTransaction[]; warnings: string[] } => {
+    if (!sourceMapping.date || !sourceMapping.account) {
+      return {
+        transactions: [],
+        warnings: ['Map Date and Account to prepare book-side reconciliation transactions.'],
+      };
+    }
+    if (!sourceMapping.amount && !sourceMapping.debit && !sourceMapping.credit) {
+      return {
+        transactions: [],
+        warnings: ['Map Debit/Credit or Amount to prepare book-side reconciliation transactions.'],
+      };
+    }
+
+    const transformed = transformLongDatasetToCanonical(sourceRows as Record<string, any>[], sourceMapping);
+    const reportInput = canonicalToReportInput(transformed.transactions);
+    const transactions = parseTransactions(reportInput.data, reportInput.mapping);
+
+    return {
+      transactions,
+      warnings: transformed.warnings,
+    };
+  };
+
+  const handleBookLedgerUpload = async (file: File) => {
+    setBookLedgerFileName(file.name);
+    setBankBookAccountScope('auto');
+    setBankRecon(null);
+    try {
+      const raw = await parseReconUploadFile(file);
+      if (raw.length === 0) {
+        toast.error('General Ledger file appears to be empty.');
+        return;
+      }
+
+      const detectedColumns = buildColumnsFromData(raw as Record<string, any>[]);
+      const columns = detectedColumns.map(column => column.name);
+      const autoMapping = detectFinanceColumns(detectedColumns, (raw as Record<string, any>[]).slice(0, 20));
+
+      setBookLedgerRawData(raw);
+      setBookLedgerColumns(columns);
+      setBookLedgerMapping(autoMapping);
+
+      const parsed = parseBookLedgerTransactions(raw, autoMapping);
+      setBookLedgerTransactions(parsed.transactions);
+      setBookLedgerWarnings(parsed.warnings);
+
+      toast.success(`GL loaded: ${raw.length} rows detected.`);
+      if (parsed.transactions.length === 0) {
+        toast.warning('GL uploaded but no valid transactions were parsed yet. Verify Date/Account/Amount mapping.');
+      } else {
+        toast.success(`GL ready: ${parsed.transactions.length} transaction(s) prepared for reconciliation.`);
+      }
+    } catch (err) {
+      console.error('GL parse error:', err);
+      toast.error('Could not parse General Ledger file. Please check the file format.');
+    }
+  };
+
+  const handleBankStatementUpload = async (file: File) => {
+    setBankStatementFileName(file.name);
+    setBankRecon(null);
+    try {
+      const raw = await parseReconUploadFile(file);
       if (raw.length === 0) {
         toast.error('Bank statement file appears to be empty.');
         return;
@@ -2059,6 +2202,22 @@ const FinanceDashboard: React.FC = () => {
   const runBankReconciliation = () => {
     if (!report) {
       toast.error('Generate a financial report first.');
+      return;
+    }
+    if (bookLedgerRawData.length === 0) {
+      toast.error('Upload your General Ledger cash journal first.');
+      return;
+    }
+    if (!bookLedgerMapping.date || !bookLedgerMapping.account) {
+      toast.error('Map GL Date and Account columns before running reconciliation.');
+      return;
+    }
+    if (!bookLedgerMapping.amount && !bookLedgerMapping.debit && !bookLedgerMapping.credit) {
+      toast.error('Map GL Debit/Credit or Amount column before running reconciliation.');
+      return;
+    }
+    if (bookLedgerTransactions.length === 0) {
+      toast.error('No valid GL transactions were parsed. Review GL mapping and data quality.');
       return;
     }
     if (bankRawData.length === 0) {
@@ -2094,7 +2253,7 @@ const FinanceDashboard: React.FC = () => {
 
       const recon = reconcileBank(
         parsedStatement.rows,
-        report.transactions,
+        bookLedgerTransactions,
         {
           statementDate: bankStatementDate || undefined,
           bookAccountScope: bankBookAccountScope,
@@ -2145,13 +2304,20 @@ const FinanceDashboard: React.FC = () => {
 
   const formatPercent = (value: number): string => `${value.toFixed(1)}%`;
 
-  const bankReconAccountOptions = report
-    ? [...new Set(
-        report.transactions
-          .filter(tx => /(cash|bank|checking|cheque|savings|current account|petty cash|cash equivalents?)/i.test(tx.account))
-          .map(tx => tx.account),
-      )].sort((a, b) => a.localeCompare(b))
-    : [];
+  const bankReconBookSourceTransactions =
+    bookLedgerTransactions.length > 0
+      ? bookLedgerTransactions
+      : report?.transactions ?? [];
+  const bankReconLikelyCashAccounts = [...new Set(
+    bankReconBookSourceTransactions
+      .filter(tx => /(cash|bank|checking|cheque|savings|current account|petty cash|cash equivalents?)/i.test(tx.account))
+      .map(tx => tx.account),
+  )].sort((a, b) => a.localeCompare(b));
+  const bankReconAccountOptions = [...new Set(
+    bankReconBookSourceTransactions
+      .map(tx => tx.account)
+      .filter(account => account && account.trim() !== ''),
+  )].sort((a, b) => a.localeCompare(b));
 
   const computeStartingPositionSnapshot = () => {
     if (!report || canonicalTransactions.length === 0) return null;
@@ -3508,6 +3674,12 @@ const FinanceDashboard: React.FC = () => {
               setReport(null);
               setChartData(null);
               setTrialBalance(null);
+              setBookLedgerRawData([]);
+              setBookLedgerColumns([]);
+              setBookLedgerMapping({});
+              setBookLedgerFileName('');
+              setBookLedgerTransactions([]);
+              setBookLedgerWarnings([]);
               setBankRawData([]);
               setBankStatementColumns([]);
               setBankStatementMapping({});
@@ -4622,14 +4794,111 @@ const FinanceDashboard: React.FC = () => {
                     Bank Reconciliation
                   </CardTitle>
                   <p className="text-sm text-gray-500 mt-1">
-                    Upload your bank statement to reconcile against your book transactions.
+                    Upload both sources: 1) General Ledger (cash journal) and 2) Bank Statement.
                   </p>
                 </div>
               </CardHeader>
               <CardContent className="pt-6 space-y-4">
+                {/* Step 1: GL upload */}
+                <div className="space-y-2">
+                  <Label className="text-sm font-semibold">Step 1: General Ledger (Cash Account Journal)</Label>
+                  <div
+                    className="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/40 transition-colors"
+                    onDragOver={e => e.preventDefault()}
+                    onDrop={e => {
+                      e.preventDefault();
+                      const file = e.dataTransfer.files?.[0];
+                      if (file) handleBookLedgerUpload(file);
+                    }}
+                    onClick={() => document.getElementById('book-ledger-input')?.click()}
+                  >
+                    <Upload className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
+                    <p className="text-sm font-medium text-slate-600">
+                      {bookLedgerFileName || 'Drop your GL cash journal here or click to browse'}
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Supports CSV/XLSX. Expected fields: Date, Account, Debit/Credit (or Amount), Reference.
+                    </p>
+                    <input
+                      id="book-ledger-input"
+                      type="file"
+                      accept=".csv,.xlsx,.xls"
+                      className="hidden"
+                      onChange={e => {
+                        const file = e.target.files?.[0];
+                        if (file) handleBookLedgerUpload(file);
+                        e.target.value = '';
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {bookLedgerColumns.length > 0 && (
+                  <>
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      GL Column Mapping — verify auto-detected fields
+                    </p>
+                    <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
+                      {(
+                        [
+                          { field: 'date', label: 'Date' },
+                          { field: 'account', label: 'Account' },
+                          { field: 'reference', label: 'Reference / JournalRef' },
+                          { field: 'debit', label: 'Debit' },
+                          { field: 'credit', label: 'Credit' },
+                          { field: 'amount', label: 'Amount' },
+                          { field: 'type', label: 'Txn Type (Dr/Cr)' },
+                          { field: 'description', label: 'Description' },
+                          { field: 'category', label: 'Category (optional)' },
+                        ] as const
+                      ).map(({ field, label }) => (
+                        <div key={field} className="space-y-1">
+                          <Label className="text-xs text-slate-500">{label}</Label>
+                          <Select
+                            value={(bookLedgerMapping as Record<string, string | undefined>)[field] ?? '__none__'}
+                            onValueChange={val =>
+                              setBookLedgerMapping(prev => ({
+                                ...prev,
+                                [field]: val === '__none__' ? undefined : val,
+                              }))
+                            }
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder="— none —" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__none__">— none —</SelectItem>
+                              {bookLedgerColumns.map(col => (
+                                <SelectItem key={col} value={col}>
+                                  {col}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-xs text-slate-600">
+                      GL parsing status: <strong>{bookLedgerTransactions.length.toLocaleString()}</strong> transaction(s) ready for matching.
+                    </p>
+                    {bookLedgerWarnings.length > 0 && (
+                      <p className="text-xs text-amber-600">
+                        GL caveat: {bookLedgerWarnings[0]}
+                      </p>
+                    )}
+                    {!bookLedgerMapping.reference && (
+                      <p className="text-xs text-slate-500">
+                        Tip: map <strong>Reference / JournalRef</strong> for strongest auto-match accuracy.
+                      </p>
+                    )}
+                  </>
+                )}
+
+                <Separator />
+
                 {/* Drop zone */}
                 <div className="space-y-2">
-                  <Label className="text-sm font-semibold">Bank Statement (CSV or XLSX)</Label>
+                  <Label className="text-sm font-semibold">Step 2: Bank Statement (CSV or XLSX)</Label>
                   <div
                     className="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer hover:border-sky-400 hover:bg-sky-50/40 transition-colors"
                     onDragOver={e => e.preventDefault()}
@@ -4662,9 +4931,8 @@ const FinanceDashboard: React.FC = () => {
                 {/* Column mapping */}
                 {bankStatementColumns.length > 0 && (
                   <>
-                    <Separator />
                     <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                      Column Mapping — verify auto-detected fields
+                      Bank Statement Mapping — verify auto-detected fields
                     </p>
                     <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
                       {(
@@ -4750,20 +5018,32 @@ const FinanceDashboard: React.FC = () => {
                         />
                       </div>
                     </div>
-                    {report && report.transactions.length === 0 && (
+                    {!bookLedgerFileName && (
                       <p className="text-xs text-red-600">
-                        No book transactions are currently loaded. Generate a report from your GL/book dataset before running reconciliation.
+                        Upload a General Ledger cash journal first. Reconciliation requires both GL and Bank files.
                       </p>
                     )}
-                    {report && report.transactions.length > 0 && bankReconAccountOptions.length === 0 && (
+                    {bookLedgerFileName && bookLedgerTransactions.length === 0 && (
+                      <p className="text-xs text-red-600">
+                        GL file is uploaded but no valid book transactions are ready. Review GL mapping before reconciliation.
+                      </p>
+                    )}
+                    {report && report.transactions.length === 0 && (
+                      <p className="text-xs text-slate-500">
+                        Current report has no book transactions; reconciliation will rely on the uploaded GL cash journal.
+                      </p>
+                    )}
+                    {bookLedgerTransactions.length > 0 && bankReconLikelyCashAccounts.length === 0 && (
                       <p className="text-xs text-amber-600">
-                        No cash/bank-like accounts were auto-detected from book data. Verify Account mapping or choose the correct Book Account Scope manually.
+                        No cash/bank-like accounts were auto-detected from uploaded GL. Choose the correct Book Account Scope manually.
                       </p>
                     )}
                     <Button
                       className="w-full mt-2"
                       disabled={
                         isBankReconLoading ||
+                        bookLedgerRawData.length === 0 ||
+                        bookLedgerTransactions.length === 0 ||
                         !bankStatementMapping.date ||
                         (!bankStatementMapping.amount && !bankStatementMapping.debit && !bankStatementMapping.credit)
                       }
@@ -4794,6 +5074,9 @@ const FinanceDashboard: React.FC = () => {
                         Tip: map <strong>Reference</strong> (if available) for strongest auto-match accuracy.
                       </p>
                     )}
+                    <p className="text-xs text-slate-500">
+                      Both files are required: <strong>General Ledger + Bank Statement</strong>.
+                    </p>
                   </>
                 )}
               </CardContent>
