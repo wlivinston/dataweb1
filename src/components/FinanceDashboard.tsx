@@ -161,6 +161,7 @@ const FINANCE_CHART_TYPE_LABEL: Record<FinanceChartVisualType, string> = {
   scatter: 'Scatter',
   table: 'Table',
 };
+const FINANCE_TAB_TRIGGER_CLASS = "min-w-0 w-full sm:w-auto sm:shrink-0 rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)] whitespace-nowrap leading-tight text-center";
 const PDF_ACCESS_CACHE_TTL_MS = 10 * 60 * 1000;
 const PAID_SUBSCRIPTION_STATUSES = new Set([
   'professional',
@@ -3861,36 +3862,36 @@ const FinanceDashboard: React.FC = () => {
 
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="h-auto w-full justify-start gap-1.5 rounded-2xl border border-border/80 bg-gradient-to-r from-background via-background to-primary/5 p-1.5 shadow-[0_10px_30px_rgba(15,23,42,0.06)] flex-nowrap overflow-x-auto snap-x snap-mandatory [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          <TabsTrigger value="pnl" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+        <TabsList className="h-auto w-full justify-start gap-1.5 rounded-2xl border border-border/80 bg-gradient-to-r from-background via-background to-primary/5 p-1.5 shadow-[0_10px_30px_rgba(15,23,42,0.06)] flex-col sm:flex-row sm:flex-wrap overflow-visible">
+          <TabsTrigger value="pnl" className={FINANCE_TAB_TRIGGER_CLASS}>
             <DollarSign className="h-4 w-4 mr-2" />
             Profit &amp; Loss
           </TabsTrigger>
-          <TabsTrigger value="cashflow" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="cashflow" className={FINANCE_TAB_TRIGGER_CLASS}>
             <Activity className="h-4 w-4 mr-2" />
             Cash Flow
           </TabsTrigger>
-          <TabsTrigger value="balance" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="balance" className={FINANCE_TAB_TRIGGER_CLASS}>
             <Scale className="h-4 w-4 mr-2" />
             Balance Sheet
           </TabsTrigger>
-          <TabsTrigger value="ratios" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="ratios" className={FINANCE_TAB_TRIGGER_CLASS}>
             <Shield className="h-4 w-4 mr-2" />
             Ratios &amp; Health
           </TabsTrigger>
-          <TabsTrigger value="charts" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="charts" className={FINANCE_TAB_TRIGGER_CLASS}>
             <BarChart3 className="h-4 w-4 mr-2" />
             Visualizations
           </TabsTrigger>
-          <TabsTrigger value="written" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="written" className={FINANCE_TAB_TRIGGER_CLASS}>
             <FileText className="h-4 w-4 mr-2" />
             Written Report
           </TabsTrigger>
-          <TabsTrigger value="trial-balance" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="trial-balance" className={FINANCE_TAB_TRIGGER_CLASS}>
             <CheckCircle className="h-4 w-4 mr-2" />
             Trial Balance
           </TabsTrigger>
-          <TabsTrigger value="bank-recon" className="shrink-0 snap-start rounded-xl border border-transparent px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-semibold text-muted-foreground transition-all duration-200 hover:border-border hover:bg-background hover:text-foreground data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10 data-[state=active]:text-primary data-[state=active]:shadow-[0_6px_18px_rgba(37,99,235,0.2)]">
+          <TabsTrigger value="bank-recon" className={FINANCE_TAB_TRIGGER_CLASS}>
             <Landmark className="h-4 w-4 mr-2" />
             Bank Reconciliation
           </TabsTrigger>
