@@ -104,13 +104,24 @@ const allowedOrigins = new Set(
   configuredOrigins.map(toOrigin)
 );
 
+// Allow local-network frontend dev origins (e.g. http://192.168.1.194:8080)
+// without requiring constant .env edits as LAN IPs change.
+const DEV_LOCAL_ORIGIN_REGEX =
+  /^https?:\/\/(?:(?:localhost|127\.0\.0\.1)(?::\d{1,5})?|10\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d{1,5})?|192\.168\.\d{1,3}\.\d{1,3}(?::\d{1,5})?|172\.(?:1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}(?::\d{1,5})?)$/i;
+
+const isAllowedOrigin = (origin) => {
+  const normalizedOrigin = toOrigin(origin);
+  if (allowedOrigins.has(normalizedOrigin)) return true;
+  if (!IS_PROD && DEV_LOCAL_ORIGIN_REGEX.test(normalizedOrigin)) return true;
+  return false;
+};
+
 app.use(
   cors({
     origin(origin, cb) {
       // allow server-to-server tools and health checks (no Origin header)
       if (!origin) return cb(null, true);
-      const o = toOrigin(origin);
-      return cb(null, allowedOrigins.has(o));
+      return cb(null, isAllowedOrigin(origin));
     },
     credentials: true,
   })
@@ -119,8 +130,8 @@ app.use(
 // Block disallowed browser origins for mutating requests even if a client bypasses CORS checks.
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (!origin || allowedOrigins.size === 0) return next();
-  if (allowedOrigins.has(toOrigin(origin))) return next();
+  if (!origin) return next();
+  if (isAllowedOrigin(origin)) return next();
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
 
   return res.status(403).json({ error: 'Origin not allowed' });
@@ -257,14 +268,31 @@ app.use('*', (_req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
+const checkExistingHealthOnPort = async (port) => {
+  const url = `http://127.0.0.1:${port}/health`;
+  try {
+    const response = await fetch(url, { method: 'GET' });
+    if (!response.ok) return { reachable: false, isDataWebBackend: false };
+
+    const payload = await response.json().catch(() => ({}));
+    const status = String(payload?.status || '').toUpperCase();
+    const message = String(payload?.message || '').toLowerCase();
+    const isDataWebBackend = status === 'OK' && message.includes('backend api is running');
+    return { reachable: true, isDataWebBackend };
+  } catch {
+    return { reachable: false, isDataWebBackend: false };
+  }
+};
+
 /* -------------------- Start Server (then optional DB ping) -------------------- */
 const startServer = async () => {
-  try {
-    const server = app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📊 Health check: http://localhost:${PORT}/health`);
-      console.log(`🔗 API Base URL: http://localhost:${PORT}/api`);
-    });
+  const server = app.listen(PORT);
+
+  server.on('listening', () => {
+    console.log(`[backend] Server running on port ${PORT}`);
+    console.log(`[backend] Health check: http://localhost:${PORT}/health`);
+    console.log(`[backend] API base URL: http://localhost:${PORT}/api`);
+
     server.requestTimeout = DEFAULT_REQUEST_TIMEOUT_MS;
     server.headersTimeout = DEFAULT_REQUEST_TIMEOUT_MS + 5000;
     server.keepAliveTimeout = parsePositiveInt(process.env.KEEP_ALIVE_TIMEOUT_MS, 10000, 1000, 30000);
@@ -277,17 +305,37 @@ const startServer = async () => {
 
     // Non-blocking DB connectivity check; never crashes the app
     connectDB().catch((err) => {
-      console.log('⚠️  DB check failed:', err?.message || err);
-      console.log('✅ Server continues running without DB');
+      console.log('[backend] DB check failed:', err?.message || err);
+      console.log('[backend] Server continues running without DB');
     });
-  } catch (error) {
-    console.error('❌ Failed to start server:', error);
-    process.exit(1);
-  }
-};
+  });
 
+  server.on('error', async (error) => {
+    if (error?.code === 'EADDRINUSE') {
+      const existing = await checkExistingHealthOnPort(PORT);
+      if (existing.reachable && existing.isDataWebBackend) {
+        console.error(
+          `[backend] Port ${PORT} is already in use by an existing DataWeb backend instance. Stop the duplicate process or change PORT in backend/.env.`
+        );
+      } else if (existing.reachable) {
+        console.error(
+          `[backend] Port ${PORT} is already in use by another HTTP service. Stop that service or change PORT in backend/.env.`
+        );
+      } else {
+        console.error(
+          `[backend] Port ${PORT} is already in use by another process. Stop it or change PORT in backend/.env.`
+        );
+      }
+    } else {
+      console.error('[backend] Failed to start server:', error);
+    }
+
+    process.exit(1);
+  });
+};
 if (require.main === module) {
   startServer();
 }
 
 module.exports = app;
+

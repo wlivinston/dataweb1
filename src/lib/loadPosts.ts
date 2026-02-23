@@ -12,6 +12,7 @@ export interface PostData {
   content: string;
   author: string;
   qualification?: string;
+  authorBio?: string;
   coverImage?: string;
   coverImageFit?: "cover" | "contain";
   coverImagePosition?: "center" | "top" | "bottom";
@@ -305,6 +306,7 @@ function toPostData(path: string, rawMd: string): PostData {
     content,
     author: data.author ?? "DataWeb Team",
     qualification: data.qualification,
+    authorBio: data.authorBio ?? data.author_bio ?? data.bio ?? data.authorDescription,
     coverImage: String(coverImage || "").trim() || undefined,
     coverImageFit,
     coverImagePosition,

@@ -45,6 +45,7 @@ import * as XLSX from 'xlsx';
 import DataProcessingOverlay from './DataProcessingOverlay';
 import PDFPaywallDialog from './PDFPaywallDialog';
 import { toast } from 'sonner';
+import { assertExcelBufferIsSafe, assertWorkbookHasNoMacros } from '@/lib/excelSecurity';
 
 import {
   ClassifiedTransaction,
@@ -707,7 +708,9 @@ const FinanceDashboard: React.FC = () => {
         }];
       } else if (ext === 'xlsx' || ext === 'xls') {
         const buffer = await file.arrayBuffer();
-        const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
+        assertExcelBufferIsSafe(file.name, buffer);
+        const workbook = XLSX.read(buffer, { type: 'array', cellDates: true, bookVBA: true });
+        assertWorkbookHasNoMacros(file.name, workbook);
         parsedSheets = workbook.SheetNames.map(sheetName => {
           const sheet = workbook.Sheets[sheetName];
           // Detect real header row — skip preamble/title rows (e.g. merged title cells)
@@ -848,7 +851,8 @@ const FinanceDashboard: React.FC = () => {
       }
     } catch (error) {
       console.error('File parse error:', error);
-      toast.error('Failed to parse file. Please check the format.');
+      const reason = error instanceof Error ? error.message : 'Failed to parse file. Please check the format.';
+      toast.error(reason);
     }
   }, []);
 
@@ -1721,7 +1725,7 @@ const FinanceDashboard: React.FC = () => {
   const showPaymentServiceUnavailableToast = () => {
     const target = getPaymentApiOrigin();
     toast.error(
-      `Payment service is unreachable (${target}). Start backend on port 3001 or set VITE_BACKEND_URL to your live API.`
+      `Payment service is unreachable (${target}). Ensure one backend instance is running on the configured port and set VITE_BACKEND_URL to that API.`
     );
   };
 
@@ -2085,7 +2089,9 @@ const FinanceDashboard: React.FC = () => {
 
     if (ext === 'xlsx' || ext === 'xls') {
       const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
+      assertExcelBufferIsSafe(file.name, buffer);
+      const workbook = XLSX.read(buffer, { type: 'array', cellDates: true, bookVBA: true });
+      assertWorkbookHasNoMacros(file.name, workbook);
       const sheetName = workbook.SheetNames[0];
       const sheet = workbook.Sheets[sheetName];
       if (!sheet) return [];
@@ -2169,7 +2175,8 @@ const FinanceDashboard: React.FC = () => {
       }
     } catch (err) {
       console.error('GL parse error:', err);
-      toast.error('Could not parse General Ledger file. Please check the file format.');
+      const reason = err instanceof Error ? err.message : 'Could not parse General Ledger file. Please check the file format.';
+      toast.error(reason);
     }
   };
 
@@ -2196,7 +2203,8 @@ const FinanceDashboard: React.FC = () => {
       toast.success(`Bank statement loaded: ${raw.length} rows detected.`);
     } catch (err) {
       console.error('Bank statement parse error:', err);
-      toast.error('Could not parse bank statement. Please check the file format.');
+      const reason = err instanceof Error ? err.message : 'Could not parse bank statement. Please check the file format.';
+      toast.error(reason);
     }
   };
 

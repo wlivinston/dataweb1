@@ -165,6 +165,11 @@ const extractErrorMessage = async (response: Response, fallback: string): Promis
   return fallback;
 };
 
+const wait = (ms: number) =>
+  new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+
 const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug, postSeed }) => {
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState({ content: '' });
@@ -358,19 +363,55 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug, postSeed 
     return { id: null, reason: 'not_found' };
   }, [authHeader, postId, postSlug, postSeed]);
 
+  const resolveBackendPostIdWithRetry = useCallback(async (): Promise<ResolveResult> => {
+    const retryBackoffMs = [0, 350, 1000];
+    let lastResult: ResolveResult = { id: null, reason: 'not_found' };
+
+    for (const delayMs of retryBackoffMs) {
+      if (delayMs > 0) {
+        await wait(delayMs);
+      }
+
+      lastResult = await resolveBackendPostId();
+      if (lastResult.id || lastResult.reason !== 'network') {
+        return lastResult;
+      }
+    }
+
+    return lastResult;
+  }, [resolveBackendPostId]);
+
+  const probeBackendReachability = useCallback(async (): Promise<boolean> => {
+    try {
+      const response = await fetch(getApiUrl('/health'), {
+        headers: { ...authHeader },
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }, [authHeader]);
+
   const fetchComments = useCallback(async () => {
     setIsLoading(true);
 
     try {
-      const resolution = await resolveBackendPostId();
+      const resolution = await resolveBackendPostIdWithRetry();
       const effectivePostId = resolution.id;
       if (!effectivePostId) {
         setComments([]);
         if (resolution.reason === 'network') {
           const backendTarget = PUBLIC_CONFIG.backendUrl || 'your backend URL';
-          setError(
-            `Comments service is unavailable because the backend is unreachable (${backendTarget}). Start the backend server or update VITE_BACKEND_URL.`
-          );
+          const backendReachable = await probeBackendReachability();
+          if (backendReachable) {
+            setError(
+              `Comments are temporarily unavailable, but backend is reachable (${backendTarget}). Refresh and retry; if this persists, verify CORS origin and /api/blog post-sync endpoints.`
+            );
+          } else {
+            setError(
+              `Comments service is unavailable because the backend is unreachable (${backendTarget}). Ensure one backend instance is running on the configured port and update VITE_BACKEND_URL if needed.`
+            );
+          }
         } else {
           setError('Comments are unavailable for this article until it is synced in the backend `blog_posts` table.');
         }
@@ -404,7 +445,7 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug, postSeed 
     } finally {
       setIsLoading(false);
     }
-  }, [authHeader, resolveBackendPostId]);
+  }, [authHeader, probeBackendReachability, resolveBackendPostIdWithRetry]);
 
   useEffect(() => {
     fetchComments();

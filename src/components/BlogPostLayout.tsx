@@ -26,6 +26,7 @@ export interface BlogPostLayoutData {
   category: string;
   featured?: boolean;
   qualification?: string;
+  authorBio?: string;
   likeCount?: number;
   userLiked?: boolean;
 }
@@ -84,6 +85,19 @@ function extractHeadings(markdown: string): { id: string; text: string; level: n
   return headings;
 }
 
+function normalizeAuthorKey(author: string): string {
+  return String(author || "")
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+}
+
+function isSenyoAuthor(author: string): boolean {
+  return normalizeAuthorKey(author) === "senyoktsedze";
+}
+
+const DEFAULT_SENYO_BIO =
+  "A data science professional with expertise in analytics, machine learning, and business intelligence. Passionate about turning complex data into actionable insights to help organizations make data-driven decisions.";
+
 const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = null }) => {
   const { user, session } = useAuth();
   const [likes, setLikes] = useState<number>(Number(post.likeCount || 0));
@@ -103,6 +117,12 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
   }, [post.likeCount, post.userLiked, post.slug]);
 
   const headings = useMemo(() => extractHeadings(post.content), [post.content]);
+  const resolvedAuthorBio = useMemo(() => {
+    const explicitBio = String(post.authorBio || "").trim();
+    if (explicitBio) return explicitBio;
+    if (isSenyoAuthor(post.author)) return DEFAULT_SENYO_BIO;
+    return "";
+  }, [post.author, post.authorBio]);
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("en-US", {
@@ -351,10 +371,8 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
                 <h3>About the Author</h3>
                 <p>
                   <strong>{post.author}</strong>
-                  {post.qualification && <> &mdash; {post.qualification}</>}.{' '}
-                  A data science professional with expertise in analytics,
-                  machine learning, and business intelligence. Passionate about turning complex data into
-                  actionable insights to help organizations make data-driven decisions.
+                  {post.qualification && <> - {post.qualification}</>}
+                  {resolvedAuthorBio ? <>. {resolvedAuthorBio}</> : "."}
                 </p>
               </div>
             </div>

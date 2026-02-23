@@ -50,6 +50,7 @@ import { SchemaDetectionResult, TimeSeriesResult, DateTableInfo } from '@/lib/ty
 import { autoDetectTimeSeries, detectDateColumns } from '@/lib/timeSeriesEngine';
 import { autoAdvancedAnalysis } from '@/lib/advancedStatistics';
 import { generateEnhancedKPIs } from '@/lib/kpiFormulaEngine';
+import { assertExcelBufferIsSafe, assertWorkbookHasNoMacros } from '@/lib/excelSecurity';
 import {
   isDatasetTooLarge,
   getPerformanceWarning,
@@ -178,7 +179,7 @@ const FunctionalDataUpload: React.FC = () => {
   const showPaymentServiceUnavailableToast = () => {
     const target = getPaymentApiOrigin();
     toast.error(
-      `Payment service is unreachable (${target}). Start backend on port 3001 or set VITE_BACKEND_URL to your live API.`
+      `Payment service is unreachable (${target}). Ensure one backend instance is running on the configured port and set VITE_BACKEND_URL to that API.`
     );
   };
 
@@ -497,104 +498,82 @@ const FunctionalDataUpload: React.FC = () => {
   };
 
   // Excel Parser Function - Returns data from first sheet (for backward compatibility)
-  const parseExcel = (file: File): Promise<any[]> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const data = new Uint8Array(e.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: 'array' });
-          
-          // Get the first worksheet
-          const firstSheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[firstSheetName];
-          
-          // Convert to JSON
-          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-          
-          if (jsonData.length === 0) {
-            resolve([]);
-            return;
-          }
-          
-          // Convert to object format
-          const headers = jsonData[0] as string[];
-          const rows = jsonData.slice(1) as any[][];
-          
-          const result = rows.map(row => {
-            const obj: any = {};
-            headers.forEach((header, index) => {
-              obj[header] = row[index] || '';
-            });
-            return obj;
-          });
-          
-          resolve(result);
-        } catch (error) {
-          reject(error);
-        }
-      };
-      reader.onerror = () => reject(new Error('Failed to read Excel file'));
-      reader.readAsArrayBuffer(file);
+  const parseExcel = async (file: File): Promise<any[]> => {
+    const buffer = await file.arrayBuffer();
+    assertExcelBufferIsSafe(file.name, buffer);
+    const workbook = XLSX.read(buffer, { type: 'array', bookVBA: true });
+    assertWorkbookHasNoMacros(file.name, workbook);
+
+    // Get the first worksheet
+    const firstSheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[firstSheetName];
+
+    // Convert to JSON
+    const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+    if (jsonData.length === 0) {
+      return [];
+    }
+
+    // Convert to object format
+    const headers = jsonData[0] as string[];
+    const rows = jsonData.slice(1) as any[][];
+
+    return rows.map(row => {
+      const obj: any = {};
+      headers.forEach((header, index) => {
+        obj[header] = row[index] || '';
+      });
+      return obj;
     });
   };
 
   // Excel Parser Function - Returns all sheets as separate datasets
-  const parseExcelAllSheets = (file: File): Promise<Array<{ sheetName: string; data: any[] }>> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const data = new Uint8Array(e.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: 'array' });
-          
-          const allSheets: Array<{ sheetName: string; data: any[] }> = [];
-          
-          // Process each sheet
-          workbook.SheetNames.forEach(sheetName => {
-            const worksheet = workbook.Sheets[sheetName];
-            
-            // Convert to JSON
-            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-            
-            if (jsonData.length === 0) {
-              // Empty sheet - skip it
-              return;
-            }
-            
-            // Convert to object format
-            const headers = jsonData[0] as string[];
-            const rows = jsonData.slice(1) as any[][];
-            
-            const result = rows.map(row => {
-              const obj: any = {};
-              headers.forEach((header, index) => {
-                obj[header] = row[index] || '';
-              });
-              return obj;
-            });
-            
-            if (result.length > 0) {
-              allSheets.push({
-                sheetName: sheetName,
-                data: result
-              });
-            }
-          });
-          
-          if (allSheets.length === 0) {
-            reject(new Error('Excel file contains no data in any sheet'));
-            return;
-          }
-          
-          resolve(allSheets);
-        } catch (error) {
-          reject(error);
-        }
-      };
-      reader.onerror = () => reject(new Error('Failed to read Excel file'));
-      reader.readAsArrayBuffer(file);
+  const parseExcelAllSheets = async (file: File): Promise<Array<{ sheetName: string; data: any[] }>> => {
+    const buffer = await file.arrayBuffer();
+    assertExcelBufferIsSafe(file.name, buffer);
+    const workbook = XLSX.read(buffer, { type: 'array', bookVBA: true });
+    assertWorkbookHasNoMacros(file.name, workbook);
+
+    const allSheets: Array<{ sheetName: string; data: any[] }> = [];
+
+    // Process each sheet
+    workbook.SheetNames.forEach(sheetName => {
+      const worksheet = workbook.Sheets[sheetName];
+
+      // Convert to JSON
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+      if (jsonData.length === 0) {
+        // Empty sheet - skip it
+        return;
+      }
+
+      // Convert to object format
+      const headers = jsonData[0] as string[];
+      const rows = jsonData.slice(1) as any[][];
+
+      const result = rows.map(row => {
+        const obj: any = {};
+        headers.forEach((header, index) => {
+          obj[header] = row[index] || '';
+        });
+        return obj;
+      });
+
+      if (result.length > 0) {
+        allSheets.push({
+          sheetName: sheetName,
+          data: result
+        });
+      }
     });
+
+    if (allSheets.length === 0) {
+      throw new Error('Excel file contains no data in any sheet');
+    }
+
+    return allSheets;
   };
 
   // JSON Parser Function

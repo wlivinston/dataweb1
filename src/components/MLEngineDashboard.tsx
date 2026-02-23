@@ -30,6 +30,7 @@ import type {
   ModelComparisonResult, ModelResult, PredictionResult,
   PreprocessingStrategy, ScalingMethod,
 } from '@/lib/mlEngine';
+import { assertExcelBufferIsSafe, assertWorkbookHasNoMacros } from '@/lib/excelSecurity';
 import { toast } from 'sonner';
 
 // ============================================================
@@ -86,14 +87,6 @@ const readFileAsText = (file: File): Promise<string> =>
     r.readAsText(file);
   });
 
-const readFileAsBinary = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = e => resolve(e.target?.result as string);
-    r.onerror = reject;
-    r.readAsBinaryString(file);
-  });
-
 const parseFileToDataset = async (file: File): Promise<Dataset> => {
   let rows: Record<string, unknown>[] = [];
 
@@ -110,11 +103,13 @@ const parseFileToDataset = async (file: File): Promise<Dataset> => {
     });
   } else {
     // Lazy-load the heavy XLSX library only when an Excel file is uploaded
-    const [binaryData, XLSX] = await Promise.all([
-      readFileAsBinary(file),
+    const [buffer, XLSX] = await Promise.all([
+      file.arrayBuffer(),
       import('xlsx'),
     ]);
-    const wb = XLSX.read(binaryData, { type: 'binary' });
+    assertExcelBufferIsSafe(file.name, buffer);
+    const wb = XLSX.read(buffer, { type: 'array', bookVBA: true });
+    assertWorkbookHasNoMacros(file.name, wb);
     const ws = wb.Sheets[wb.SheetNames[0]];
     rows = XLSX.utils.sheet_to_json(ws) as Record<string, unknown>[];
   }
