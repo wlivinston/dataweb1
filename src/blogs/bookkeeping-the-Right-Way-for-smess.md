@@ -1,7 +1,7 @@
 ---
 title: "Bookkeeping the Right Way for SMEs: Building Better Accounting, Better Data, and Actionable Insight"
 excerpt: "A practical, step-by-step guide for small and medium-sized businesses to improve bookkeeping, strengthen accounting systems, and turn financial data into actionable business insights."
-date: "2026-02-24"
+date: "2026-02-23"
 category: "Business & Finance"
 author: "Senyo K. Tsedze"
 featured: false

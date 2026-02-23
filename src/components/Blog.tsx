@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { loadPostBySlug, loadPosts, type PostData } from "@/lib/loadPosts";
+import { BLOG_POSTS_CACHE_KEY, loadPostBySlug, loadPosts, type PostData } from "@/lib/loadPosts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -91,6 +91,23 @@ const toDayKey = (value: string): string => {
   ).padStart(2, "0")}`;
 };
 
+const parseBlogDate = (value: string): Date | null => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const dayOnlyMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dayOnlyMatch) {
+    const year = Number(dayOnlyMatch[1]);
+    const month = Number(dayOnlyMatch[2]);
+    const day = Number(dayOnlyMatch[3]);
+    const localDate = new Date(year, month - 1, day);
+    return Number.isNaN(localDate.getTime()) ? null : localDate;
+  }
+
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
 const Blog: React.FC = () => {
   const [posts, setPosts] = useState<PostData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -106,6 +123,16 @@ const Blog: React.FC = () => {
         // session via the server's startup routine, keeping this path fast.
         const mdPosts = await loadPosts();
         if (mounted) setPosts(mdPosts);
+
+        const hasPersistentCache =
+          !import.meta.env.DEV &&
+          typeof window !== "undefined" &&
+          window.localStorage.getItem(BLOG_POSTS_CACHE_KEY) !== null;
+
+        if (hasPersistentCache) {
+          const freshPosts = await loadPosts({ forceRefresh: true });
+          if (mounted) setPosts(freshPosts);
+        }
       } catch (e) {
         console.error("Failed to load markdown posts:", e);
       } finally {
@@ -151,7 +178,9 @@ const Blog: React.FC = () => {
   );
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString("en-US", {
+    const parsed = parseBlogDate(dateString);
+    if (!parsed) return dateString;
+    return parsed.toLocaleDateString("en-US", {
       year: "numeric",
       month: "long",
       day: "numeric",

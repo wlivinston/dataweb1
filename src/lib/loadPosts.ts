@@ -317,6 +317,7 @@ function toPostData(path: string, rawMd: string): PostData {
 // localStorage cache
 const LS_KEY = "dataafrik_blog_posts_v2";
 const LS_TTL = 24 * 60 * 60 * 1000; // 24 hours in ms
+export const BLOG_POSTS_CACHE_KEY = LS_KEY;
 
 interface CacheEntry {
   posts: PostData[];
@@ -351,12 +352,14 @@ function writeCache(posts: PostData[]): void {
 let memCached: PostData[] | null = null;
 
 // PRIMARY loader - Markdown is source of truth (path relative to this file: src/lib -> src/blogs)
-export async function loadPosts(): Promise<PostData[]> {
+export async function loadPosts(options?: { forceRefresh?: boolean }): Promise<PostData[]> {
+  const forceRefresh = Boolean(options?.forceRefresh);
+
   // 1. Return in-memory cache immediately (fastest - no parsing, no I/O)
-  if (memCached && !import.meta.env.DEV) return memCached;
+  if (!forceRefresh && memCached && !import.meta.env.DEV) return memCached;
 
   // 2. Return localStorage cache (survives page refresh, still instant)
-  if (!import.meta.env.DEV) {
+  if (!forceRefresh && !import.meta.env.DEV) {
     const lsCached = readCache();
     if (lsCached) {
       memCached = lsCached;

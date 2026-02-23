@@ -98,6 +98,23 @@ function isSenyoAuthor(author: string): boolean {
 const DEFAULT_SENYO_BIO =
   "A data science professional with expertise in analytics, machine learning, and business intelligence. Passionate about turning complex data into actionable insights to help organizations make data-driven decisions.";
 
+const parseBlogDate = (value: string): Date | null => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const dayOnlyMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dayOnlyMatch) {
+    const year = Number(dayOnlyMatch[1]);
+    const month = Number(dayOnlyMatch[2]);
+    const day = Number(dayOnlyMatch[3]);
+    const localDate = new Date(year, month - 1, day);
+    return Number.isNaN(localDate.getTime()) ? null : localDate;
+  }
+
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
 const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = null }) => {
   const { user, session } = useAuth();
   const [likes, setLikes] = useState<number>(Number(post.likeCount || 0));
@@ -125,7 +142,9 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
   }, [post.author, post.authorBio]);
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString("en-US", {
+    const parsed = parseBlogDate(dateString);
+    if (!parsed) return dateString;
+    return parsed.toLocaleDateString("en-US", {
       year: "numeric",
       month: "long",
       day: "numeric",
