@@ -42,6 +42,20 @@ const Login: React.FC = () => {
     return value;
   };
 
+  const withTimeout = async <T,>(operation: Promise<T>, timeoutMs = 15000): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('AUTH_TIMEOUT')), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   const validateCredentials = (
     currentEmail: string,
     currentPassword: string,
@@ -112,22 +126,26 @@ const Login: React.FC = () => {
     try {
       const authResult =
         authMode === 'signin'
-          ? await supabase.auth.signInWithPassword({
-              email: trimmedEmail,
-              password,
-            })
-          : await supabase.auth.signUp({
-              email: trimmedEmail,
-              password,
-              options: {
-                data: {
-                  first_name: firstName.trim(),
-                  last_name: lastName.trim(),
-                  age: Number(age),
-                  registration_country: registrationCountry.trim(),
+          ? await withTimeout(
+              supabase.auth.signInWithPassword({
+                email: trimmedEmail,
+                password,
+              })
+            )
+          : await withTimeout(
+              supabase.auth.signUp({
+                email: trimmedEmail,
+                password,
+                options: {
+                  data: {
+                    first_name: firstName.trim(),
+                    last_name: lastName.trim(),
+                    age: Number(age),
+                    registration_country: registrationCountry.trim(),
+                  },
                 },
-              },
-            });
+              })
+            );
 
       const { error } = authResult;
 
@@ -145,8 +163,17 @@ const Login: React.FC = () => {
         setMessage('Account created. Check your email for the confirmation link.');
         setAuthMode('signin');
       }
-    } catch {
-      setError('An unexpected error occurred');
+    } catch (caughtError) {
+      const errorMessage =
+        caughtError instanceof Error ? caughtError.message : 'An unexpected error occurred';
+
+      if (errorMessage === 'AUTH_TIMEOUT') {
+        setError('Sign-in timed out. Please check your network or Supabase settings and try again.');
+      } else if (/fetch|network|failed to fetch/i.test(errorMessage)) {
+        setError('Unable to reach authentication service. Please try again shortly.');
+      } else {
+        setError('An unexpected error occurred');
+      }
     } finally {
       setLoading(false);
     }
