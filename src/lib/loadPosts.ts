@@ -12,6 +12,9 @@ export interface PostData {
   content: string;
   author: string;
   qualification?: string;
+  coverImage?: string;
+  coverImageFit?: "cover" | "contain";
+  coverImagePosition?: "center" | "top" | "bottom";
 }
 
 function normalizeSlug(value: string): string {
@@ -215,6 +218,40 @@ const markdownPathBySlugKey = (() => {
 function toPostData(path: string, rawMd: string): PostData {
   const slug = slugFromPath(path);
   const { data, content } = parseFrontmatter(rawMd);
+  const coverImage =
+    data.coverImage ??
+    data.cover_image ??
+    data.image ??
+    data.thumbnail ??
+    data.heroImage ??
+    "";
+  const coverImageFitRaw =
+    data.coverImageFit ??
+    data.cover_image_fit ??
+    data.imageFit ??
+    data.coverFit ??
+    "cover";
+  const coverImageFit =
+    String(coverImageFitRaw || "")
+      .trim()
+      .toLowerCase() === "contain"
+      ? "contain"
+      : "cover";
+  const coverImagePositionRaw =
+    data.coverImagePosition ??
+    data.cover_image_position ??
+    data.imagePosition ??
+    data.coverPosition ??
+    "center";
+  const normalizedPosition = String(coverImagePositionRaw || "")
+    .trim()
+    .toLowerCase();
+  const coverImagePosition =
+    normalizedPosition === "top"
+      ? "top"
+      : normalizedPosition === "bottom"
+        ? "bottom"
+        : "center";
 
   return {
     title: data.title ?? slug,
@@ -226,6 +263,9 @@ function toPostData(path: string, rawMd: string): PostData {
     content,
     author: data.author ?? "DataWeb Team",
     qualification: data.qualification,
+    coverImage: String(coverImage || "").trim() || undefined,
+    coverImageFit,
+    coverImagePosition,
     readTime: calculateReadTime(content),
   };
 }

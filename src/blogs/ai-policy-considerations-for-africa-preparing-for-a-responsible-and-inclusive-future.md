@@ -5,6 +5,9 @@ date: "2026-02-18"
 category: "AI Policy"
 author: "Senyo K. Tsedze"
 featured: true
+coverImage: "/images/aiafrica.png"
+coverImageFit: "cover"
+coverImagePosition: "top"
 qualification: "MS Data Science | Power BI | BS MIS"
 ---
 

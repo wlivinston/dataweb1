@@ -175,10 +175,33 @@ const Blog: React.FC = () => {
                   {featuredPosts.map((post, index) => {
                     const gradient = categoryColors[post.category] || "from-gray-100 to-gray-200";
                     const icon = categoryIcons[post.category] || "📝";
+                    const coverImage = post.coverImage?.trim();
+                    const coverImageFit = post.coverImageFit === "contain" ? "contain" : "cover";
+                    const coverImagePositionClass =
+                      post.coverImagePosition === "top"
+                        ? "object-top"
+                        : post.coverImagePosition === "bottom"
+                          ? "object-bottom"
+                          : "object-center";
+                    const coverImageClass =
+                      coverImageFit === "contain"
+                        ? "absolute inset-0 h-full w-full object-contain p-2 bg-white"
+                        : `absolute inset-0 h-full w-full object-cover ${coverImagePositionClass}`;
                     return (
                       <Card key={index} className="hover:shadow-xl transition-all duration-300 border-0 shadow-md overflow-hidden">
-                        <div className={`h-56 bg-gradient-to-br ${gradient} flex items-center justify-center relative`}>
+                        <div className={`h-56 bg-gradient-to-br ${gradient} flex items-center justify-center relative overflow-hidden`}>
                           <div className="text-7xl opacity-30">{icon}</div>
+                          {coverImage && (
+                            <img
+                              src={coverImage}
+                              alt={post.title}
+                              className={coverImageClass}
+                              loading="lazy"
+                              onError={(e) => {
+                                e.currentTarget.style.display = "none";
+                              }}
+                            />
+                          )}
                           <Badge className="absolute top-4 right-4 bg-gradient-to-r from-blue-600 to-purple-600">
                             Featured
                           </Badge>
@@ -229,10 +252,33 @@ const Blog: React.FC = () => {
               {regularPosts.map((post, index) => {
                 const gradient = categoryColors[post.category] || "from-gray-100 to-gray-200";
                 const icon = categoryIcons[post.category] || "📝";
+                const coverImage = post.coverImage?.trim();
+                const coverImageFit = post.coverImageFit === "contain" ? "contain" : "cover";
+                const coverImagePositionClass =
+                  post.coverImagePosition === "top"
+                    ? "object-top"
+                    : post.coverImagePosition === "bottom"
+                      ? "object-bottom"
+                      : "object-center";
+                const coverImageClass =
+                  coverImageFit === "contain"
+                    ? "absolute inset-0 h-full w-full object-contain p-2 bg-white"
+                    : `absolute inset-0 h-full w-full object-cover ${coverImagePositionClass}`;
                 return (
                   <Card key={index} className="hover:shadow-lg transition-all duration-300 border-0 shadow-md overflow-hidden">
-                    <div className={`h-40 bg-gradient-to-br ${gradient} flex items-center justify-center`}>
+                    <div className={`h-40 bg-gradient-to-br ${gradient} flex items-center justify-center relative overflow-hidden`}>
                       <div className="text-5xl opacity-30">{icon}</div>
+                      {coverImage && (
+                        <img
+                          src={coverImage}
+                          alt={post.title}
+                          className={coverImageClass}
+                          loading="lazy"
+                          onError={(e) => {
+                            e.currentTarget.style.display = "none";
+                          }}
+                        />
+                      )}
                     </div>
                     <CardHeader>
                       <Badge variant="secondary" className="w-fit text-xs mb-2">
