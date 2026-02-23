@@ -1,5 +1,5 @@
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:wght@400;500;600;700;800;900&family=Source+Sans+Pro:wght@300;400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Lora:wght@400;500;600;700&family=Playfair+Display:wght@400;500;600;700;800;900&family=Source+Sans+Pro:wght@300;400;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -126,7 +126,7 @@
 
 .blog-meta {
   @apply flex flex-wrap justify-center items-center gap-4 text-sm text-gray-500 mb-8;
-  font-family: 'Source Sans Pro', sans-serif;
+  font-family: 'Lora', serif;
 }
 
 .blog-author {
@@ -148,7 +148,7 @@
 /* Enhanced Markdown Styling */
 .markdown-preview {
   @apply prose prose-lg max-w-none prose-blue dark:prose-invert;
-  font-family: 'Source Sans Pro', sans-serif;
+  font-family: 'Lora', serif;
   line-height: 1.8;
 }
 
@@ -268,7 +268,7 @@
 
 .markdown-preview .dc-node {
   @apply w-full max-w-xl rounded-2xl border border-slate-200 bg-white px-6 py-4 text-center text-xl font-semibold text-slate-800 shadow-sm;
-  font-family: 'Source Sans Pro', sans-serif;
+  font-family: 'Lora', serif;
 }
 
 .markdown-preview .dc-arrow {
