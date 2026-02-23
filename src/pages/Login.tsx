@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { isSupabaseConfigured, supabase, supabaseConfigError } from '@/lib/supabase';
+import { getApiUrl } from '@/lib/publicConfig';
 import { LogIn, Mail, Lock, AlertCircle, User, MapPin, UserPlus } from 'lucide-react';
 import SeoMeta from '@/components/SeoMeta';
 
@@ -53,6 +54,43 @@ const Login: React.FC = () => {
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+    }
+  };
+
+  const signInViaBackendFallback = async (currentEmail: string, currentPassword: string) => {
+    const response = await fetch(getApiUrl('/api/auth/supabase/sign-in'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: currentEmail,
+        password: currentPassword,
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const fallbackError = typeof payload?.error === 'string' ? payload.error : 'Sign-in failed';
+      throw new Error(fallbackError);
+    }
+
+    const accessToken = typeof payload?.access_token === 'string' ? payload.access_token : '';
+    const refreshToken = typeof payload?.refresh_token === 'string' ? payload.refresh_token : '';
+    if (!accessToken || !refreshToken) {
+      throw new Error('Missing session tokens from authentication fallback');
+    }
+
+    const { error } = await withTimeout(
+      supabase!.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      }),
+      15000
+    );
+
+    if (error) {
+      throw new Error(error.message || 'Failed to apply fallback session');
     }
   };
 
@@ -124,34 +162,38 @@ const Login: React.FC = () => {
     const trimmedEmail = email.trim();
 
     try {
-      const authResult =
-        authMode === 'signin'
-          ? await withTimeout(
-              supabase.auth.signInWithPassword({
-                email: trimmedEmail,
-                password,
-              })
-            )
-          : await withTimeout(
-              supabase.auth.signUp({
-                email: trimmedEmail,
-                password,
-                options: {
-                  data: {
-                    first_name: firstName.trim(),
-                    last_name: lastName.trim(),
-                    age: Number(age),
-                    registration_country: registrationCountry.trim(),
-                  },
-                },
-              })
-            );
+      if (authMode === 'signin') {
+        const authResult = await withTimeout(
+          supabase.auth.signInWithPassword({
+            email: trimmedEmail,
+            password,
+          })
+        );
 
-      const { error } = authResult;
+        if (authResult.error) {
+          setError(normalizeAuthError(authResult.error.message));
+          return;
+        }
+      } else {
+        const authResult = await withTimeout(
+          supabase.auth.signUp({
+            email: trimmedEmail,
+            password,
+            options: {
+              data: {
+                first_name: firstName.trim(),
+                last_name: lastName.trim(),
+                age: Number(age),
+                registration_country: registrationCountry.trim(),
+              },
+            },
+          })
+        );
 
-      if (error) {
-        setError(normalizeAuthError(error.message));
-        return;
+        if (authResult.error) {
+          setError(normalizeAuthError(authResult.error.message));
+          return;
+        }
       }
 
       if (authMode === 'signin') {
@@ -167,12 +209,28 @@ const Login: React.FC = () => {
       const errorMessage =
         caughtError instanceof Error ? caughtError.message : 'An unexpected error occurred';
 
+      if (errorMessage === 'AUTH_TIMEOUT' && authMode === 'signin') {
+        try {
+          await signInViaBackendFallback(trimmedEmail, password);
+          setMessage('Login successful! Redirecting...');
+          setTimeout(() => {
+            navigate(redirectTarget);
+          }, 1000);
+          return;
+        } catch (fallbackError) {
+          const fallbackMessage =
+            fallbackError instanceof Error ? fallbackError.message : 'Authentication fallback failed';
+          setError(normalizeAuthError(fallbackMessage));
+          return;
+        }
+      }
+
       if (errorMessage === 'AUTH_TIMEOUT') {
         setError('Sign-in timed out. Please check your network or Supabase settings and try again.');
       } else if (/fetch|network|failed to fetch/i.test(errorMessage)) {
         setError('Unable to reach authentication service. Please try again shortly.');
       } else {
-        setError('An unexpected error occurred');
+        setError(normalizeAuthError(errorMessage));
       }
     } finally {
       setLoading(false);

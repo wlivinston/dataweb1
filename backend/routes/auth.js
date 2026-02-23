@@ -4,9 +4,56 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
 const { query } = require('../config/database');
+const { supabaseAnon, hasAnonKey } = require('../config/supabase');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/emailService');
 
 const router = express.Router();
+
+// Supabase auth passthrough for environments where browser -> Supabase connectivity is unreliable.
+// Frontend can use this as a fallback and then hydrate local Supabase session with returned tokens.
+router.post('/supabase/sign-in', [
+  body('email').isEmail().normalizeEmail(),
+  body('password').notEmpty()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    if (!hasAnonKey || !supabaseAnon) {
+      return res.status(503).json({ error: 'Supabase auth backend is not configured' });
+    }
+
+    const { email, password } = req.body;
+
+    const { data, error } = await supabaseAnon.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      const statusCode = Number.isInteger(error.status) ? error.status : 401;
+      return res.status(statusCode).json({ error: error.message || 'Invalid credentials' });
+    }
+
+    if (!data?.session || !data?.user) {
+      return res.status(401).json({ error: 'Unable to establish session' });
+    }
+
+    return res.json({
+      access_token: data.session.access_token,
+      refresh_token: data.session.refresh_token,
+      expires_at: data.session.expires_at,
+      expires_in: data.session.expires_in,
+      token_type: data.session.token_type,
+      user: data.user,
+    });
+  } catch (error) {
+    console.error('Supabase fallback sign-in error:', error);
+    return res.status(500).json({ error: 'Authentication fallback failed' });
+  }
+});
 
 // Register new user
 router.post('/register', [
