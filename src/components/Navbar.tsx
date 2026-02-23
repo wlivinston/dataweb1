@@ -119,7 +119,7 @@ const Navbar: React.FC<NavbarProps> = ({
               )
             )}
 
-            {loading ? null : user ? (
+            {user ? (
               <div className="flex items-center ml-4 space-x-2">
                 <div className="w-8 h-8 bg-green-600 rounded-full flex items-center justify-center text-white text-sm font-semibold">
                   {user.email?.charAt(0).toUpperCase()}
@@ -135,7 +135,12 @@ const Navbar: React.FC<NavbarProps> = ({
               </div>
             ) : (
               <Link to="/login">
-                <Button variant="default" size="sm" className="ml-4 bg-green-600 hover:bg-green-700">
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="ml-4 bg-green-600 hover:bg-green-700"
+                  aria-busy={loading ? 'true' : 'false'}
+                >
                   <LogIn className="h-4 w-4 mr-2" />
                   Sign In
                 </Button>
@@ -191,7 +196,7 @@ const Navbar: React.FC<NavbarProps> = ({
             )}
 
             <div className="pt-2 border-t border-amber-200 mt-2">
-            {loading ? null : user ? (
+            {user ? (
                 <div className="flex items-center justify-between px-3 py-2">
                   <div className="flex items-center space-x-2">
                     <div className="w-8 h-8 bg-green-600 rounded-full flex items-center justify-center text-white text-sm font-semibold">
@@ -208,6 +213,7 @@ const Navbar: React.FC<NavbarProps> = ({
                   to="/login"
                   onClick={() => setMobileMenuOpen(false)}
                   className="block w-full text-left px-3 py-2 rounded-md text-base font-medium text-green-700 hover:bg-green-100"
+                  aria-busy={loading ? 'true' : 'false'}
                 >
                   <LogIn className="h-4 w-4 inline mr-2" />
                   Sign In

@@ -125,6 +125,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     let isMounted = true
+    const forceStopLoadingTimer = window.setTimeout(() => {
+      if (!isMounted) return
+      setAuthState((prev) => (prev.loading ? { ...prev, loading: false } : prev))
+    }, 7000)
 
     const getInitialSession = async () => {
       try {
@@ -167,6 +171,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => {
       isMounted = false
+      window.clearTimeout(forceStopLoadingTimer)
       subscription.unsubscribe()
     }
   }, [])
