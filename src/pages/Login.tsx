@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { isSupabaseConfigured, supabase, supabaseConfigError } from '@/lib/supabase';
 import { getApiUrl } from '@/lib/publicConfig';
+import { saveFallbackAuth } from '@/lib/fallbackAuth';
 import { LogIn, Mail, Lock, AlertCircle, User, MapPin, UserPlus } from 'lucide-react';
 import SeoMeta from '@/components/SeoMeta';
 
@@ -34,6 +35,9 @@ const Login: React.FC = () => {
   }, []);
 
   const normalizeAuthError = (value: string) => {
+    if (value === 'AUTH_TIMEOUT') {
+      return 'Authentication timed out. Please check connectivity and try again.';
+    }
     if (/anonymous sign-ins are disabled/i.test(value)) {
       return 'Please enter a valid email and password before continuing.';
     }
@@ -58,16 +62,19 @@ const Login: React.FC = () => {
   };
 
   const signInViaBackendFallback = async (currentEmail: string, currentPassword: string) => {
-    const response = await fetch(getApiUrl('/api/auth/supabase/sign-in'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        email: currentEmail,
-        password: currentPassword,
+    const response = await withTimeout(
+      fetch(getApiUrl('/api/auth/supabase/sign-in'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: currentEmail,
+          password: currentPassword,
+        }),
       }),
-    });
+      15000
+    );
 
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -81,17 +88,29 @@ const Login: React.FC = () => {
       throw new Error('Missing session tokens from authentication fallback');
     }
 
-    const { error } = await withTimeout(
-      supabase!.auth.setSession({
-        access_token: accessToken,
-        refresh_token: refreshToken,
-      }),
-      15000
-    );
+    try {
+      const { error } = await withTimeout(
+        supabase!.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        }),
+        8000
+      );
 
-    if (error) {
-      throw new Error(error.message || 'Failed to apply fallback session');
+      if (!error) return;
+    } catch {
+      // Direct browser-to-Supabase auth path is unreliable in this environment.
+      // Fall through to local fallback token persistence below.
     }
+
+    saveFallbackAuth({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      token_type: typeof payload?.token_type === 'string' ? payload.token_type : 'bearer',
+      expires_at: typeof payload?.expires_at === 'number' ? payload.expires_at : undefined,
+      expires_in: typeof payload?.expires_in === 'number' ? payload.expires_in : undefined,
+      user: payload?.user && typeof payload.user === 'object' ? payload.user : null,
+    });
   };
 
   const validateCredentials = (

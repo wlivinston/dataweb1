@@ -8,6 +8,11 @@ import React, {
 } from 'react'
 import { Session, User } from '@supabase/supabase-js'
 import { isSupabaseConfigured, supabase, supabaseConfigError } from '@/lib/supabase'
+import {
+  FALLBACK_AUTH_CHANGED_EVENT,
+  clearFallbackAuth,
+  readFallbackAuthState,
+} from '@/lib/fallbackAuth'
 
 interface AuthState {
   user: User | null
@@ -108,20 +113,86 @@ const createOrUpdateCustomer = async (user: User) => {
 }
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const initialFallbackAuth = readFallbackAuthState()
   const [authState, setAuthState] = useState<AuthState>({
-    user: null,
-    session: null,
+    user: initialFallbackAuth?.user ?? null,
+    session: initialFallbackAuth?.session ?? null,
     loading: isSupabaseConfigured
   })
 
   useEffect(() => {
+    const applyFallbackAuth = () => {
+      const fallback = readFallbackAuthState()
+      if (!fallback) return false
+
+      setAuthState({
+        user: fallback.user,
+        session: fallback.session,
+        loading: false
+      })
+      return true
+    }
+
+    const onFallbackChanged = () => {
+      const fallback = readFallbackAuthState()
+      if (!fallback) {
+        if (!supabase) {
+          setAuthState({
+            user: null,
+            session: null,
+            loading: false
+          })
+          return
+        }
+
+        void supabase.auth.getSession()
+          .then(({ data: { session } }) => {
+            setAuthState({
+              user: session?.user ?? null,
+              session: session ?? null,
+              loading: false
+            })
+          })
+          .catch(() => {
+            setAuthState({
+              user: null,
+              session: null,
+              loading: false
+            })
+          })
+        return
+      }
+
+      setAuthState({
+        user: fallback.user,
+        session: fallback.session,
+        loading: false
+      })
+    }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener(FALLBACK_AUTH_CHANGED_EVENT, onFallbackChanged)
+    }
+
     if (!supabase) {
+      if (applyFallbackAuth()) {
+        return () => {
+          if (typeof window !== 'undefined') {
+            window.removeEventListener(FALLBACK_AUTH_CHANGED_EVENT, onFallbackChanged)
+          }
+        }
+      }
+
       setAuthState({
         user: null,
         session: null,
         loading: false
       })
-      return
+      return () => {
+        if (typeof window !== 'undefined') {
+          window.removeEventListener(FALLBACK_AUTH_CHANGED_EVENT, onFallbackChanged)
+        }
+      }
     }
 
     let isMounted = true
@@ -135,6 +206,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const { data: { session } } = await supabase.auth.getSession()
         if (!isMounted) return
 
+        if (session?.user) {
+          clearFallbackAuth()
+        }
+
+        if (!session && applyFallbackAuth()) {
+          return
+        }
+
         setAuthState({
           user: session?.user ?? null,
           session,
@@ -143,6 +222,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } catch (error) {
         console.error('Error loading auth session:', error)
         if (!isMounted) return
+
+        if (applyFallbackAuth()) return
+
         setAuthState({
           user: null,
           session: null,
@@ -163,6 +245,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           loading: false
         })
 
+        if (session?.user) {
+          clearFallbackAuth()
+        } else {
+          applyFallbackAuth()
+        }
+
         if (event === 'SIGNED_IN' && session?.user) {
           await createOrUpdateCustomer(session.user)
         }
@@ -173,6 +261,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isMounted = false
       window.clearTimeout(forceStopLoadingTimer)
       subscription.unsubscribe()
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(FALLBACK_AUTH_CHANGED_EVENT, onFallbackChanged)
+      }
     }
   }, [])
 
@@ -220,8 +311,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [])
 
   const signOut = useCallback(async () => {
+    clearFallbackAuth()
+    setAuthState({
+      user: null,
+      session: null,
+      loading: false
+    })
+
     if (!supabase) {
-      return { error: missingConfigError() }
+      return { error: null }
     }
 
     try {
@@ -230,7 +328,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { error: null }
     } catch (error) {
       console.error('Sign out error:', error)
-      return { error }
+      // Keep local sign-out state even if remote sign-out fails.
+      return { error: null }
     }
   }, [])
 
