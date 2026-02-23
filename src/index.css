@@ -630,6 +630,37 @@
   line-height: 1.45;
 }
 
+/* SME bookkeeping insight flow */
+.markdown-preview .insight-flow {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  margin: 16px 0 24px;
+  flex-wrap: wrap;
+}
+
+.markdown-preview .insight-box {
+  position: relative;
+  flex: 1 1 200px;
+  min-height: 92px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 14px;
+  padding: 14px;
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.12), rgba(59, 130, 246, 0.1));
+  color: rgb(15 23 42);
+}
+
+.markdown-preview .insight-title {
+  font-weight: 900;
+  margin-bottom: 6px;
+}
+
+.markdown-preview .insight-desc {
+  color: rgba(15, 23, 42, 0.72);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
 /* Responsive typography */
 @media (max-width: 768px) {
   .blog-title {
@@ -664,6 +695,10 @@
     padding: 0;
     margin: -2px 0;
     transform: rotate(90deg);
+  }
+
+  .markdown-preview .insight-box {
+    flex-basis: 100%;
   }
 }
 
