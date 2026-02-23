@@ -20,9 +20,42 @@ const { hasServiceKey } = require('./config/supabase');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const parsePositiveInt = (value, fallback, min = 1, max = Number.MAX_SAFE_INTEGER) => {
+  const parsed = Number.parseInt(String(value ?? '').trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < min) return fallback;
+  return Math.min(parsed, max);
+};
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const IS_PROD = NODE_ENV === 'production';
+const DEFAULT_REQUEST_TIMEOUT_MS = parsePositiveInt(process.env.REQUEST_TIMEOUT_MS, 20000, 5000, 120000);
+const MAX_CONTENT_LENGTH_BYTES = parsePositiveInt(
+  process.env.MAX_CONTENT_LENGTH_BYTES,
+  1024 * 1024,
+  1024,
+  20 * 1024 * 1024
+);
+const BODY_LIMIT = process.env.BODY_LIMIT || '1mb';
+
+// Ensure req.ip is trustworthy behind load balancers / reverse proxies.
+app.set('trust proxy', parsePositiveInt(process.env.TRUST_PROXY_HOPS, 1, 0, 10));
+app.disable('x-powered-by');
 
 /* -------------------- Security -------------------- */
-app.use(helmet());
+app.use(
+  helmet({
+    hsts: IS_PROD
+      ? {
+          maxAge: 15552000, // 180 days
+          includeSubDomains: true,
+          preload: true,
+        }
+      : false,
+    referrerPolicy: {
+      policy: 'no-referrer',
+    },
+    crossOriginEmbedderPolicy: false,
+  })
+);
 
 /* -------------------- CORS -------------------- */
 // normalize a URL string to its origin (scheme + host + port)
@@ -83,13 +116,80 @@ app.use(
   })
 );
 
+// Block disallowed browser origins for mutating requests even if a client bypasses CORS checks.
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (!origin || allowedOrigins.size === 0) return next();
+  if (allowedOrigins.has(toOrigin(origin))) return next();
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+
+  return res.status(403).json({ error: 'Origin not allowed' });
+});
+
 /* -------------------- Rate limiting -------------------- */
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+const createLimiter = ({ windowMs, max, message }) =>
+  rateLimit({
+    windowMs,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message,
+  });
+
+const writeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const applyLimiterToMethods = (methods, limiter) => (req, res, next) => {
+  if (!methods.has(req.method)) return next();
+  return limiter(req, res, next);
+};
+
+const apiLimiter = createLimiter({
+  windowMs: parsePositiveInt(process.env.RATE_LIMIT_API_WINDOW_MS, 15 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
+  max: parsePositiveInt(process.env.RATE_LIMIT_API_MAX, 120, 20, 20000),
   message: 'Too many requests from this IP, please try again later.',
 });
-app.use('/api/', limiter);
+app.use('/api/', apiLimiter);
+
+const authLimiter = createLimiter({
+  windowMs: parsePositiveInt(process.env.RATE_LIMIT_AUTH_WINDOW_MS, 15 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
+  max: parsePositiveInt(process.env.RATE_LIMIT_AUTH_MAX, 30, 5, 1000),
+  message: 'Too many authentication attempts. Please try again later.',
+});
+app.use('/api/auth', authLimiter);
+
+const commentsWriteLimiter = createLimiter({
+  windowMs: parsePositiveInt(process.env.RATE_LIMIT_COMMENTS_WINDOW_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
+  max: parsePositiveInt(process.env.RATE_LIMIT_COMMENTS_WRITE_MAX, 40, 5, 2000),
+  message: 'Comment actions are temporarily limited. Please try again shortly.',
+});
+app.use('/api/comments', applyLimiterToMethods(writeMethods, commentsWriteLimiter));
+
+const blogWriteLimiter = createLimiter({
+  windowMs: parsePositiveInt(process.env.RATE_LIMIT_BLOG_WRITE_WINDOW_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
+  max: parsePositiveInt(process.env.RATE_LIMIT_BLOG_WRITE_MAX, 60, 5, 5000),
+  message: 'Blog write actions are temporarily limited. Please try again shortly.',
+});
+app.use('/api/blog', applyLimiterToMethods(writeMethods, blogWriteLimiter));
+
+const reportRequestLimiter = createLimiter({
+  windowMs: parsePositiveInt(process.env.RATE_LIMIT_REPORTS_WINDOW_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
+  max: parsePositiveInt(process.env.RATE_LIMIT_REPORTS_MAX, 10, 1, 500),
+  message: 'Too many report requests. Please try again later.',
+});
+app.use('/api/reports/request', reportRequestLimiter);
+
+const checkoutLimiter = createLimiter({
+  windowMs: parsePositiveInt(process.env.RATE_LIMIT_CHECKOUT_WINDOW_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
+  max: parsePositiveInt(process.env.RATE_LIMIT_CHECKOUT_MAX, 15, 1, 500),
+  message: 'Checkout attempts are temporarily limited. Please try again shortly.',
+});
+app.use('/api/subscriptions/pdf-checkout', checkoutLimiter);
+
+const newsletterLimiter = createLimiter({
+  windowMs: parsePositiveInt(process.env.RATE_LIMIT_NEWSLETTER_WINDOW_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
+  max: parsePositiveInt(process.env.RATE_LIMIT_NEWSLETTER_MAX, 20, 1, 1000),
+  message: 'Too many newsletter attempts. Please try again later.',
+});
+app.use('/api/subscriptions/newsletter', newsletterLimiter);
 
 /* -------------------- Parsers -------------------- */
 const isWebhookRequest = (req) =>
@@ -97,13 +197,30 @@ const isWebhookRequest = (req) =>
   req.path.startsWith('/api/subscriptions/webhooks/paystack');
 
 app.use((req, res, next) => {
-  if (isWebhookRequest(req)) return next();
-  return express.json({ limit: '10mb' })(req, res, next);
+  const contentLength = Number.parseInt(String(req.headers['content-length'] || ''), 10);
+  if (Number.isFinite(contentLength) && contentLength > MAX_CONTENT_LENGTH_BYTES) {
+    return res.status(413).json({ error: 'Payload too large' });
+  }
+  return next();
 });
 
 app.use((req, res, next) => {
   if (isWebhookRequest(req)) return next();
-  return express.urlencoded({ extended: true })(req, res, next);
+  return express.json({ limit: BODY_LIMIT })(req, res, next);
+});
+
+app.use((req, res, next) => {
+  if (isWebhookRequest(req)) return next();
+  return express.urlencoded({ extended: true, limit: BODY_LIMIT, parameterLimit: 1000 })(req, res, next);
+});
+
+app.use((req, res, next) => {
+  req.setTimeout(DEFAULT_REQUEST_TIMEOUT_MS);
+  res.setTimeout(DEFAULT_REQUEST_TIMEOUT_MS, () => {
+    if (res.headersSent) return;
+    res.status(408).json({ error: 'Request timeout' });
+  });
+  return next();
 });
 
 /* -------------------- Health -------------------- */
@@ -111,7 +228,7 @@ app.get('/health', (_req, res) => {
   res.status(200).json({
     status: 'OK',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
+    environment: NODE_ENV,
     // use the safe flag from supabase.js
     supabase_configured: hasServiceKey,
     message: 'Backend API is running',
@@ -143,11 +260,20 @@ app.use('*', (_req, res) => {
 /* -------------------- Start Server (then optional DB ping) -------------------- */
 const startServer = async () => {
   try {
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📊 Health check: http://localhost:${PORT}/health`);
       console.log(`🔗 API Base URL: http://localhost:${PORT}/api`);
     });
+    server.requestTimeout = DEFAULT_REQUEST_TIMEOUT_MS;
+    server.headersTimeout = DEFAULT_REQUEST_TIMEOUT_MS + 5000;
+    server.keepAliveTimeout = parsePositiveInt(process.env.KEEP_ALIVE_TIMEOUT_MS, 10000, 1000, 30000);
+    server.maxRequestsPerSocket = parsePositiveInt(
+      process.env.MAX_REQUESTS_PER_SOCKET,
+      1000,
+      100,
+      50000
+    );
 
     // Non-blocking DB connectivity check; never crashes the app
     connectDB().catch((err) => {

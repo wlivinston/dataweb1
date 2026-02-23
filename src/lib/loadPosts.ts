@@ -28,6 +28,39 @@ function normalizeSlug(value: string): string {
     .replace(/^-|-$/g, "");
 }
 
+function toDayTimestamp(value: unknown): number {
+  const raw = String(value ?? "").trim();
+  if (!raw) return 0;
+
+  const isoDayMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoDayMatch) {
+    const year = Number(isoDayMatch[1]);
+    const month = Number(isoDayMatch[2]);
+    const day = Number(isoDayMatch[3]);
+    const utcDay = Date.UTC(year, month - 1, day);
+    return Number.isNaN(utcDay) ? 0 : utcDay;
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return 0;
+  return Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate());
+}
+
+function comparePostsByDateAndFeatured(
+  a: Pick<PostData, "date" | "featured" | "title" | "slug">,
+  b: Pick<PostData, "date" | "featured" | "title" | "slug">
+): number {
+  const byDateDesc = toDayTimestamp(b.date) - toDayTimestamp(a.date);
+  if (byDateDesc !== 0) return byDateDesc;
+
+  const byFeatured = Number(Boolean(b.featured)) - Number(Boolean(a.featured));
+  if (byFeatured !== 0) return byFeatured;
+
+  const aKey = String(a.title || a.slug || "");
+  const bKey = String(b.title || b.slug || "");
+  return aKey.localeCompare(bKey);
+}
+
 export async function loadPostsFromBackend(): Promise<PostData[]> {
   console.log("LOADING POSTS FROM BACKEND...");
 
@@ -48,10 +81,19 @@ export async function loadPostsFromBackend(): Promise<PostData[]> {
     console.log("Posts loaded:", data);
 
     if (data.posts && data.posts.length > 0) {
-      return data.posts.sort(
-        (a: any, b: any) =>
-          new Date(b.published_at).getTime() - new Date(a.published_at).getTime()
-      );
+      return [...data.posts].sort((a: any, b: any) => {
+        const byDateDesc =
+          toDayTimestamp(b?.published_at ?? b?.date) -
+          toDayTimestamp(a?.published_at ?? a?.date);
+        if (byDateDesc !== 0) return byDateDesc;
+
+        const byFeatured = Number(Boolean(b?.featured)) - Number(Boolean(a?.featured));
+        if (byFeatured !== 0) return byFeatured;
+
+        const aKey = String(a?.title || a?.slug || "");
+        const bKey = String(b?.title || b?.slug || "");
+        return aKey.localeCompare(bKey);
+      });
     }
 
     console.log("No posts from backend, using static posts");
@@ -271,7 +313,7 @@ function toPostData(path: string, rawMd: string): PostData {
 }
 
 // localStorage cache
-const LS_KEY = "dataafrik_blog_posts_v1";
+const LS_KEY = "dataafrik_blog_posts_v2";
 const LS_TTL = 24 * 60 * 60 * 1000; // 24 hours in ms
 
 interface CacheEntry {
@@ -333,7 +375,7 @@ export async function loadPosts(): Promise<PostData[]> {
     .filter(({ path }) => path.includes("blogs") && path.endsWith(".md"))
     .map(({ path, rawMd }) => toPostData(path, rawMd));
 
-  posts.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  posts.sort(comparePostsByDateAndFeatured);
 
   // Store in both caches
   memCached = posts;

@@ -120,8 +120,36 @@ const Blog: React.FC = () => {
     return posts.filter(p => p.category === selectedCategory);
   }, [posts, selectedCategory]);
 
-  const featuredPosts = filteredPosts.filter(p => p.featured);
-  const regularPosts = filteredPosts.filter(p => !p.featured);
+  const toDayKey = (dateValue: string): string => {
+    const raw = String(dateValue || "").trim();
+    if (!raw) return "";
+    const isoDayMatch = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (isoDayMatch) return isoDayMatch[1];
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return "";
+    return parsed.toISOString().slice(0, 10);
+  };
+
+  const latestDayKey = useMemo(
+    () => (filteredPosts.length > 0 ? toDayKey(filteredPosts[0].date) : ""),
+    [filteredPosts]
+  );
+
+  // Promote featured content only for the most recent publication day.
+  const featuredPosts = useMemo(
+    () =>
+      latestDayKey
+        ? filteredPosts.filter((post) => Boolean(post.featured) && toDayKey(post.date) === latestDayKey)
+        : [],
+    [filteredPosts, latestDayKey]
+  );
+
+  const featuredSlugSet = useMemo(() => new Set(featuredPosts.map((post) => post.slug)), [featuredPosts]);
+
+  const regularPosts = useMemo(
+    () => filteredPosts.filter((post) => !featuredSlugSet.has(post.slug)),
+    [filteredPosts, featuredSlugSet]
+  );
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("en-US", {

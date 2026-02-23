@@ -7,6 +7,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AuthProvider } from "@/hooks/useAuth";
 import CookieConsentBanner from "@/components/CookieConsentBanner";
+import RouteScrollToTop from "@/components/RouteScrollToTop";
 
 const queryClient = new QueryClient();
 const Index = lazy(() => import("./pages/Index"));
@@ -37,6 +38,7 @@ const App = () => (
           <Toaster />
           <Sonner />
           <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+            <RouteScrollToTop />
             <Routes>
               <Route path="/" element={withSuspense(<Index />)} />
               <Route path="/analyze" element={withSuspense(<AnalyzePage />)} />
