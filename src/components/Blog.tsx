@@ -83,6 +83,14 @@ const BlogSkeleton: React.FC = () => (
   </div>
 );
 
+const toDayKey = (value: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    date.getUTCDate()
+  ).padStart(2, "0")}`;
+};
+
 const Blog: React.FC = () => {
   const [posts, setPosts] = useState<PostData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -120,27 +128,18 @@ const Blog: React.FC = () => {
     return posts.filter(p => p.category === selectedCategory);
   }, [posts, selectedCategory]);
 
-  const toDayKey = (dateValue: string): string => {
-    const raw = String(dateValue || "").trim();
-    if (!raw) return "";
-    const isoDayMatch = raw.match(/^(\d{4}-\d{2}-\d{2})/);
-    if (isoDayMatch) return isoDayMatch[1];
-    const parsed = new Date(raw);
-    if (Number.isNaN(parsed.getTime())) return "";
-    return parsed.toISOString().slice(0, 10);
-  };
+  // Keep global order latest-first. Only promote featured posts from the latest
+  // publication day, and keep same-day non-featured posts immediately after.
+  const latestDayKey = useMemo(() => {
+    if (filteredPosts.length === 0) return "";
+    return toDayKey(filteredPosts[0].date);
+  }, [filteredPosts]);
 
-  const latestDayKey = useMemo(
-    () => (filteredPosts.length > 0 ? toDayKey(filteredPosts[0].date) : ""),
-    [filteredPosts]
-  );
-
-  // Promote featured content only for the most recent publication day.
   const featuredPosts = useMemo(
     () =>
-      latestDayKey
-        ? filteredPosts.filter((post) => Boolean(post.featured) && toDayKey(post.date) === latestDayKey)
-        : [],
+      filteredPosts.filter(
+        (post) => Boolean(post.featured) && latestDayKey !== "" && toDayKey(post.date) === latestDayKey
+      ),
     [filteredPosts, latestDayKey]
   );
 
@@ -199,7 +198,7 @@ const Blog: React.FC = () => {
             {/* Featured Posts */}
             {featuredPosts.length > 0 && (
               <div className="mb-12">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                   {featuredPosts.map((post, index) => {
                     const gradient = categoryColors[post.category] || "from-gray-100 to-gray-200";
                     const icon = categoryIcons[post.category] || "📝";

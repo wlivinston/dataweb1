@@ -6,6 +6,9 @@ category: "Machine Learning"
 author: "Senyo K. Tsedze"
 featured: true
 qualification: "MS Data Science | Power BI | BS MIS"
+coverImage: "/images/featureeng.png"
+coverImageFit: "cover"
+coverImagePosition: "top"
 ---
 
 # ML 201: Feature Engineering and Model Optimization

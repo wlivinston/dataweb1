@@ -40,6 +40,7 @@ const Navbar: React.FC<NavbarProps> = ({
   const navigate = useNavigate();
   const { user, signOut, loading } = useAuth();
   const isHomePage = location.pathname === '/';
+  const hasLogo = Boolean(PUBLIC_CONFIG.logoUrl);
 
   const [internalMobileMenuOpen, setInternalMobileMenuOpen] = React.useState(false);
   const mobileMenuOpen = controlledMobileMenuOpen ?? internalMobileMenuOpen;
@@ -73,14 +74,18 @@ const Navbar: React.FC<NavbarProps> = ({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
           <Link to="/" className="flex items-center space-x-3" onClick={() => setActiveSection?.('home')}>
-            {PUBLIC_CONFIG.logoUrl && (
-              <img
-                src={PUBLIC_CONFIG.logoUrl}
-                alt={`${PUBLIC_CONFIG.brandName} Logo`}
-                className="h-10 w-auto"
-              />
+            {hasLogo ? (
+              <>
+                <img
+                  src={PUBLIC_CONFIG.logoUrl}
+                  alt={`${PUBLIC_CONFIG.brandName} Logo`}
+                  className="h-10 w-auto object-contain"
+                />
+                <span className="sr-only">{PUBLIC_CONFIG.brandName}</span>
+              </>
+            ) : (
+              <span className="text-2xl font-bold text-green-600">{PUBLIC_CONFIG.brandName}</span>
             )}
-            <span className="text-2xl font-bold text-green-600">{PUBLIC_CONFIG.brandName}</span>
           </Link>
 
           {/* Desktop Menu */}
