@@ -8,6 +8,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { AuthProvider } from "@/hooks/useAuth";
 import CookieConsentBanner from "@/components/CookieConsentBanner";
 import RouteScrollToTop from "@/components/RouteScrollToTop";
+import AccessibilityControls from "@/components/AccessibilityControls";
 
 const queryClient = new QueryClient();
 const Index = lazy(() => import("./pages/Index"));
@@ -23,7 +24,13 @@ const CookiePolicyPage = lazy(() => import("./pages/CookiePolicy"));
 const MLEnginePage = lazy(() => import("./pages/MLEngine"));
 
 const RouteLoader = () => (
-  <div className="min-h-[40vh] flex items-center justify-center text-gray-500">Loading...</div>
+  <div
+    className="min-h-[40vh] flex items-center justify-center text-gray-500"
+    role="status"
+    aria-live="polite"
+  >
+    Loading...
+  </div>
 );
 
 const withSuspense = (node: ReactNode) => (
@@ -38,20 +45,26 @@ const App = () => (
           <Toaster />
           <Sonner />
           <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+            <a href="#main-content" className="skip-link">
+              Skip to main content
+            </a>
             <RouteScrollToTop />
-            <Routes>
-              <Route path="/" element={withSuspense(<Index />)} />
-              <Route path="/analyze" element={withSuspense(<AnalyzePage />)} />
-              <Route path="/blog" element={withSuspense(<BlogPage />)} />
-              <Route path="/blog/:slug" element={withSuspense(<BlogPostPage />)} />
-              <Route path="/pricing" element={withSuspense(<PricingPage />)} />
-              <Route path="/request-report" element={withSuspense(<RequestReportPage />)} />
-              <Route path="/finance" element={withSuspense(<FinancePage />)} />
-              <Route path="/login" element={withSuspense(<Login />)} />
-              <Route path="/cookie-policy" element={withSuspense(<CookiePolicyPage />)} />
-              <Route path="/ml-engine" element={withSuspense(<MLEnginePage />)} />
-              <Route path="*" element={withSuspense(<NotFound />)} />
-            </Routes>
+            <div id="main-content" tabIndex={-1}>
+              <Routes>
+                <Route path="/" element={withSuspense(<Index />)} />
+                <Route path="/analyze" element={withSuspense(<AnalyzePage />)} />
+                <Route path="/blog" element={withSuspense(<BlogPage />)} />
+                <Route path="/blog/:slug" element={withSuspense(<BlogPostPage />)} />
+                <Route path="/pricing" element={withSuspense(<PricingPage />)} />
+                <Route path="/request-report" element={withSuspense(<RequestReportPage />)} />
+                <Route path="/finance" element={withSuspense(<FinancePage />)} />
+                <Route path="/login" element={withSuspense(<Login />)} />
+                <Route path="/cookie-policy" element={withSuspense(<CookiePolicyPage />)} />
+                <Route path="/ml-engine" element={withSuspense(<MLEnginePage />)} />
+                <Route path="*" element={withSuspense(<NotFound />)} />
+              </Routes>
+            </div>
+            <AccessibilityControls />
             <CookieConsentBanner />
           </BrowserRouter>
         </TooltipProvider>

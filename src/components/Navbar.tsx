@@ -79,7 +79,7 @@ const Navbar: React.FC<NavbarProps> = ({
                 <img
                   src={PUBLIC_CONFIG.logoUrl}
                   alt={`${PUBLIC_CONFIG.brandName} Logo`}
-                  className="h-10 w-auto object-contain"
+                  className="h-11 sm:h-12 w-auto object-contain"
                 />
                 <span className="sr-only">{PUBLIC_CONFIG.brandName}</span>
               </>
