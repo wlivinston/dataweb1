@@ -12,6 +12,7 @@ const commentRoutes = require('./routes/comments');
 const blogRoutes = require('./routes/blog');
 const reportRoutes = require('./routes/reports');
 const subscriptionsRoutes = require('./routes/subscriptions');
+const apiV1Routes = require('./api/v1');
 
 // Supabase-based DB helpers (no localhost:5432)
 const { connectDB } = require('./config/database');
@@ -166,6 +167,7 @@ const authLimiter = createLimiter({
   message: 'Too many authentication attempts. Please try again later.',
 });
 app.use('/api/auth', authLimiter);
+app.use('/api/v1/auth', authLimiter);
 
 const commentsWriteLimiter = createLimiter({
   windowMs: parsePositiveInt(process.env.RATE_LIMIT_COMMENTS_WINDOW_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
@@ -173,6 +175,7 @@ const commentsWriteLimiter = createLimiter({
   message: 'Comment actions are temporarily limited. Please try again shortly.',
 });
 app.use('/api/comments', applyLimiterToMethods(writeMethods, commentsWriteLimiter));
+app.use('/api/v1/comments', applyLimiterToMethods(writeMethods, commentsWriteLimiter));
 
 const blogWriteLimiter = createLimiter({
   windowMs: parsePositiveInt(process.env.RATE_LIMIT_BLOG_WRITE_WINDOW_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
@@ -180,6 +183,7 @@ const blogWriteLimiter = createLimiter({
   message: 'Blog write actions are temporarily limited. Please try again shortly.',
 });
 app.use('/api/blog', applyLimiterToMethods(writeMethods, blogWriteLimiter));
+app.use('/api/v1/blog', applyLimiterToMethods(writeMethods, blogWriteLimiter));
 
 const reportRequestLimiter = createLimiter({
   windowMs: parsePositiveInt(process.env.RATE_LIMIT_REPORTS_WINDOW_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
@@ -187,6 +191,7 @@ const reportRequestLimiter = createLimiter({
   message: 'Too many report requests. Please try again later.',
 });
 app.use('/api/reports/request', reportRequestLimiter);
+app.use('/api/v1/reports/request', reportRequestLimiter);
 
 const checkoutLimiter = createLimiter({
   windowMs: parsePositiveInt(process.env.RATE_LIMIT_CHECKOUT_WINDOW_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
@@ -194,6 +199,7 @@ const checkoutLimiter = createLimiter({
   message: 'Checkout attempts are temporarily limited. Please try again shortly.',
 });
 app.use('/api/subscriptions/pdf-checkout', checkoutLimiter);
+app.use('/api/v1/subscriptions/pdf-checkout', checkoutLimiter);
 
 const newsletterLimiter = createLimiter({
   windowMs: parsePositiveInt(process.env.RATE_LIMIT_NEWSLETTER_WINDOW_MS, 10 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
@@ -201,11 +207,30 @@ const newsletterLimiter = createLimiter({
   message: 'Too many newsletter attempts. Please try again later.',
 });
 app.use('/api/subscriptions/newsletter', newsletterLimiter);
+app.use('/api/v1/subscriptions/newsletter', newsletterLimiter);
+
+const financeJobLimiter = createLimiter({
+  windowMs: parsePositiveInt(
+    process.env.RATE_LIMIT_FINANCE_WINDOW_MS,
+    10 * 60 * 1000,
+    60 * 1000,
+    24 * 60 * 60 * 1000
+  ),
+  max: parsePositiveInt(process.env.RATE_LIMIT_FINANCE_MAX, 30, 1, 2000),
+  message: 'Too many finance processing requests. Please try again shortly.',
+});
+app.use('/api/finance', applyLimiterToMethods(writeMethods, financeJobLimiter));
+app.use('/api/v1/finance', applyLimiterToMethods(writeMethods, financeJobLimiter));
 
 /* -------------------- Parsers -------------------- */
-const isWebhookRequest = (req) =>
-  req.path.startsWith('/api/subscriptions/webhooks/stripe') ||
-  req.path.startsWith('/api/subscriptions/webhooks/paystack');
+const webhookPrefixes = [
+  '/api/subscriptions/webhooks/stripe',
+  '/api/subscriptions/webhooks/paystack',
+  '/api/v1/subscriptions/webhooks/stripe',
+  '/api/v1/subscriptions/webhooks/paystack',
+];
+
+const isWebhookRequest = (req) => webhookPrefixes.some((prefix) => req.path.startsWith(prefix));
 
 app.use((req, res, next) => {
   const contentLength = Number.parseInt(String(req.headers['content-length'] || ''), 10);
@@ -252,6 +277,7 @@ app.use('/api/comments', commentRoutes);
 app.use('/api/blog', blogRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/subscriptions', subscriptionsRoutes);
+app.use('/api/v1', apiV1Routes);
 
 /* -------------------- Error handling -------------------- */
 app.use((err, _req, res, _next) => {

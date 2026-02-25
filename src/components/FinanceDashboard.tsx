@@ -1,7 +1,7 @@
 ﻿// Finance Dashboard â€” Upload financial data, generate P&L, Balance Sheet, Cash Flow
 // Beautiful UI for business users to see their financial position at a glance
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -116,7 +116,7 @@ import {
 } from '@/lib/financeImportProfiles';
 import { useAuth } from '@/hooks/useAuth';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
-import { getApiUrl } from '@/lib/publicConfig';
+import { PUBLIC_CONFIG, getApiUrl } from '@/lib/publicConfig';
 import { SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATIVE_CHART_COLOR } from '@/lib/chartColors';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -125,6 +125,15 @@ import { v4 as uuidv4 } from 'uuid';
 // ============================================================
 
 type FinanceView = 'upload' | 'mapping' | 'wideWizard' | 'assetWizard' | 'processing' | 'dashboard';
+type FinanceApiJobStatus = 'queued' | 'running' | 'completed' | 'failed';
+
+interface FinanceApiJob<T = unknown> {
+  id: string;
+  status: FinanceApiJobStatus;
+  result?: T;
+  error?: { code?: string; message?: string };
+  progress?: { percent?: number; message?: string };
+}
 
 const CHART_COLORS = SHARED_CHART_PALETTE;
 
@@ -199,6 +208,20 @@ const FinanceDashboard: React.FC = () => {
     true
   );
   const assetModuleReady = assetModuleEnabled && assetModuleFlowsToBalanceSheet && assetModuleSupportsIngestion;
+  const financeApiJobsConfigured = parseBooleanEnvWithDefault(import.meta.env.VITE_FINANCE_API_JOBS, false);
+  const financeApiJobsEnabled = financeApiJobsConfigured && PUBLIC_CONFIG.apiVersion === 'v1';
+  const financeApiConfigWarnedRef = useRef(false);
+
+  useEffect(() => {
+    if (financeApiConfigWarnedRef.current) return;
+    if (!financeApiJobsConfigured) return;
+    if (financeApiJobsEnabled) return;
+
+    financeApiConfigWarnedRef.current = true;
+    toast.warning(
+      'VITE_FINANCE_API_JOBS is enabled but VITE_API_VERSION is not set to v1. Falling back to local finance engine.'
+    );
+  }, [financeApiJobsConfigured, financeApiJobsEnabled]);
 
   // View state
   const [view, setView] = useState<FinanceView>('upload');
@@ -378,17 +401,58 @@ const FinanceDashboard: React.FC = () => {
       return;
     }
 
-    try {
-      const transformed = transformLongDatasetToCanonical(bookLedgerRawData as Record<string, any>[], bookLedgerMapping);
-      const reportInput = canonicalToReportInput(transformed.transactions);
-      const transactions = parseTransactions(reportInput.data, reportInput.mapping);
-      setBookLedgerTransactions(transactions);
-      setBookLedgerWarnings(transformed.warnings);
-    } catch (error) {
-      setBookLedgerTransactions([]);
-      setBookLedgerWarnings(['Could not parse uploaded GL with the current mapping.']);
-    }
-  }, [bookLedgerRawData, bookLedgerMapping]);
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const fallbackToLocalParsing = () => {
+        try {
+          const transformed = transformLongDatasetToCanonical(bookLedgerRawData as Record<string, any>[], bookLedgerMapping);
+          const reportInput = canonicalToReportInput(transformed.transactions);
+          const transactions = parseTransactions(reportInput.data, reportInput.mapping);
+          if (cancelled) return;
+          setBookLedgerTransactions(transactions);
+          setBookLedgerWarnings(transformed.warnings);
+        } catch (error) {
+          if (cancelled) return;
+          setBookLedgerTransactions([]);
+          setBookLedgerWarnings(['Could not parse uploaded GL with the current mapping.']);
+        }
+      };
+
+      if (!financeApiJobsEnabled) {
+        fallbackToLocalParsing();
+        return;
+      }
+
+      try {
+        const job = await submitFinanceJob<{
+          transactions: ClassifiedTransaction[];
+          warnings?: string[];
+        }>('/api/finance/ingestion/jobs', {
+          rows: bookLedgerRawData,
+          mapping: bookLedgerMapping,
+        });
+
+        const completed = await waitForFinanceJob<{
+          transactions: ClassifiedTransaction[];
+          warnings?: string[];
+        }>(job.id, 90000);
+
+        const transactions = completed.result?.transactions || [];
+        const warnings = completed.result?.warnings || [];
+        if (cancelled) return;
+        setBookLedgerTransactions(transactions);
+        setBookLedgerWarnings(warnings);
+      } catch (error) {
+        if (cancelled) return;
+        fallbackToLocalParsing();
+      }
+    }, financeApiJobsEnabled ? 350 : 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [bookLedgerRawData, bookLedgerMapping, financeApiJobsEnabled]);
 
   useEffect(() => {
     const hasSupplementalSignals =
@@ -1308,6 +1372,69 @@ const FinanceDashboard: React.FC = () => {
 
     const canonicalInput = canonicalToReportInput(journal);
     const importWarnings = [...warningsFromImport, ...validation.warnings, ...liabilityValidation.warnings];
+    const backendPreflightAuditLines: string[] = [];
+
+    if (financeApiJobsEnabled) {
+      try {
+        const reportJob = await submitFinanceJob<{
+          summary?: {
+            pnl?: { netIncome?: number; netMarginPct?: number };
+            balanceSheet?: { isBalanced?: boolean; difference?: number };
+            cashFlow?: { netCashChange?: number };
+            warnings?: string[];
+          };
+          transactionCount?: number;
+          caveats?: string[];
+        }>('/api/finance/reports/jobs', {
+          rows: journal,
+          mapping: {
+            date: 'Date',
+            account: 'Account',
+            category: 'Category',
+            debit: 'Debit',
+            credit: 'Credit',
+            description: 'Description',
+            reference: 'Reference',
+            type: 'Type',
+          },
+          companyName: companyName || 'My Company',
+          reportPeriod,
+        });
+
+        const reportResult = await waitForFinanceJob<{
+          summary?: {
+            pnl?: { netIncome?: number; netMarginPct?: number };
+            balanceSheet?: { isBalanced?: boolean; difference?: number };
+            cashFlow?: { netCashChange?: number };
+            warnings?: string[];
+          };
+          transactionCount?: number;
+          caveats?: string[];
+        }>(reportJob.id, 90000);
+
+        const summaryWarnings = reportResult.result?.summary?.warnings || [];
+        const caveats = reportResult.result?.caveats || [];
+        summaryWarnings.forEach((warning) => importWarnings.push(`API caveat: ${warning}`));
+        caveats.forEach((caveat) => importWarnings.push(`API caveat: ${caveat}`));
+
+        const preflightNetIncome = Number(reportResult.result?.summary?.pnl?.netIncome ?? 0);
+        const preflightNetMargin = Number(reportResult.result?.summary?.pnl?.netMarginPct ?? 0);
+        const preflightBalanced = Boolean(reportResult.result?.summary?.balanceSheet?.isBalanced);
+        const preflightDifference = Number(reportResult.result?.summary?.balanceSheet?.difference ?? 0);
+        backendPreflightAuditLines.push(
+          `API preflight completed: tx=${Number(reportResult.result?.transactionCount ?? 0)} ` +
+            `| netIncome=${preflightNetIncome.toFixed(2)} ` +
+            `| netMargin=${preflightNetMargin.toFixed(1)}% ` +
+            `| balanced=${preflightBalanced ? 'yes' : 'no'} ` +
+            `| difference=${preflightDifference.toFixed(2)}.`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'unknown preflight error';
+        importWarnings.push(`API caveat: backend report preflight unavailable (${message}). Local engine output used.`);
+        backendPreflightAuditLines.push(`API preflight unavailable: ${message}. Local engine output used.`);
+      }
+    }
+
     importWarnings.forEach(warning => toast.warning(warning));
 
     setView('processing');
@@ -1339,7 +1466,7 @@ const FinanceDashboard: React.FC = () => {
         `= ${reconciliation.netFixedAssetMovement.toFixed(2)}. ` +
         `Total Assets shown ${result.balanceSheet.totalAssets.toFixed(2)}.`;
 
-      let finalAuditLog = [...mergedAuditLog, reconciliationLine];
+      let finalAuditLog = [...mergedAuditLog, ...backendPreflightAuditLines, reconciliationLine];
 
       const augmentedWarnings = [...importWarnings];
       if (assetsRegisterRows.length > 0 && result.balanceSheet.totalAssets === 0) {
@@ -2208,7 +2335,93 @@ const FinanceDashboard: React.FC = () => {
     }
   };
 
-  const runBankReconciliation = () => {
+  const submitFinanceJob = async <TResult,>(
+    endpoint: string,
+    body: Record<string, unknown>,
+  ): Promise<FinanceApiJob<TResult>> => {
+    const token = await getAccessToken();
+    if (!token) {
+      throw new Error('Authentication session expired. Please sign in again.');
+    }
+
+    const response = await fetch(getApiUrl(endpoint), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'Idempotency-Key': uuidv4(),
+      },
+      body: JSON.stringify(body),
+    });
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message =
+        payload?.error?.message ||
+        payload?.error ||
+        payload?.message ||
+        'Finance job submission failed.';
+      throw new Error(message);
+    }
+
+    const job = payload?.data?.job as FinanceApiJob<TResult> | undefined;
+    if (!job?.id) {
+      throw new Error('Finance job response did not include a job id.');
+    }
+
+    return job;
+  };
+
+  const waitForFinanceJob = async <TResult,>(
+    jobId: string,
+    timeoutMs = 120000,
+  ): Promise<FinanceApiJob<TResult>> => {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const token = await getAccessToken();
+      if (!token) {
+        throw new Error('Authentication session expired while waiting for finance job completion.');
+      }
+
+      const response = await fetch(getApiUrl(`/api/finance/jobs/${jobId}`), {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message =
+          payload?.error?.message ||
+          payload?.error ||
+          payload?.message ||
+          'Unable to fetch finance job status.';
+        throw new Error(message);
+      }
+
+      const job = payload?.data?.job as FinanceApiJob<TResult> | undefined;
+      if (!job) {
+        throw new Error('Finance job status payload is invalid.');
+      }
+
+      if (job.status === 'completed') {
+        return job;
+      }
+
+      if (job.status === 'failed') {
+        const message = job.error?.message || 'Finance job failed.';
+        throw new Error(message);
+      }
+
+      await new Promise(resolve => window.setTimeout(resolve, 1200));
+    }
+
+    throw new Error('Finance job timed out before completion.');
+  };
+
+  const runBankReconciliation = async () => {
     if (!report) {
       toast.error('Generate a financial report first.');
       return;
@@ -2244,6 +2457,67 @@ const FinanceDashboard: React.FC = () => {
 
     setIsBankReconLoading(true);
     try {
+      if (financeApiJobsEnabled) {
+        const job = await submitFinanceJob<{
+          reconciliation: BankReconciliation;
+          bankParsing?: { warnings?: string[] };
+          bookParsing?: { warnings?: string[] };
+        }>('/api/finance/reconciliation/jobs', {
+          bankRows: bankRawData,
+          bankMapping: bankStatementMapping,
+          bookRows: bookLedgerRawData,
+          bookMapping: bookLedgerMapping,
+          options: {
+            statementDate: bankStatementDate || undefined,
+            bookAccountScope: bankBookAccountScope,
+            dateFormat: bankStatementDateFormat,
+          },
+        });
+
+        const completed = await waitForFinanceJob<{
+          reconciliation: BankReconciliation;
+          bankParsing?: { warnings?: string[] };
+          bookParsing?: { warnings?: string[] };
+        }>(job.id);
+
+        const result = completed.result;
+        const recon = result?.reconciliation;
+        if (!recon) {
+          throw new Error('Finance reconciliation job completed without a reconciliation payload.');
+        }
+
+        const parsingWarnings = [
+          ...(result?.bankParsing?.warnings || []),
+          ...(result?.bookParsing?.warnings || []),
+        ];
+        if (parsingWarnings.length > 0) {
+          const preview = parsingWarnings.slice(0, 2).join(' ');
+          const extra = parsingWarnings.length - 2;
+          toast.warning(
+            extra > 0 ? `${preview} (+${extra} additional warning${extra === 1 ? '' : 's'})` : preview,
+          );
+        }
+
+        setBankRecon(recon);
+        if (recon.quality.bookRowsMatchingPool === 0) {
+          toast.error(
+            'Book match pool is empty. Upload/map GL cash journal (Date, Account, Debit/Credit, Reference) and check statement window.',
+          );
+        } else if (recon.quality.bankRowsMatchingPool === 0) {
+          toast.error('Bank match pool is empty after filtering. Check statement date format and period window.');
+        } else {
+          toast.success(
+            recon.isReconciled
+              ? 'Reconciliation complete; adjusted bank and book balances are aligned.'
+              : 'Reconciliation run completed. Review unresolved differences in the results panel.',
+          );
+          if (!recon.isReconciled) {
+            toast.warning(`Unresolved difference: ${formatCurrency(recon.difference)}.`);
+          }
+        }
+        return;
+      }
+
       const parsedStatement = parseBankStatement(bankRawData, bankStatementMapping, {
         dateFormat: bankStatementDateFormat,
       });

@@ -4,6 +4,8 @@ const normalizeUrl = (value: string | undefined): string => {
 };
 
 let hasWarnedMissingBackendUrl = false;
+const apiVersionRaw = String(import.meta.env.VITE_API_VERSION || '').trim().toLowerCase();
+const apiVersion = apiVersionRaw === 'v1' ? 'v1' : '';
 
 export const PUBLIC_CONFIG = {
   brandName: (import.meta.env.VITE_BRAND_NAME || "DataAfrik").trim(),
@@ -15,10 +17,20 @@ export const PUBLIC_CONFIG = {
   phoneUs: (import.meta.env.VITE_PHONE_US || "").trim(),
   locationText: (import.meta.env.VITE_LOCATION_TEXT || "").trim(),
   backendUrl: normalizeUrl(import.meta.env.VITE_BACKEND_URL),
+  apiVersion,
+};
+
+const applyApiVersion = (path: string): string => {
+  if (!PUBLIC_CONFIG.apiVersion) return path;
+  if (path === '/api') return `/api/${PUBLIC_CONFIG.apiVersion}`;
+  if (path.startsWith('/api/v1/')) return path;
+  if (path.startsWith('/api/')) return `/api/${PUBLIC_CONFIG.apiVersion}${path.slice(4)}`;
+  return path;
 };
 
 export function getApiUrl(path: string): string {
   if (!path.startsWith("/")) return path;
+  const resolvedPath = applyApiVersion(path);
   if (!PUBLIC_CONFIG.backendUrl) {
     if (
       !hasWarnedMissingBackendUrl &&
@@ -30,9 +42,9 @@ export function getApiUrl(path: string): string {
         "[publicConfig] Missing VITE_BACKEND_URL in frontend env. API calls will hit the frontend origin and may return HTML instead of JSON."
       );
     }
-    return path;
+    return resolvedPath;
   }
-  return `${PUBLIC_CONFIG.backendUrl}${path}`;
+  return `${PUBLIC_CONFIG.backendUrl}${resolvedPath}`;
 }
 
 export function createSupportMailto(subject: string, body: string): string {
