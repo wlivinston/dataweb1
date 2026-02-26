@@ -9,6 +9,7 @@ import { AuthProvider } from "@/hooks/useAuth";
 import CookieConsentBanner from "@/components/CookieConsentBanner";
 import RouteScrollToTop from "@/components/RouteScrollToTop";
 import AccessibilityControls from "@/components/AccessibilityControls";
+import RuntimeApiBadge from "@/components/RuntimeApiBadge";
 
 const queryClient = new QueryClient();
 const Index = lazy(() => import("./pages/Index"));
@@ -64,6 +65,7 @@ const App = () => (
                 <Route path="*" element={withSuspense(<NotFound />)} />
               </Routes>
             </div>
+            <RuntimeApiBadge />
             <AccessibilityControls />
             <CookieConsentBanner />
           </BrowserRouter>
