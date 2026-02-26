@@ -66,6 +66,16 @@ Behavior:
 - Legacy usage telemetry is logged with endpoint + origin + hit counts.
 - Set `API_LEGACY_ENABLED=false` to hard-disable legacy routes (HTTP `410 Gone` with migration hint).
 
+### Phase 2 Operations Endpoints (Admin)
+- `GET /api/v1/system/legacy-usage?top=25`
+  - Returns current legacy telemetry snapshot (total hits, unique buckets, top endpoints/origins).
+- `POST /api/v1/system/legacy-usage/reset`
+  - Resets in-memory legacy telemetry counters for a clean observation window.
+
+Cutover rule:
+- Monitor `GET /api/v1/system/legacy-usage` for a full window (e.g., 7-14 days).
+- When `totalHits=0` consistently across the window, set `API_LEGACY_ENABLED=false`.
+
 ## Smoke Test Checklist
 Automated local smoke runner:
 

@@ -34,6 +34,36 @@ paths:
       responses:
         '200':
           description: Service is healthy
+  /system/legacy-usage:
+    get:
+      tags: [system]
+      summary: Get legacy API usage telemetry snapshot (admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: top
+          schema: { type: integer, minimum: 1, maximum: 500 }
+      responses:
+        '200':
+          description: Legacy usage telemetry snapshot
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
+  /system/legacy-usage/reset:
+    post:
+      tags: [system]
+      summary: Reset legacy API usage telemetry counters (admin)
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Legacy telemetry reset
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
   /auth/supabase/sign-in:
     post:
       tags: [auth]

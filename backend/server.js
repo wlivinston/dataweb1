@@ -162,6 +162,32 @@ const isLegacyApiPath = (pathValue) => {
 const legacyApiUsage = new Map();
 let legacyApiHitCount = 0;
 
+const buildLegacyApiTelemetrySnapshot = (topN = LEGACY_API_TELEMETRY_TOP_N) => {
+  const resolvedTopN = parsePositiveInt(topN, LEGACY_API_TELEMETRY_TOP_N, 1, 500);
+  const top = Array.from(legacyApiUsage.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, resolvedTopN);
+
+  return {
+    enabled: LEGACY_API_TELEMETRY_ENABLED,
+    legacyApiEnabled: LEGACY_API_ENABLED,
+    legacyDeprecationEnabled: LEGACY_API_DEPRECATION_ENABLED,
+    sunset: LEGACY_API_SUNSET_HEADER,
+    successorDocUrl: LEGACY_API_DOC_URL,
+    totalHits: legacyApiHitCount,
+    uniqueBuckets: legacyApiUsage.size,
+    topN: resolvedTopN,
+    top,
+    generatedAt: new Date().toISOString(),
+  };
+};
+
+const resetLegacyApiTelemetry = () => {
+  legacyApiUsage.clear();
+  legacyApiHitCount = 0;
+  return buildLegacyApiTelemetrySnapshot();
+};
+
 const recordLegacyApiHit = (req) => {
   legacyApiHitCount += 1;
 
@@ -194,12 +220,10 @@ const recordLegacyApiHit = (req) => {
 const flushLegacyApiUsage = () => {
   if (!legacyApiUsage.size) return;
 
-  const snapshot = Array.from(legacyApiUsage.values())
-    .sort((a, b) => b.count - a.count)
-    .slice(0, LEGACY_API_TELEMETRY_TOP_N);
+  const snapshot = buildLegacyApiTelemetrySnapshot(LEGACY_API_TELEMETRY_TOP_N);
 
   console.warn(
-    `[legacy-api] usage-snapshot total_hits=${legacyApiHitCount} buckets=${legacyApiUsage.size} top=${JSON.stringify(snapshot)}`
+    `[legacy-api] usage-snapshot total_hits=${snapshot.totalHits} buckets=${snapshot.uniqueBuckets} top=${JSON.stringify(snapshot.top)}`
   );
 };
 
@@ -213,6 +237,11 @@ if (LEGACY_API_TELEMETRY_ENABLED) {
     telemetryTimer.unref();
   }
 }
+
+app.locals.legacyApiTelemetry = {
+  snapshot: buildLegacyApiTelemetrySnapshot,
+  reset: resetLegacyApiTelemetry,
+};
 
 app.use(
   cors({
