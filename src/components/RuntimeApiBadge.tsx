@@ -10,6 +10,9 @@ const parseBooleanEnv = (value: unknown): boolean => {
 };
 
 const RuntimeApiBadge: React.FC = () => {
+  const runtimeBadgeEnabled = import.meta.env.DEV || parseBooleanEnv(import.meta.env.VITE_RUNTIME_BADGE);
+  if (!runtimeBadgeEnabled) return null;
+
   const apiMode = PUBLIC_CONFIG.apiVersion === "v1" ? "v1" : "legacy";
   const financeJobsConfigured = parseBooleanEnv(import.meta.env.VITE_FINANCE_API_JOBS);
   const financeJobsEnabled = financeJobsConfigured && apiMode === "v1";
