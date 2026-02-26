@@ -54,6 +54,31 @@ function writeHistory(records) {
   writeFileSync(historyAbsPath, `${lines.join("\n")}\n`, "utf8");
 }
 
+function normalizeTopEntries(top) {
+  if (!Array.isArray(top)) return [];
+  return top.map((item) => ({
+    endpoint: String(item?.endpoint || ""),
+    origin: String(item?.origin || ""),
+    count: Number(item?.count || 0),
+  }));
+}
+
+function buildComparableRecord(record) {
+  return {
+    date: String(record?.date || ""),
+    totalHits: Number(record?.totalHits || 0),
+    uniqueBuckets: Number(record?.uniqueBuckets || 0),
+    legacyApiEnabled: Boolean(record?.legacyApiEnabled),
+    telemetryEnabled: Boolean(record?.telemetryEnabled),
+    sunset: String(record?.sunset || ""),
+    top: normalizeTopEntries(record?.top),
+  };
+}
+
+function recordsEqualForMonitoring(left, right) {
+  return JSON.stringify(buildComparableRecord(left)) === JSON.stringify(buildComparableRecord(right));
+}
+
 function computeConsecutiveZeroDays(records) {
   const sorted = [...records].sort((a, b) => String(a.date).localeCompare(String(b.date)));
   let streak = 0;
@@ -133,32 +158,38 @@ const todayRecord = {
   top,
 };
 
-const existing = readHistory().filter((entry) => entry?.date !== today);
-const nextHistory = [...existing, todayRecord].sort((a, b) =>
+const history = readHistory();
+const existingToday = history.find((entry) => entry?.date === today);
+const reusedTodaySnapshot = Boolean(existingToday && recordsEqualForMonitoring(existingToday, todayRecord));
+const effectiveTodayRecord = reusedTodaySnapshot ? existingToday : todayRecord;
+const existing = history.filter((entry) => entry?.date !== today);
+const nextHistory = [...existing, effectiveTodayRecord].sort((a, b) =>
   String(a.date).localeCompare(String(b.date))
 );
 writeHistory(nextHistory);
 
 const consecutiveZeroDays = computeConsecutiveZeroDays(nextHistory);
-const readyToDisable = consecutiveZeroDays >= observationWindowDays && todayRecord.totalHits === 0;
+const readyToDisable = consecutiveZeroDays >= observationWindowDays && effectiveTodayRecord.totalHits === 0;
 
 const summary = [
   `Legacy usage checked on ${today}`,
   `authMode=${authMode}`,
-  `totalHits=${todayRecord.totalHits}`,
-  `uniqueBuckets=${todayRecord.uniqueBuckets}`,
+  `totalHits=${effectiveTodayRecord.totalHits}`,
+  `uniqueBuckets=${effectiveTodayRecord.uniqueBuckets}`,
   `consecutiveZeroDays=${consecutiveZeroDays}`,
   `observationWindowDays=${observationWindowDays}`,
+  `reusedTodaySnapshot=${reusedTodaySnapshot}`,
   `readyToDisable=${readyToDisable}`,
 ];
 console.log(`[legacy-monitor] ${summary.join(" | ")}`);
 
 appendGitHubOutput({
   auth_mode: authMode,
-  total_hits: todayRecord.totalHits,
-  unique_buckets: todayRecord.uniqueBuckets,
+  total_hits: effectiveTodayRecord.totalHits,
+  unique_buckets: effectiveTodayRecord.uniqueBuckets,
   consecutive_zero_days: consecutiveZeroDays,
   observation_window_days: observationWindowDays,
+  reused_today_snapshot: reusedTodaySnapshot,
   ready_to_disable: readyToDisable,
 });
 
@@ -166,8 +197,9 @@ appendGitHubSummary([
   "## Legacy API Daily Monitor",
   `- Date: **${today}**`,
   `- Auth Mode: **${authMode}**`,
-  `- Total Hits: **${todayRecord.totalHits}**`,
-  `- Unique Buckets: **${todayRecord.uniqueBuckets}**`,
+  `- Total Hits: **${effectiveTodayRecord.totalHits}**`,
+  `- Unique Buckets: **${effectiveTodayRecord.uniqueBuckets}**`,
+  `- Reused Existing Same-Day Snapshot: **${reusedTodaySnapshot ? "YES" : "NO"}**`,
   `- Consecutive Zero-Hit Days: **${consecutiveZeroDays}**`,
   `- Observation Window: **${observationWindowDays} days**`,
   `- Ready To Disable Legacy API: **${readyToDisable ? "YES" : "NO"}**`,
