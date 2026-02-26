@@ -76,6 +76,22 @@ Cutover rule:
 - Monitor `GET /api/v1/system/legacy-usage` for a full window (e.g., 7-14 days).
 - When `totalHits=0` consistently across the window, set `API_LEGACY_ENABLED=false`.
 
+### Daily Automation
+- Workflow: `.github/workflows/legacy-usage-monitor.yml`
+- Schedule: daily at `06:15 UTC` (and manual dispatch supported).
+- Persists history to `monitoring/legacy-usage-history.jsonl`.
+- Required GitHub secrets:
+  - `LEGACY_USAGE_URL` (for example: `https://dataweb1-backend.vercel.app/api/v1/system/legacy-usage`)
+  - `LEGACY_USAGE_TOKEN` (admin bearer token)
+- Optional GitHub variable:
+  - `LEGACY_OBSERVATION_WINDOW_DAYS` (default handled by script: `14`)
+
+### Commit Safety Guard
+- Script: `scripts/commit-guard.mjs`
+- Hook installer: `npm run hooks:install`
+- Blocks risky staged files by default (e.g. `.env*`, `public/sitemap.xml`, `dist/*`, temporary backend files).
+- Override intentionally with: `ALLOW_RISKY_COMMIT=1 git commit ...`
+
 ## Smoke Test Checklist
 Automated local smoke runner:
 

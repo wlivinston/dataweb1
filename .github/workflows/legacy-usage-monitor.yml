@@ -1,0 +1,42 @@
+name: Legacy Usage Monitor
+
+on:
+  schedule:
+    - cron: "15 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Collect legacy usage snapshot
+        env:
+          LEGACY_USAGE_URL: ${{ secrets.LEGACY_USAGE_URL }}
+          LEGACY_USAGE_TOKEN: ${{ secrets.LEGACY_USAGE_TOKEN }}
+          LEGACY_OBSERVATION_WINDOW_DAYS: ${{ vars.LEGACY_OBSERVATION_WINDOW_DAYS }}
+        run: node scripts/monitor-legacy-usage.mjs
+
+      - name: Commit monitoring history
+        run: |
+          if [ -n "$(git status --porcelain monitoring/legacy-usage-history.jsonl)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add monitoring/legacy-usage-history.jsonl
+            git commit -m "chore(monitor): record legacy API usage $(date -u +%F)"
+            git push
+          else
+            echo "No monitoring history changes to commit."
+          fi

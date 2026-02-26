@@ -1,0 +1,12 @@
+#!/bin/sh
+
+STAGED_FILES="$(git diff --cached --name-only --diff-filter=ACMR)"
+export STAGED_FILES
+
+node scripts/commit-guard.mjs
+STATUS=$?
+if [ $STATUS -ne 0 ]; then
+  exit $STATUS
+fi
+
+exit 0

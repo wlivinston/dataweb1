@@ -14,7 +14,10 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start-backend": "node backend/server.js"
+    "start-backend": "node backend/server.js",
+    "commit:guard": "node scripts/commit-guard.mjs",
+    "hooks:install": "node scripts/install-git-hooks.mjs",
+    "monitor:legacy-usage": "node scripts/monitor-legacy-usage.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
