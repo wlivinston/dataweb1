@@ -26,6 +26,20 @@ const parsePositiveInt = (value, fallback, min = 1, max = Number.MAX_SAFE_INTEGE
   if (!Number.isFinite(parsed) || parsed < min) return fallback;
   return Math.min(parsed, max);
 };
+const parseBoolean = (value, fallback = false) => {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+};
+const resolveSunsetHeader = (value, fallback) => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return fallback;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return fallback;
+  return parsed.toUTCString();
+};
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const IS_PROD = NODE_ENV === 'production';
 const DEFAULT_REQUEST_TIMEOUT_MS = parsePositiveInt(process.env.REQUEST_TIMEOUT_MS, 20000, 5000, 120000);
@@ -36,6 +50,26 @@ const MAX_CONTENT_LENGTH_BYTES = parsePositiveInt(
   20 * 1024 * 1024
 );
 const BODY_LIMIT = process.env.BODY_LIMIT || '1mb';
+const LEGACY_API_ENABLED = parseBoolean(process.env.API_LEGACY_ENABLED, true);
+const LEGACY_API_DEPRECATION_ENABLED = parseBoolean(process.env.API_LEGACY_DEPRECATION_ENABLED, true);
+const LEGACY_API_TELEMETRY_ENABLED = parseBoolean(process.env.API_LEGACY_TELEMETRY_ENABLED, true);
+const LEGACY_API_TELEMETRY_FLUSH_MS = parsePositiveInt(
+  process.env.API_LEGACY_TELEMETRY_FLUSH_MS,
+  300000,
+  10000,
+  24 * 60 * 60 * 1000
+);
+const LEGACY_API_TELEMETRY_TOP_N = parsePositiveInt(
+  process.env.API_LEGACY_TELEMETRY_TOP_N,
+  25,
+  1,
+  500
+);
+const LEGACY_API_DOC_URL = String(process.env.API_LEGACY_DOC_URL || '/api/v1/system/openapi').trim();
+const LEGACY_API_SUNSET_HEADER = resolveSunsetHeader(
+  process.env.API_LEGACY_SUNSET,
+  'Thu, 31 Dec 2026 23:59:59 GMT'
+);
 
 // Ensure req.ip is trustworthy behind load balancers / reverse proxies.
 app.set('trust proxy', parsePositiveInt(process.env.TRUST_PROXY_HOPS, 1, 0, 10));
@@ -116,6 +150,69 @@ const isAllowedOrigin = (origin) => {
   if (!IS_PROD && DEV_LOCAL_ORIGIN_REGEX.test(normalizedOrigin)) return true;
   return false;
 };
+const isLegacyApiPath = (pathValue) => {
+  const normalizedPath = String(pathValue || '');
+  return (
+    normalizedPath.startsWith('/api/') &&
+    normalizedPath !== '/api/v1' &&
+    !normalizedPath.startsWith('/api/v1/')
+  );
+};
+
+const legacyApiUsage = new Map();
+let legacyApiHitCount = 0;
+
+const recordLegacyApiHit = (req) => {
+  legacyApiHitCount += 1;
+
+  const method = String(req.method || 'GET').toUpperCase();
+  const endpoint = `${method} ${req.path}`;
+  const origin = toOrigin(req.headers.origin || '');
+  const normalizedOrigin = origin || 'no-origin';
+  const key = `${endpoint}|${normalizedOrigin}`;
+  const nowIso = new Date().toISOString();
+
+  const current = legacyApiUsage.get(key) || {
+    endpoint,
+    origin: normalizedOrigin,
+    count: 0,
+    firstSeen: nowIso,
+    lastSeen: nowIso,
+  };
+
+  current.count += 1;
+  current.lastSeen = nowIso;
+  legacyApiUsage.set(key, current);
+
+  if (legacyApiHitCount <= 5 || legacyApiHitCount % 100 === 0) {
+    console.warn(
+      `[legacy-api] hit#${legacyApiHitCount} endpoint="${endpoint}" origin="${normalizedOrigin}" ip="${req.ip || 'unknown'}"`
+    );
+  }
+};
+
+const flushLegacyApiUsage = () => {
+  if (!legacyApiUsage.size) return;
+
+  const snapshot = Array.from(legacyApiUsage.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, LEGACY_API_TELEMETRY_TOP_N);
+
+  console.warn(
+    `[legacy-api] usage-snapshot total_hits=${legacyApiHitCount} buckets=${legacyApiUsage.size} top=${JSON.stringify(snapshot)}`
+  );
+};
+
+if (LEGACY_API_TELEMETRY_ENABLED) {
+  const telemetryTimer = setInterval(() => {
+    flushLegacyApiUsage();
+  }, LEGACY_API_TELEMETRY_FLUSH_MS);
+
+  // Do not keep process alive just for telemetry interval.
+  if (typeof telemetryTimer.unref === 'function') {
+    telemetryTimer.unref();
+  }
+}
 
 app.use(
   cors({
@@ -136,6 +233,33 @@ app.use((req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
 
   return res.status(403).json({ error: 'Origin not allowed' });
+});
+
+/* -------------------- Legacy API controls -------------------- */
+app.use((req, res, next) => {
+  if (!isLegacyApiPath(req.path)) return next();
+
+  if (LEGACY_API_DEPRECATION_ENABLED) {
+    res.setHeader('Deprecation', 'true');
+    res.setHeader('Sunset', LEGACY_API_SUNSET_HEADER);
+    res.setHeader('X-API-Legacy', 'true');
+    res.append('Link', `<${LEGACY_API_DOC_URL}>; rel="successor-version"`);
+  }
+
+  if (LEGACY_API_TELEMETRY_ENABLED) {
+    recordLegacyApiHit(req);
+  }
+
+  if (!LEGACY_API_ENABLED) {
+    return res.status(410).json({
+      error: 'Legacy API is disabled. Use /api/v1 routes.',
+      code: 'API_LEGACY_DISABLED',
+      successor: '/api/v1',
+      docs: LEGACY_API_DOC_URL,
+    });
+  }
+
+  return next();
 });
 
 /* -------------------- Rate limiting -------------------- */
@@ -318,6 +442,14 @@ const startServer = async () => {
     console.log(`[backend] Server running on port ${PORT}`);
     console.log(`[backend] Health check: http://localhost:${PORT}/health`);
     console.log(`[backend] API base URL: http://localhost:${PORT}/api`);
+    console.log(
+      `[backend] Legacy API: ${LEGACY_API_ENABLED ? 'enabled (deprecated)' : 'disabled'} | telemetry: ${
+        LEGACY_API_TELEMETRY_ENABLED ? 'on' : 'off'
+      }`
+    );
+    if (LEGACY_API_DEPRECATION_ENABLED) {
+      console.log(`[backend] Legacy API sunset: ${LEGACY_API_SUNSET_HEADER}`);
+    }
 
     server.requestTimeout = DEFAULT_REQUEST_TIMEOUT_MS;
     server.headersTimeout = DEFAULT_REQUEST_TIMEOUT_MS + 5000;

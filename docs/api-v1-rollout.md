@@ -44,6 +44,28 @@ When `VITE_FINANCE_API_JOBS=true`, Finance dashboard uses job endpoints for:
 - Report preflight caveats (`/api/v1/finance/reports/jobs`)
 - Job polling (`/api/v1/finance/jobs/:jobId`)
 
+## Phase 1 Legacy Controls (Now Available)
+Backend now supports safe legacy deprecation and kill-switch controls:
+
+```bash
+API_LEGACY_ENABLED=true
+API_LEGACY_DEPRECATION_ENABLED=true
+API_LEGACY_SUNSET=2026-12-31T23:59:59Z
+API_LEGACY_DOC_URL=/api/v1/system/openapi
+API_LEGACY_TELEMETRY_ENABLED=true
+API_LEGACY_TELEMETRY_FLUSH_MS=300000
+API_LEGACY_TELEMETRY_TOP_N=25
+```
+
+Behavior:
+- Legacy endpoints (`/api/*`, excluding `/api/v1/*`) emit deprecation headers:
+  - `Deprecation: true`
+  - `Sunset: <http-date>`
+  - `X-API-Legacy: true`
+  - `Link: </api/v1/system/openapi>; rel="successor-version"`
+- Legacy usage telemetry is logged with endpoint + origin + hit counts.
+- Set `API_LEGACY_ENABLED=false` to hard-disable legacy routes (HTTP `410 Gone` with migration hint).
+
 ## Smoke Test Checklist
 Automated local smoke runner:
 
