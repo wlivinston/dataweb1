@@ -69,6 +69,9 @@ Behavior:
 ### Phase 2 Operations Endpoints (Admin)
 - `GET /api/v1/system/legacy-usage?top=25`
   - Returns current legacy telemetry snapshot (total hits, unique buckets, top endpoints/origins).
+  - Auth supports either:
+    - Admin bearer JWT (`Authorization: Bearer <token>`)
+    - Shared monitor header token (`x-legacy-monitor-token: <token>`)
 - `POST /api/v1/system/legacy-usage/reset`
   - Resets in-memory legacy telemetry counters for a clean observation window.
 
@@ -82,9 +85,14 @@ Cutover rule:
 - Persists history to `monitoring/legacy-usage-history.jsonl`.
 - Required GitHub secrets:
   - `LEGACY_USAGE_URL` (for example: `https://dataweb1-backend.vercel.app/api/v1/system/legacy-usage`)
-  - `LEGACY_USAGE_TOKEN` (admin bearer token)
+  - `LEGACY_USAGE_SHARED_TOKEN` (recommended, maps to backend `LEGACY_USAGE_MONITOR_TOKEN`)
+- Optional GitHub secret:
+  - `LEGACY_USAGE_TOKEN` (admin bearer token fallback)
 - Optional GitHub variable:
   - `LEGACY_OBSERVATION_WINDOW_DAYS` (default handled by script: `14`)
+
+Backend production env:
+- Set `LEGACY_USAGE_MONITOR_TOKEN=<strong-random-token>` for stable automation auth.
 
 ### Commit Safety Guard
 - Script: `scripts/commit-guard.mjs`

@@ -8,6 +8,7 @@ const OBSERVATION_WINDOW_DAYS = Number.parseInt(
 );
 const LEGACY_USAGE_URL = String(process.env.LEGACY_USAGE_URL || "").trim();
 const LEGACY_USAGE_TOKEN = String(process.env.LEGACY_USAGE_TOKEN || "").trim();
+const LEGACY_USAGE_SHARED_TOKEN = String(process.env.LEGACY_USAGE_SHARED_TOKEN || "").trim();
 
 const MIN_WINDOW_DAYS = 1;
 const MAX_WINDOW_DAYS = 365;
@@ -83,22 +84,29 @@ async function fetchLegacyUsageSnapshot() {
   if (!LEGACY_USAGE_URL) {
     fail("LEGACY_USAGE_URL is required.");
   }
-  if (!LEGACY_USAGE_TOKEN) {
-    fail("LEGACY_USAGE_TOKEN is required.");
+  if (!LEGACY_USAGE_SHARED_TOKEN && !LEGACY_USAGE_TOKEN) {
+    fail("LEGACY_USAGE_SHARED_TOKEN or LEGACY_USAGE_TOKEN is required.");
+  }
+
+  const headers = {
+    Accept: "application/json",
+  };
+  const authMode = LEGACY_USAGE_SHARED_TOKEN ? "shared-token" : "bearer-jwt";
+  if (LEGACY_USAGE_SHARED_TOKEN) {
+    headers["x-legacy-monitor-token"] = LEGACY_USAGE_SHARED_TOKEN;
+  } else if (LEGACY_USAGE_TOKEN) {
+    headers.Authorization = `Bearer ${LEGACY_USAGE_TOKEN}`;
   }
 
   const response = await fetch(LEGACY_USAGE_URL, {
     method: "GET",
-    headers: {
-      Authorization: `Bearer ${LEGACY_USAGE_TOKEN}`,
-      Accept: "application/json",
-    },
+    headers,
   });
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     fail(
-      `Request failed (${response.status}). Body: ${JSON.stringify(payload || {})}`
+      `Request failed (${response.status}, authMode=${authMode}). Body: ${JSON.stringify(payload || {})}`
     );
   }
 
@@ -107,10 +115,10 @@ async function fetchLegacyUsageSnapshot() {
     fail("Unexpected payload shape; expected { success: true, data: {...} }");
   }
 
-  return data;
+  return { data, authMode };
 }
 
-const snapshot = await fetchLegacyUsageSnapshot();
+const { data: snapshot, authMode } = await fetchLegacyUsageSnapshot();
 const top = Array.isArray(snapshot.top) ? snapshot.top.slice(0, 10) : [];
 
 const todayRecord = {
@@ -136,6 +144,7 @@ const readyToDisable = consecutiveZeroDays >= observationWindowDays && todayReco
 
 const summary = [
   `Legacy usage checked on ${today}`,
+  `authMode=${authMode}`,
   `totalHits=${todayRecord.totalHits}`,
   `uniqueBuckets=${todayRecord.uniqueBuckets}`,
   `consecutiveZeroDays=${consecutiveZeroDays}`,
@@ -145,6 +154,7 @@ const summary = [
 console.log(`[legacy-monitor] ${summary.join(" | ")}`);
 
 appendGitHubOutput({
+  auth_mode: authMode,
   total_hits: todayRecord.totalHits,
   unique_buckets: todayRecord.uniqueBuckets,
   consecutive_zero_days: consecutiveZeroDays,
@@ -155,6 +165,7 @@ appendGitHubOutput({
 appendGitHubSummary([
   "## Legacy API Daily Monitor",
   `- Date: **${today}**`,
+  `- Auth Mode: **${authMode}**`,
   `- Total Hits: **${todayRecord.totalHits}**`,
   `- Unique Buckets: **${todayRecord.uniqueBuckets}**`,
   `- Consecutive Zero-Hit Days: **${consecutiveZeroDays}**`,

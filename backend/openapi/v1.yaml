@@ -37,9 +37,10 @@ paths:
   /system/legacy-usage:
     get:
       tags: [system]
-      summary: Get legacy API usage telemetry snapshot (admin)
+      summary: Get legacy API usage telemetry snapshot (admin or monitor token)
       security:
         - bearerAuth: []
+        - legacyMonitorToken: []
       parameters:
         - in: query
           name: top
@@ -384,6 +385,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    legacyMonitorToken:
+      type: apiKey
+      in: header
+      name: x-legacy-monitor-token
   schemas:
     SuccessEnvelope:
       type: object

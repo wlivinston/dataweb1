@@ -25,6 +25,7 @@ jobs:
       - name: Collect legacy usage snapshot
         env:
           LEGACY_USAGE_URL: ${{ secrets.LEGACY_USAGE_URL }}
+          LEGACY_USAGE_SHARED_TOKEN: ${{ secrets.LEGACY_USAGE_SHARED_TOKEN }}
           LEGACY_USAGE_TOKEN: ${{ secrets.LEGACY_USAGE_TOKEN }}
           LEGACY_OBSERVATION_WINDOW_DAYS: ${{ vars.LEGACY_OBSERVATION_WINDOW_DAYS }}
         run: node scripts/monitor-legacy-usage.mjs
