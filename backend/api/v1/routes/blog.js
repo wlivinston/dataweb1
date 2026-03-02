@@ -1,19 +1,17 @@
 const express = require('express');
 const { optionalAuth } = require('../../../middleware/auth');
 const blogService = require('../../../modules/blog/blog.service');
-const legacyBlogRoutes = require('../../../routes/blog');
+const { sendSuccess, sendError } = require('../../../modules/common/apiResponse');
+const { ApiError } = require('../../../modules/common/apiError');
 
 const router = express.Router();
 
 router.get('/posts', optionalAuth, async (req, res) => {
   try {
     const payload = await blogService.getPublishedPosts(req.query || {});
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 blog posts error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to fetch blog posts',
-    });
+    return sendError(res, error);
   }
 });
 
@@ -23,12 +21,9 @@ router.post('/sync/markdown', optionalAuth, async (req, res) => {
       body: req.body,
       queryParams: req.query,
     });
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 sync markdown posts error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to sync markdown posts',
-    });
+    return sendError(res, error);
   }
 });
 
@@ -38,24 +33,18 @@ router.get('/sync/markdown', optionalAuth, async (req, res) => {
       body: req.body,
       queryParams: req.query,
     });
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 sync markdown posts error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to sync markdown posts',
-    });
+    return sendError(res, error);
   }
 });
 
 router.post('/posts/ensure', optionalAuth, async (req, res) => {
   try {
     const payload = await blogService.ensurePost(req.body || {});
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 ensure blog post row error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to ensure blog post row',
-    });
+    return sendError(res, error);
   }
 });
 
@@ -65,16 +54,12 @@ router.get('/posts/:slug', optionalAuth, async (req, res) => {
       slugInput: req.params.slug,
       req,
     });
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 get blog post error:', error);
-    const statusCode = error?.statusCode || 500;
-    if (statusCode === 404) {
-      return res.status(404).json({ error: 'Blog post not found', slug: error.slug });
+    if (error?.statusCode === 404) {
+      return sendError(res, ApiError.notFound('Blog post not found', { slug: req.params.slug }));
     }
-    return res.status(statusCode).json({
-      error: error?.message || 'Failed to fetch blog post',
-    });
+    return sendError(res, error);
   }
 });
 
@@ -84,60 +69,45 @@ router.post('/posts/:slug/like', optionalAuth, async (req, res) => {
       slugInput: req.params.slug,
       req,
     });
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 like post error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to like/unlike post',
-    });
+    return sendError(res, error);
   }
 });
 
 router.get('/categories', async (_req, res) => {
   try {
     const payload = await blogService.getCategories();
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 get categories error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to fetch categories',
-    });
+    return sendError(res, error);
   }
 });
 
 router.get('/tags', async (_req, res) => {
   try {
     const payload = await blogService.getTags();
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 get tags error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to fetch tags',
-    });
+    return sendError(res, error);
   }
 });
 
 router.get('/featured', async (_req, res) => {
   try {
     const payload = await blogService.getFeaturedPosts();
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 get featured posts error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to fetch featured posts',
-    });
+    return sendError(res, error);
   }
 });
 
 router.get('/recent', async (req, res) => {
   try {
     const payload = await blogService.getRecentPosts(req.query?.limit);
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 get recent posts error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to fetch recent posts',
-    });
+    return sendError(res, error);
   }
 });
 
@@ -147,12 +117,9 @@ router.get('/popular', async (req, res) => {
       periodInput: req.query?.period,
       limitInput: req.query?.limit,
     });
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 get popular posts error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to fetch popular posts',
-    });
+    return sendError(res, error);
   }
 });
 
@@ -163,40 +130,28 @@ router.get('/search', async (req, res) => {
       pageInput: req.query?.page,
       limitInput: req.query?.limit,
     });
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 search posts error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to search posts',
-    });
+    return sendError(res, error);
   }
 });
 
 router.get('/analytics', optionalAuth, async (req, res) => {
   try {
     const payload = await blogService.getAnalytics(req.user);
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 get blog analytics error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to fetch blog analytics',
-    });
+    return sendError(res, error);
   }
 });
 
 router.post('/import', optionalAuth, async (req, res) => {
   try {
     const payload = await blogService.importMarkdownPosts(req.user);
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 import posts error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to import posts',
-    });
+    return sendError(res, error);
   }
 });
-
-// Compatibility fallback for any endpoint not yet migrated in Phase B.
-router.use('/', legacyBlogRoutes);
 
 module.exports = router;

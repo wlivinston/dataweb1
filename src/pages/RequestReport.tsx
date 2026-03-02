@@ -40,9 +40,12 @@ const RequestReportPage: React.FC = () => {
         body: JSON.stringify(formData),
       });
 
-      if (response.ok) {
+      const json = await response.json().catch(() => ({}));
+      if (response.ok && json?.success !== false) {
         setSubmitted(true);
       } else {
+        const errorMsg = json?.error?.message;
+        if (errorMsg) toast.error(errorMsg);
         // Fallback: open mailto
         window.location.href = createSupportMailto(`Report Request: ${formData.reportType}`,
           `Name: ${formData.name}\nEmail: ${formData.email}\nCompany: ${formData.company}\nReport Type: ${formData.reportType}\nTimeline: ${formData.timeline}\nBudget: ${formData.budget}\n\nDescription:\n${formData.description}`

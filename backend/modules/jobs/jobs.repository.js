@@ -1,5 +1,6 @@
 const { randomUUID } = require('crypto');
 const { query } = require('../../config/database');
+const logger = require('../../config/logger');
 
 const STORAGE_MODE = String(process.env.JOB_STORAGE_MODE || 'auto')
   .trim()
@@ -129,15 +130,13 @@ async function ensureReady() {
       await initializeDurableStore();
       durableEnabled = true;
       initialized = true;
-      console.log('[jobs] Using durable database-backed job storage.');
+      logger.info('using durable database-backed job storage');
     } catch (error) {
       durableEnabled = false;
       initialized = true;
       if (!initWarningEmitted) {
         initWarningEmitted = true;
-        console.warn(
-          `[jobs] Durable job storage unavailable (${error?.message || error}). Falling back to in-memory storage.`
-        );
+        logger.warn({ err: error?.message || error }, 'durable job storage unavailable, falling back to in-memory');
       }
       if (STORAGE_MODE === 'database') {
         const strictError = new Error(

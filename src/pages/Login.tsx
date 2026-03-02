@@ -76,12 +76,13 @@ const Login: React.FC = () => {
       15000
     );
 
-    const payload = await response.json().catch(() => ({}));
+    const json = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const fallbackError = typeof payload?.error === 'string' ? payload.error : 'Sign-in failed';
+      const fallbackError = json?.error?.message || 'Sign-in failed';
       throw new Error(fallbackError);
     }
 
+    const payload = json?.data || {};
     const accessToken = typeof payload?.access_token === 'string' ? payload.access_token : '';
     const refreshToken = typeof payload?.refresh_token === 'string' ? payload.refresh_token : '';
     if (!accessToken || !refreshToken) {

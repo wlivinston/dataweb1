@@ -1,4 +1,7 @@
+const logger = require('../config/logger')
 const { supabase } = require('../config/supabase')
+const { sendError } = require('../modules/common/apiResponse')
+const { ApiError } = require('../modules/common/apiError')
 
 const safeString = (value, fallback = '') => {
   if (value === null || value === undefined) return fallback
@@ -38,7 +41,7 @@ const fetchCustomerByEmail = async (email) => {
     .maybeSingle()
 
   if (error) {
-    console.warn('Customer lookup warning:', error.message)
+    logger.warn({ err: error.message }, 'customer lookup warning')
     return { customerData: null, customerError: error }
   }
 
@@ -51,19 +54,19 @@ const authenticateToken = async (req, res, next) => {
   const token = authHeader && authHeader.split(' ')[1] // Bearer TOKEN
 
   if (!token) {
-    return res.status(401).json({ error: 'Access token required' })
+    return sendError(res, ApiError.unauthorized('Access token required'))
   }
 
   try {
     if (!supabase) {
-      return res.status(500).json({ error: 'Authentication backend is not configured' })
+      return sendError(res, new ApiError(500, 'AUTH_BACKEND_ERROR', 'Authentication backend is not configured'))
     }
 
     // Verify token with Supabase
     const { data: { user }, error } = await supabase.auth.getUser(token)
-    
+
     if (error || !user) {
-      return res.status(401).json({ error: 'Invalid token' })
+      return sendError(res, ApiError.unauthorized('Invalid token'))
     }
 
     // Get additional user data from customers table.
@@ -71,15 +74,15 @@ const authenticateToken = async (req, res, next) => {
     const { customerData } = await fetchCustomerByEmail(user.email)
 
     if (customerData && customerData.is_active === false) {
-      return res.status(401).json({ error: 'Account is deactivated' })
+      return sendError(res, ApiError.unauthorized('Account is deactivated'))
     }
 
     req.user = buildUserContext(user, customerData)
 
     next()
   } catch (error) {
-    console.error('Auth middleware error:', error)
-    return res.status(500).json({ error: 'Authentication failed' })
+    logger.error({ err: error }, 'auth middleware error')
+    return sendError(res, new ApiError(500, 'AUTH_ERROR', 'Authentication failed'))
   }
 }
 
@@ -100,7 +103,7 @@ const optionalAuth = async (req, res, next) => {
     }
 
     const { data: { user }, error } = await supabase.auth.getUser(token)
-    
+
     if (error || !user) {
       req.user = null
       return next()
@@ -121,15 +124,14 @@ const optionalAuth = async (req, res, next) => {
   }
 }
 
-// Admin middleware (for future use)
+// Admin middleware
 const requireAdmin = async (req, res, next) => {
   if (!req.user) {
-    return res.status(401).json({ error: 'Authentication required' })
+    return sendError(res, ApiError.unauthorized('Authentication required'))
   }
 
-  // Check if user has admin subscription status
   if (req.user.subscription_status !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' })
+    return sendError(res, ApiError.forbidden('Admin access required'))
   }
 
   next()
@@ -143,7 +145,7 @@ const verifyToken = async (token) => {
     }
 
     const { data: { user }, error } = await supabase.auth.getUser(token)
-    
+
     if (error || !user) {
       return { valid: false, user: null, error }
     }

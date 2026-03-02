@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 const reportsRepository = require('./reports.repository');
+const logger = require('../../config/logger');
 
 const supportEmail = process.env.ADMIN_EMAIL || process.env.SUPPORT_EMAIL || 'senyo@diaspora-n.com';
 const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER || 'noreply@example.com';
@@ -139,7 +140,7 @@ async function submitReportRequest({
       budget,
     });
   } catch (dbError) {
-    console.log('DB storage skipped:', dbError.message);
+    logger.warn({ err: dbError.message }, 'report db storage skipped');
   }
 
   try {
@@ -154,7 +155,7 @@ async function submitReportRequest({
       requestId,
     });
   } catch (emailError) {
-    console.error('Failed to send report request email:', emailError.message);
+    logger.error({ err: emailError.message }, 'failed to send report request email');
   }
 
   return {

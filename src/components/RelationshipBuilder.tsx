@@ -287,7 +287,7 @@ const RelationshipBuilder: React.FC<RelationshipBuilderProps> = ({
             </TabsContent>
             
             <TabsContent value="list" className="space-y-3">
-              {relationships.length > 0 && schemaType !== 'none' && onApplyRelationships && (
+              {relationships.length > 0 && onApplyRelationships && (
                 <div className="flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded-lg mb-4">
                   <div className="flex items-center gap-2 text-sm text-blue-800">
                     <Database className="h-4 w-4" />

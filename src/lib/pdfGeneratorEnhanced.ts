@@ -747,7 +747,7 @@ export const generateEnhancedPDF = async (
                 }
 
                 if (!chartElement) {
-                  const found = Array.from(chartElements.entries()).find(([id]) =>
+                  const found = Array.from(chartElements?.entries() ?? []).find(([id]) =>
                     id.includes(viz.id) || id === `viz-${viz.id}`
                   );
                   if (found) {

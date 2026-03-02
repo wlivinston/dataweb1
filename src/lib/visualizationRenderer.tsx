@@ -68,7 +68,7 @@ const toScatterData = (data: any[]): { x: number; y: number; name?: string }[] =
 
       return null;
     })
-    .filter((point): point is { x: number; y: number; name?: string } => point !== null);
+    .filter((point): point is { x: number; y: number; name: string } => point !== null);
 };
 
 const getPalette = (viz: Visualization): string[] => {

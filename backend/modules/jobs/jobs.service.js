@@ -1,6 +1,7 @@
 const { randomUUID } = require('crypto');
 const repository = require('./jobs.repository');
 const { ApiError } = require('../common/apiError');
+const logger = require('../../config/logger');
 
 const JOB_STATUSES = {
   QUEUED: 'queued',
@@ -105,7 +106,7 @@ async function executeClaimedJob(job, processor) {
         leaseMs,
       });
     } catch (error) {
-      console.error(`[jobs] Failed to update progress for ${job.id}:`, error);
+      logger.error({ jobId: job.id, err: error }, 'failed to update job progress');
     }
   };
 
@@ -167,7 +168,7 @@ function schedulePump() {
     try {
       await runPump();
     } catch (error) {
-      console.error('[jobs] pump failure:', error);
+      logger.error({ err: error }, 'job pump failure');
     } finally {
       isPumping = false;
     }

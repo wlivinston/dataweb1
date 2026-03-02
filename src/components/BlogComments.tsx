@@ -57,7 +57,15 @@ const isJsonResponse = (response: Response): boolean =>
 
 async function parseJsonStrict<T>(response: Response, context: string): Promise<T> {
   if (isJsonResponse(response)) {
-    return (await response.json()) as T;
+    const json = await response.json();
+    // Unwrap API v1 envelope: { success, data } on success, { success, error } on failure
+    if (json && typeof json === "object" && "success" in json) {
+      if (!json.success) {
+        throw new Error(json.error?.message || `${context}: request failed`);
+      }
+      return json.data as T;
+    }
+    return json as T;
   }
 
   const text = await response.text();
@@ -146,7 +154,18 @@ const normalizeComment = (raw: Partial<Comment> & { replies?: unknown }): Commen
 
 const extractErrorMessage = async (response: Response, fallback: string): Promise<string> => {
   try {
-    const payload = (await response.json()) as ApiErrorResponse;
+    const json = (await response.json()) as any;
+
+    // Handle API v1 envelope error format: { success: false, error: { code, message, details } }
+    if (json && typeof json === 'object' && 'success' in json && !json.success) {
+      const envMsg = json.error?.message;
+      if (typeof envMsg === 'string' && envMsg.trim()) {
+        return envMsg;
+      }
+    }
+
+    // Legacy flat format
+    const payload = json as ApiErrorResponse;
 
     if (typeof payload.error === 'string' && payload.error.trim()) {
       return payload.error;
@@ -431,7 +450,9 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug, postSeed 
         return;
       }
 
-      const payload = (await response.json()) as { comments?: unknown[] };
+      const json = (await response.json()) as any;
+      // Unwrap API v1 envelope
+      const payload = (json && typeof json === 'object' && 'success' in json ? json.data : json) as { comments?: unknown[] };
       const normalized = Array.isArray(payload.comments)
         ? payload.comments.map((item) => normalizeComment(item as Partial<Comment> & { replies?: unknown }))
         : [];

@@ -1,4 +1,5 @@
 // src/lib/loadProjects.ts
+import { getApiUrl } from "./publicConfig";
 
 export interface ProjectData {
   id: string;
@@ -21,7 +22,7 @@ export async function loadProjects(): Promise<ProjectData[]> {
   
   try {
     // Use relative URL for backend API
-    const response = await fetch('/api/projects');
+    const response = await fetch(getApiUrl('/api/projects'));
     
     if (!response.ok) {
       console.error('Failed to fetch projects from backend:', response.status, response.statusText);

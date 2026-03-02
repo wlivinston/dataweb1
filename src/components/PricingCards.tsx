@@ -137,15 +137,15 @@ const PricingCards: React.FC = () => {
         if (!response.ok) return;
 
         const payload = await response.json();
-        const plans = Array.isArray(payload?.plans) ? payload.plans : [];
+        const plans = Array.isArray(payload?.data?.plans) ? payload.data.plans : [];
         if (!plans.length) return;
 
         const mapped = plans
           .map(mapPlanToTier)
-          .sort((a, b) => (a.sortOrder ?? 100) - (b.sortOrder ?? 100));
+          .sort((a: any, b: any) => (a.sortOrder ?? 100) - (b.sortOrder ?? 100));
 
-        if (!mapped.some((tier) => tier.highlighted)) {
-          const professionalIndex = mapped.findIndex((tier) => {
+        if (!mapped.some((tier: any) => tier.highlighted)) {
+          const professionalIndex = mapped.findIndex((tier: any) => {
             const code = String(tier.code || '').toLowerCase();
             const name = String(tier.name || '').toLowerCase();
             return code.includes('professional') || name.includes('professional');

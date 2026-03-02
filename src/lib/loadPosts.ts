@@ -78,7 +78,9 @@ export async function loadPostsFromBackend(): Promise<PostData[]> {
       return getStaticPosts();
     }
 
-    const data = await response.json();
+    const json = await response.json();
+    // Unwrap API v1 envelope: { success, data } on success
+    const data = (json && typeof json === "object" && "success" in json) ? json.data : json;
     console.log("Posts loaded:", data);
 
     if (data.posts && data.posts.length > 0) {

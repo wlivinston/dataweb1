@@ -58,8 +58,8 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
           signal: controller.signal,
         });
         const payload = await response.json().catch(() => null);
-        if (!response.ok || !payload) return;
-        setPricingPreview(payload);
+        if (!response.ok || !payload?.data) return;
+        setPricingPreview(payload.data);
       } catch (_error) {
         // Keep fallback static display prices when preview endpoint is unavailable.
       }

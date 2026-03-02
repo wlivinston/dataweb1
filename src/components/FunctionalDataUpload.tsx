@@ -209,9 +209,9 @@ const FunctionalDataUpload: React.FC = () => {
         });
 
         const payload = await response.json().catch(() => null);
-        if (response.ok && typeof payload?.has_access === 'boolean') {
+        if (response.ok && typeof payload?.data?.has_access === 'boolean') {
           setPaymentServiceUnavailable(false);
-          return payload.has_access;
+          return payload.data.has_access;
         }
 
         if (response.status === 401 || response.status === 403) {
@@ -265,7 +265,7 @@ const FunctionalDataUpload: React.FC = () => {
         return false;
       }
 
-      const hasAccess = data.some((row) => {
+      const hasAccess = data.some((row: any) => {
         const status = String(row.subscription_status || '').toLowerCase().trim();
         return PAID_SUBSCRIPTION_STATUSES.has(status);
       });
@@ -315,12 +315,12 @@ const FunctionalDataUpload: React.FC = () => {
       });
 
       const payload = await response.json().catch(() => null);
-      if (!response.ok || !payload?.checkout_url) {
-        throw new Error(payload?.error || 'Failed to initialize checkout.');
+      if (!response.ok || !payload?.data?.checkout_url) {
+        throw new Error(payload?.error?.message || 'Failed to initialize checkout.');
       }
 
       setShowPaywall(false);
-      window.location.href = payload.checkout_url;
+      window.location.href = payload.data.checkout_url;
     } catch (error: any) {
       console.error('Checkout initialization error:', error);
       if (isPaymentConnectionError(error)) {
@@ -373,8 +373,8 @@ const FunctionalDataUpload: React.FC = () => {
       });
 
       const payload = await response.json().catch(() => null);
-      if (!response.ok || !payload?.verified) {
-        throw new Error(payload?.error || 'Payment verification failed.');
+      if (!response.ok || !payload?.data?.verified) {
+        throw new Error(payload?.error?.message || 'Payment verification failed.');
       }
 
       setPaidPdfAccessCache({ hasAccess: true, checkedAt: Date.now() });
@@ -480,7 +480,7 @@ const FunctionalDataUpload: React.FC = () => {
       const values = records[i].map((v: string) => v.replace(/^"|"$/g, '').trim());
       
       // Only add rows that have at least one non-empty value
-      if (values.some(v => v.length > 0)) {
+      if (values.some((v: any) => v.length > 0)) {
         const row: any = {};
         headers.forEach((header: string, index: number) => {
           // Handle rows with fewer columns than headers
@@ -1457,7 +1457,7 @@ const FunctionalDataUpload: React.FC = () => {
               return { ...baseRow, ...relatedRows[0] };
             } else if (relatedRows.length > 1) {
               // For one-to-many, create multiple rows
-              return relatedRows.map(relatedRow => ({ ...baseRow, ...relatedRow }));
+              return relatedRows.map((relatedRow: any) => ({ ...baseRow, ...relatedRow }));
             }
             return baseRow;
           }).flat();
@@ -2125,7 +2125,7 @@ const FunctionalDataUpload: React.FC = () => {
                           <Card key={i} className="p-4 bg-gradient-to-br from-blue-50 to-white border-blue-100">
                             <p className="font-semibold text-sm">{dt.datasetName} / {dt.columnName}</p>
                             <p className="text-xs text-gray-500 mt-1">Frequency: {dt.frequency} | Coverage: {(dt.coverage * 100).toFixed(0)}%</p>
-                            <p className="text-xs text-gray-500">Range: {dt.dateRange[0]} to {dt.dateRange[1]}</p>
+                            <p className="text-xs text-gray-500">Range: {dt.dateRange.min.toLocaleDateString()} to {dt.dateRange.max.toLocaleDateString()}</p>
                             <Badge variant={dt.isDateTable ? "default" : "secondary"} className="mt-2 text-xs">
                               {dt.isDateTable ? 'Date Dimension' : 'Date Column'}
                             </Badge>

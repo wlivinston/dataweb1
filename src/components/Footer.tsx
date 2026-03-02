@@ -17,7 +17,7 @@ const Footer: React.FC = () => {
 
   useEffect(() => {
     if (!user?.email) return;
-    setEmail((currentEmail) => currentEmail || user.email);
+    setEmail((currentEmail) => currentEmail || user.email || '');
   }, [user?.email]);
 
   const handleNewsletterSubmit = async () => {

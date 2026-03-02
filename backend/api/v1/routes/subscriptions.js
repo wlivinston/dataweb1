@@ -1,28 +1,28 @@
 const express = require('express');
-const { body, validationResult } = require('express-validator');
+const { body } = require('express-validator');
 const { authenticateToken, optionalAuth } = require('../../../middleware/auth');
 const subscriptionsService = require('../../../modules/subscriptions/subscriptions.service');
-const legacySubscriptionsRoutes = require('../../../routes/subscriptions');
+const { assertValidRequest } = require('../../../modules/common/validation');
+const { sendSuccess, sendError } = require('../../../modules/common/apiResponse');
+const { ApiError } = require('../../../modules/common/apiError');
 
 const router = express.Router();
 
 router.get('/plans', async (_req, res) => {
   try {
     const plans = await subscriptionsService.listPublicPlans();
-    return res.json({ plans });
+    return sendSuccess(res, { data: { plans } });
   } catch (error) {
-    console.error('v1 subscription plans error:', error);
-    return res.status(500).json({ error: 'Failed to fetch subscription plans' });
+    return sendError(res, error);
   }
 });
 
 router.get('/pdf-pricing', async (_req, res) => {
   try {
     const pricing = await subscriptionsService.getPdfPricing();
-    return res.json(pricing);
+    return sendSuccess(res, { data: pricing });
   } catch (error) {
-    console.error('v1 pdf pricing error:', error);
-    return res.status(500).json({ error: 'Failed to fetch PDF pricing' });
+    return sendError(res, error);
   }
 });
 
@@ -35,12 +35,9 @@ router.post(
         rawBody: req.body,
         signature: req.headers['stripe-signature'],
       });
-      return res.status(200).json(payload);
+      return sendSuccess(res, { data: payload });
     } catch (error) {
-      console.error('v1 stripe webhook error:', error);
-      return res.status(error?.statusCode || 500).json({
-        error: error?.message || 'Failed to process Stripe webhook',
-      });
+      return sendError(res, error);
     }
   }
 );
@@ -54,12 +51,9 @@ router.post(
         rawBody: req.body,
         signature: req.headers['x-paystack-signature'],
       });
-      return res.status(200).json(payload);
+      return sendSuccess(res, { data: payload });
     } catch (error) {
-      console.error('v1 paystack webhook error:', error);
-      return res.status(error?.statusCode || 500).json({
-        error: error?.message || 'Failed to process Paystack webhook',
-      });
+      return sendError(res, error);
     }
   }
 );
@@ -74,11 +68,7 @@ router.post(
   ],
   async (req, res) => {
     try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
-
+      assertValidRequest(req);
       const payload = await subscriptionsService.createPdfCheckout({
         provider: req.body?.provider,
         plan: req.body?.plan,
@@ -86,12 +76,9 @@ router.post(
         user: req.user,
         req,
       });
-      return res.json(payload);
+      return sendSuccess(res, { data: payload });
     } catch (error) {
-      console.error('v1 create PDF checkout error:', error);
-      return res.status(error?.statusCode || 500).json({
-        error: error?.message || 'Failed to initialize PDF checkout',
-      });
+      return sendError(res, error);
     }
   }
 );
@@ -104,12 +91,9 @@ router.get('/pdf-verify', authenticateToken, async (req, res) => {
       reference: req.query?.reference,
       user: req.user,
     });
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 verify PDF payment error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to verify PDF payment',
-    });
+    return sendError(res, error);
   }
 });
 
@@ -119,33 +103,24 @@ router.post(
   [body('first_name').optional().trim(), body('last_name').optional().trim(), body('source').optional().trim()],
   async (req, res) => {
     try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
-
+      assertValidRequest(req);
       const result = await subscriptionsService.subscribeNewsletter({
         payload: req.body,
         user: req.user,
         queryEmail: req.query?.email,
       });
-
-      return res.status(result.statusCode || 200).json(result.body);
+      return sendSuccess(res, { status: result.statusCode || 200, data: result.body });
     } catch (error) {
       if (error?.code === '23505') {
-        return res.json({
-          message: 'You are already subscribed to the newsletter.',
-          email_sent: false,
-          already_subscribed: true,
+        return sendSuccess(res, {
+          data: {
+            message: 'You are already subscribed to the newsletter.',
+            email_sent: false,
+            already_subscribed: true,
+          },
         });
       }
-
-      console.error('v1 newsletter subscription error:', error);
-      const details = process.env.NODE_ENV === 'development' ? error?.message : undefined;
-      return res.status(error?.statusCode || 500).json({
-        error: 'Failed to subscribe to newsletter',
-        details,
-      });
+      return sendError(res, error);
     }
   }
 );
@@ -155,18 +130,11 @@ router.post(
   [body('email').isEmail().normalizeEmail()],
   async (req, res) => {
     try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
-
+      assertValidRequest(req);
       const payload = await subscriptionsService.unsubscribeNewsletter({ email: req.body.email });
-      return res.json(payload);
+      return sendSuccess(res, { data: payload });
     } catch (error) {
-      console.error('v1 newsletter unsubscribe error:', error);
-      return res.status(error?.statusCode || 500).json({
-        error: error?.message || 'Failed to unsubscribe from newsletter',
-      });
+      return sendError(res, error);
     }
   }
 );
@@ -174,14 +142,9 @@ router.post(
 router.get('/pdf-access', authenticateToken, async (req, res) => {
   try {
     const access = await subscriptionsService.getPdfAccess(req.user);
-    return res.json(access);
+    return sendSuccess(res, { data: access });
   } catch (error) {
-    console.error('v1 pdf access status error:', error);
-    const details = process.env.NODE_ENV === 'development' ? error?.message : undefined;
-    return res.status(500).json({
-      error: 'Failed to check PDF access status',
-      details,
-    });
+    return sendError(res, error);
   }
 });
 
@@ -195,11 +158,7 @@ router.post(
   ],
   async (req, res) => {
     try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
-
+      assertValidRequest(req);
       const payload = await subscriptionsService.createSubscription({
         customerId: req.user?.id,
         planId: req.body?.plan_id,
@@ -207,13 +166,9 @@ router.post(
         autoRenew:
           typeof req.body?.auto_renew === 'boolean' ? req.body.auto_renew : true,
       });
-
-      return res.status(201).json(payload);
+      return sendSuccess(res, { status: 201, data: payload });
     } catch (error) {
-      console.error('v1 create subscription error:', error);
-      return res.status(error?.statusCode || 500).json({
-        error: error?.message || 'Failed to create subscription',
-      });
+      return sendError(res, error);
     }
   }
 );
@@ -221,68 +176,52 @@ router.post(
 router.get('/current', authenticateToken, async (req, res) => {
   try {
     const payload = await subscriptionsService.getCurrentSubscription(req.user?.id);
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 get current subscription error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to fetch subscription',
-    });
+    return sendError(res, error);
   }
 });
 
 router.post('/cancel', authenticateToken, async (req, res) => {
   try {
     const payload = await subscriptionsService.cancelSubscription(req.user?.id);
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 cancel subscription error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to cancel subscription',
-    });
+    return sendError(res, error);
   }
 });
 
 router.post('/reactivate', authenticateToken, async (req, res) => {
   try {
     const payload = await subscriptionsService.reactivateSubscription(req.user?.id);
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 reactivate subscription error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to reactivate subscription',
-    });
+    return sendError(res, error);
   }
 });
 
 router.get('/history', authenticateToken, async (req, res) => {
   try {
     const payload = await subscriptionsService.getSubscriptionHistory(req.user?.id);
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 subscription history error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to fetch subscription history',
-    });
+    return sendError(res, error);
   }
 });
 
 router.get('/admin/all', authenticateToken, async (req, res) => {
   try {
     if (req.user?.subscription_status !== 'admin') {
-      return res.status(403).json({ error: 'Admin access required' });
+      throw ApiError.forbidden('Admin access required');
     }
-
     const payload = await subscriptionsService.getAllSubscriptionsAdmin({
       page: req.query?.page,
       limit: req.query?.limit,
       status: req.query?.status,
     });
-    return res.json(payload);
+    return sendSuccess(res, { data: payload });
   } catch (error) {
-    console.error('v1 get all subscriptions error:', error);
-    return res.status(error?.statusCode || 500).json({
-      error: error?.message || 'Failed to fetch subscriptions',
-    });
+    return sendError(res, error);
   }
 });
 
@@ -292,30 +231,19 @@ router.put(
   [body('status').isIn(['active', 'cancelled', 'expired', 'pending'])],
   async (req, res) => {
     try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
-
+      assertValidRequest(req);
       if (req.user?.subscription_status !== 'admin') {
-        return res.status(403).json({ error: 'Admin access required' });
+        throw ApiError.forbidden('Admin access required');
       }
-
       const payload = await subscriptionsService.updateSubscriptionStatusAdmin({
         subscriptionId: req.params.subscriptionId,
         status: req.body?.status,
       });
-      return res.json(payload);
+      return sendSuccess(res, { data: payload });
     } catch (error) {
-      console.error('v1 update subscription status error:', error);
-      return res.status(error?.statusCode || 500).json({
-        error: error?.message || 'Failed to update subscription status',
-      });
+      return sendError(res, error);
     }
   }
 );
-
-// Compatibility fallback for endpoints not yet migrated in Phase B.
-router.use('/', legacySubscriptionsRoutes);
 
 module.exports = router;

@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const logger = require('../config/logger');
 
 // Create transporter
 const createTransporter = () => {
@@ -77,10 +78,10 @@ const sendVerificationEmail = async (email, firstName, token) => {
     };
 
     const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Verification email sent:', info.messageId);
+    logger.info({ messageId: info.messageId }, 'verification email sent');
     return true;
   } catch (error) {
-    console.error('❌ Failed to send verification email:', error);
+    logger.error({ err: error }, 'failed to send verification email');
     return false;
   }
 };
@@ -149,10 +150,10 @@ const sendPasswordResetEmail = async (email, firstName, token) => {
     };
 
     const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Password reset email sent:', info.messageId);
+    logger.info({ messageId: info.messageId }, 'password reset email sent');
     return true;
   } catch (error) {
-    console.error('❌ Failed to send password reset email:', error);
+    logger.error({ err: error }, 'failed to send password reset email');
     return false;
   }
 };
@@ -209,10 +210,10 @@ const sendSubscriptionEmail = async (email, firstName) => {
     };
 
     const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Subscription email sent:', info.messageId);
+    logger.info({ messageId: info.messageId }, 'subscription email sent');
     return true;
   } catch (error) {
-    console.error('❌ Failed to send subscription email:', error);
+    logger.error({ err: error }, 'failed to send subscription email');
     return false;
   }
 };
@@ -257,10 +258,10 @@ const sendUnsubscribeEmail = async (email, firstName) => {
     };
 
     const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Unsubscribe email sent:', info.messageId);
+    logger.info({ messageId: info.messageId }, 'unsubscribe email sent');
     return true;
   } catch (error) {
-    console.error('❌ Failed to send unsubscribe email:', error);
+    logger.error({ err: error }, 'failed to send unsubscribe email');
     return false;
   }
 };
@@ -305,10 +306,10 @@ const sendCommentNotificationEmail = async (postTitle, commentAuthor, commentCon
     };
 
     const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Comment notification email sent:', info.messageId);
+    logger.info({ messageId: info.messageId }, 'comment notification email sent');
     return true;
   } catch (error) {
-    console.error('❌ Failed to send comment notification email:', error);
+    logger.error({ err: error }, 'failed to send comment notification email');
     return false;
   }
 };

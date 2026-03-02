@@ -1627,12 +1627,13 @@ const trainKMeansModel = (
   const clusterDS = datasetFromRows(data, processedDataset.columns, processedDataset.targetColumn, featureColumns);
   const k = Math.min(5, Math.max(2, Math.floor(Math.sqrt(data.length / 2))));
 
-  const result = kMeansClustering(clusterDS, k);
+  const result = kMeansClustering(clusterDS, featureColumns, k);
 
   // Compute inertia
   const inertia = result.clusters.reduce((sum, cluster) => {
-    return sum + cluster.points.reduce((s, point) => {
-      return s + featureColumns.reduce((d, col) => d + (point[col] - cluster.centroid[col]) ** 2, 0);
+    return sum + cluster.members.reduce((s: any, idx: any) => {
+      const point = data[idx] || {};
+      return s + featureColumns.reduce((d, col) => d + ((point[col] ?? 0) - cluster.centroid[col]) ** 2, 0);
     }, 0);
   }, 0);
 

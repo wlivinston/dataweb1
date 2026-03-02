@@ -50,17 +50,18 @@ export async function subscribeToNewsletter(payload: NewsletterPayload): Promise
   });
 
   if (!response.ok) {
-    const data = await response.json().catch(() => null);
+    const json = await response.json().catch(() => null);
+    const errDetails = json?.error?.details;
     const validationMessage =
-      Array.isArray(data?.errors) && data.errors.length > 0
-        ? data.errors
+      Array.isArray(errDetails?.errors) && errDetails.errors.length > 0
+        ? errDetails.errors
             .map((entry: { msg?: string }) => entry?.msg)
             .filter(Boolean)
             .join(" ")
         : null;
-    const message = validationMessage || data?.error || data?.message || "Failed to subscribe to newsletter.";
+    const message = validationMessage || json?.error?.message || "Failed to subscribe to newsletter.";
     const alreadySubscribed =
-      Boolean(data?.already_subscribed) ||
+      Boolean(errDetails?.already_subscribed) ||
       /already subscribed/i.test(String(message || ""));
     if (alreadySubscribed) {
       return {
@@ -72,7 +73,8 @@ export async function subscribeToNewsletter(payload: NewsletterPayload): Promise
     throw new Error(message);
   }
 
-  const data = await response.json().catch(() => null);
+  const json = await response.json().catch(() => null);
+  const data = json?.data;
   return {
     message: data?.message || "Newsletter subscription successful.",
     emailSent: typeof data?.email_sent === "boolean" ? data.email_sent : null,

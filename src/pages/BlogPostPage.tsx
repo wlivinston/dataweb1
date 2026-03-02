@@ -39,7 +39,15 @@ const isJsonResponse = (response: Response): boolean =>
 
 async function parseJsonStrict<T>(response: Response, context: string): Promise<T> {
   if (isJsonResponse(response)) {
-    return (await response.json()) as T;
+    const json = await response.json();
+    // Unwrap API v1 envelope: { success, data } on success, { success, error } on failure
+    if (json && typeof json === "object" && "success" in json) {
+      if (!json.success) {
+        throw new Error(json.error?.message || `${context}: request failed`);
+      }
+      return json.data as T;
+    }
+    return json as T;
   }
 
   const text = await response.text();

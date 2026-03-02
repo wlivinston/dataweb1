@@ -5,6 +5,7 @@ const {
   sendUnsubscribeEmail,
 } = require('../../services/emailService');
 const subscriptionsRepository = require('./subscriptions.repository');
+const logger = require('../../config/logger');
 
 const SUPPORTED_PAYMENT_PROVIDERS = new Set(['stripe', 'paystack']);
 const SUPPORTED_PDF_PLANS = new Set(['single', 'monthly']);
@@ -228,10 +229,7 @@ async function resolvePaystackPricingForPlan(planKey) {
         conversionApplied = true;
       }
     } catch (exchangeError) {
-      console.warn(
-        `Paystack FX conversion failed (${baseCurrency} -> ${targetCurrency}). Falling back to configured amount.`,
-        exchangeError?.message || exchangeError
-      );
+      logger.warn({ from: baseCurrency, to: targetCurrency, err: exchangeError?.message || exchangeError }, 'paystack fx conversion failed, falling back to configured amount');
     }
   }
 

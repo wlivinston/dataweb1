@@ -64,7 +64,7 @@ const createOrUpdateCustomer = async (user: User) => {
     const { data: existingCustomer } = await supabase
       .from('customers')
       .select('id')
-      .eq('email', user.email)
+      .eq('email', user.email!)
       .maybeSingle()
 
     if (!existingCustomer) {
@@ -78,7 +78,7 @@ const createOrUpdateCustomer = async (user: User) => {
           age: metadataAge,
           registration_country: metadataCountry || null,
           subscription_status: 'free'
-        })
+        } as any)
 
       if (error) {
         console.error('Error creating customer:', error)
@@ -105,8 +105,8 @@ const createOrUpdateCustomer = async (user: User) => {
 
     await supabase
       .from('customers')
-      .update(updates)
-      .eq('id', existingCustomer.id)
+      .update(updates as any)
+      .eq('id', (existingCustomer as any).id)
   } catch (error) {
     console.error('Error handling customer data:', error)
   }
@@ -203,6 +203,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const getInitialSession = async () => {
       try {
+        if (!supabase) return
         const { data: { session } } = await supabase.auth.getSession()
         if (!isMounted) return
 
@@ -390,8 +391,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             last_name: updates.last_name,
             company: updates.company,
             updated_at: new Date().toISOString()
-          })
-          .eq('email', authState.user.email)
+          } as any)
+          .eq('email', authState.user.email!)
       }
 
       return { data, error: null }

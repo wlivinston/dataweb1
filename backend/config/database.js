@@ -1,6 +1,7 @@
 // backend/config/database.js
 const { Pool } = require('pg');
 const { supabase, hasServiceKey } = require('./supabase');
+const logger = require('./logger');
 
 const connectionString = (process.env.DATABASE_URL || '').trim();
 const pgPool = connectionString ? new Pool({ connectionString }) : null;
@@ -14,27 +15,27 @@ async function connectDB() {
   if (pgPool) {
     try {
       await pgPool.query('SELECT 1');
-      console.log('Postgres connection OK');
+      logger.info('postgres connection ok');
       return;
     } catch (err) {
-      console.warn('Postgres ping failed:', err.message);
+      logger.warn({ err: err.message }, 'postgres ping failed');
     }
   }
 
   if (!hasServiceKey || !supabase) {
-    console.warn('Skipping Supabase ping: env not configured.');
+    logger.warn('skipping supabase ping: env not configured');
     return;
   }
 
   try {
     const { data, error } = await supabase.from('blog_posts').select('id').limit(1);
     if (error) {
-      console.warn('Supabase ping failed:', error.message);
+      logger.warn({ err: error.message }, 'supabase ping failed');
       return;
     }
-    console.log(`Supabase connection OK - rows visible: ${data?.length || 0}`);
+    logger.info({ rows: data?.length || 0 }, 'supabase connection ok');
   } catch (err) {
-    console.warn('Supabase ping threw:', err.message);
+    logger.warn({ err: err.message }, 'supabase ping threw');
   }
 }
 
@@ -48,7 +49,7 @@ async function query(sqlOrTable, paramsOrOp = []) {
     const start = Date.now();
     const result = await pgPool.query(sqlOrTable, Array.isArray(paramsOrOp) ? paramsOrOp : []);
     const ms = Date.now() - start;
-    console.log('query', { mode: 'sql', ms, rows: result.rowCount || 0 });
+    logger.debug({ mode: 'sql', ms, rows: result.rowCount || 0 }, 'query');
     return result;
   }
 
@@ -89,17 +90,11 @@ async function query(sqlOrTable, paramsOrOp = []) {
 
     const { data, error } = await req;
     const ms = Date.now() - start;
-    console.log('query', {
-      mode: 'supabase',
-      table,
-      type: op.type,
-      ms,
-      rows: Array.isArray(data) ? data.length : 0,
-    });
+    logger.debug({ mode: 'supabase', table, type: op.type, ms, rows: Array.isArray(data) ? data.length : 0 }, 'query');
     if (error) throw error;
     return { data, error: null };
   } catch (error) {
-    console.error('query error:', error.message);
+    logger.error({ err: error.message }, 'query error');
     throw error;
   }
 }

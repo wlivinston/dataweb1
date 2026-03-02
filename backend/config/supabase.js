@@ -1,5 +1,6 @@
 // backend/config/supabase.js
 const { createClient } = require('@supabase/supabase-js');
+const logger = require('./logger');
 
 const supabaseUrl  = (process.env.SUPABASE_URL || '').trim();
 const serviceKey   = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
@@ -16,7 +17,7 @@ if (hasServiceKey) {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 } else {
-  console.warn('⚠️  SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing. DB calls will be skipped.');
+  logger.warn('supabase url or service role key missing, db calls will be skipped');
 }
 
 if (hasAnonKey) {

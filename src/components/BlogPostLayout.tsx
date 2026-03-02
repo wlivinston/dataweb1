@@ -125,7 +125,7 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
 
   useEffect(() => {
     if (!user?.email) return;
-    setNewsletterEmail((currentEmail) => currentEmail || user.email);
+    setNewsletterEmail((currentEmail) => currentEmail || user.email || '');
   }, [user?.email]);
 
   useEffect(() => {
@@ -176,21 +176,27 @@ const BlogPostLayout: React.FC<BlogPostLayoutProps> = ({ post, backendPostId = n
         },
       });
 
-      const payload = (await response.json().catch(() => ({}))) as {
-        error?: string;
-        message?: string;
+      const json = (await response.json().catch(() => ({}))) as any;
+
+      if (!response.ok) {
+        // Handle API v1 envelope error format: { success: false, error: { message } }
+        const errorMsg =
+          (json && typeof json === "object" && "success" in json && !json.success)
+            ? (json.error?.message || "Failed to like post.")
+            : (json?.error || "Failed to like post.");
+        toast.error(errorMsg);
+        return;
+      }
+
+      // Unwrap API v1 envelope
+      const payload = (json && typeof json === "object" && "success" in json ? json.data : json) as {
         liked?: boolean;
         like_count?: number;
       };
 
-      if (!response.ok) {
-        toast.error(payload.error || "Failed to like post.");
-        return;
-      }
-
-      setHasLiked(Boolean(payload.liked ?? true));
+      setHasLiked(Boolean(payload?.liked ?? true));
       setLikes((current) => {
-        if (typeof payload.like_count === "number") return payload.like_count;
+        if (typeof payload?.like_count === "number") return payload.like_count;
         return current + (hasLiked ? 0 : 1);
       });
     } catch (error) {

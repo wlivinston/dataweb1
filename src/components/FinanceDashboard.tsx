@@ -1882,9 +1882,9 @@ const FinanceDashboard: React.FC = () => {
         });
 
         const payload = await response.json().catch(() => null);
-        if (response.ok && typeof payload?.has_access === 'boolean') {
+        if (response.ok && typeof payload?.data?.has_access === 'boolean') {
           setPaymentServiceUnavailable(false);
-          return payload.has_access;
+          return payload.data.has_access;
         }
 
         if (response.status === 401 || response.status === 403) {
@@ -1938,7 +1938,7 @@ const FinanceDashboard: React.FC = () => {
         return false;
       }
 
-      const hasAccess = data.some((row) => {
+      const hasAccess = data.some((row: any) => {
         const status = String(row.subscription_status || '').toLowerCase().trim();
         return PAID_SUBSCRIPTION_STATUSES.has(status);
       });
@@ -1988,12 +1988,12 @@ const FinanceDashboard: React.FC = () => {
       });
 
       const payload = await response.json();
-      if (!response.ok || !payload?.checkout_url) {
-        throw new Error(payload?.error || 'Failed to initialize checkout.');
+      if (!response.ok || !payload?.data?.checkout_url) {
+        throw new Error(payload?.error?.message || 'Failed to initialize checkout.');
       }
 
       setShowPaywall(false);
-      window.location.href = payload.checkout_url;
+      window.location.href = payload.data.checkout_url;
     } catch (error: any) {
       console.error('Checkout initialization error:', error);
       if (isPaymentConnectionError(error)) {
@@ -2049,8 +2049,8 @@ const FinanceDashboard: React.FC = () => {
       });
 
       const payload = await response.json();
-      if (!response.ok || !payload?.verified) {
-        throw new Error(payload?.error || 'Payment verification failed.');
+      if (!response.ok || !payload?.data?.verified) {
+        throw new Error(payload?.error?.message || 'Payment verification failed.');
       }
 
       setPaidPdfAccessCache({ hasAccess: true, checkedAt: Date.now() });

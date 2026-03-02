@@ -7,17 +7,13 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 // Routes
-const authRoutes = require('./routes/auth');
-const commentRoutes = require('./routes/comments');
-const blogRoutes = require('./routes/blog');
-const reportRoutes = require('./routes/reports');
-const subscriptionsRoutes = require('./routes/subscriptions');
 const apiV1Routes = require('./api/v1');
 
 // Supabase-based DB helpers (no localhost:5432)
 const { connectDB } = require('./config/database');
-// NEW: use the flag exposed by supabase.js
 const { hasServiceKey } = require('./config/supabase');
+const logger = require('./config/logger');
+const requestId = require('./middleware/requestId');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -25,20 +21,6 @@ const parsePositiveInt = (value, fallback, min = 1, max = Number.MAX_SAFE_INTEGE
   const parsed = Number.parseInt(String(value ?? '').trim(), 10);
   if (!Number.isFinite(parsed) || parsed < min) return fallback;
   return Math.min(parsed, max);
-};
-const parseBoolean = (value, fallback = false) => {
-  const normalized = String(value ?? '').trim().toLowerCase();
-  if (!normalized) return fallback;
-  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
-  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
-  return fallback;
-};
-const resolveSunsetHeader = (value, fallback) => {
-  const raw = String(value ?? '').trim();
-  if (!raw) return fallback;
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return fallback;
-  return parsed.toUTCString();
 };
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const IS_PROD = NODE_ENV === 'production';
@@ -50,30 +32,20 @@ const MAX_CONTENT_LENGTH_BYTES = parsePositiveInt(
   20 * 1024 * 1024
 );
 const BODY_LIMIT = process.env.BODY_LIMIT || '1mb';
-const LEGACY_API_ENABLED = parseBoolean(process.env.API_LEGACY_ENABLED, true);
-const LEGACY_API_DEPRECATION_ENABLED = parseBoolean(process.env.API_LEGACY_DEPRECATION_ENABLED, true);
-const LEGACY_API_TELEMETRY_ENABLED = parseBoolean(process.env.API_LEGACY_TELEMETRY_ENABLED, true);
-const LEGACY_API_TELEMETRY_FLUSH_MS = parsePositiveInt(
-  process.env.API_LEGACY_TELEMETRY_FLUSH_MS,
-  300000,
-  10000,
-  24 * 60 * 60 * 1000
-);
-const LEGACY_API_TELEMETRY_TOP_N = parsePositiveInt(
-  process.env.API_LEGACY_TELEMETRY_TOP_N,
-  25,
-  1,
-  500
-);
-const LEGACY_API_DOC_URL = String(process.env.API_LEGACY_DOC_URL || '/api/v1/system/openapi').trim();
-const LEGACY_API_SUNSET_HEADER = resolveSunsetHeader(
-  process.env.API_LEGACY_SUNSET,
-  'Thu, 31 Dec 2026 23:59:59 GMT'
-);
 
 // Ensure req.ip is trustworthy behind load balancers / reverse proxies.
 app.set('trust proxy', parsePositiveInt(process.env.TRUST_PROXY_HOPS, 1, 0, 10));
 app.disable('x-powered-by');
+
+/* -------------------- Request tracking -------------------- */
+app.use(requestId);
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    logger.info({ req, res, responseTime: Date.now() - start }, 'request completed');
+  });
+  next();
+});
 
 /* -------------------- Security -------------------- */
 app.use(
@@ -150,98 +122,6 @@ const isAllowedOrigin = (origin) => {
   if (!IS_PROD && DEV_LOCAL_ORIGIN_REGEX.test(normalizedOrigin)) return true;
   return false;
 };
-const isLegacyApiPath = (pathValue) => {
-  const normalizedPath = String(pathValue || '');
-  return (
-    normalizedPath.startsWith('/api/') &&
-    normalizedPath !== '/api/v1' &&
-    !normalizedPath.startsWith('/api/v1/')
-  );
-};
-
-const legacyApiUsage = new Map();
-let legacyApiHitCount = 0;
-
-const buildLegacyApiTelemetrySnapshot = (topN = LEGACY_API_TELEMETRY_TOP_N) => {
-  const resolvedTopN = parsePositiveInt(topN, LEGACY_API_TELEMETRY_TOP_N, 1, 500);
-  const top = Array.from(legacyApiUsage.values())
-    .sort((a, b) => b.count - a.count)
-    .slice(0, resolvedTopN);
-
-  return {
-    enabled: LEGACY_API_TELEMETRY_ENABLED,
-    legacyApiEnabled: LEGACY_API_ENABLED,
-    legacyDeprecationEnabled: LEGACY_API_DEPRECATION_ENABLED,
-    sunset: LEGACY_API_SUNSET_HEADER,
-    successorDocUrl: LEGACY_API_DOC_URL,
-    totalHits: legacyApiHitCount,
-    uniqueBuckets: legacyApiUsage.size,
-    topN: resolvedTopN,
-    top,
-    generatedAt: new Date().toISOString(),
-  };
-};
-
-const resetLegacyApiTelemetry = () => {
-  legacyApiUsage.clear();
-  legacyApiHitCount = 0;
-  return buildLegacyApiTelemetrySnapshot();
-};
-
-const recordLegacyApiHit = (req) => {
-  legacyApiHitCount += 1;
-
-  const method = String(req.method || 'GET').toUpperCase();
-  const endpoint = `${method} ${req.path}`;
-  const origin = toOrigin(req.headers.origin || '');
-  const normalizedOrigin = origin || 'no-origin';
-  const key = `${endpoint}|${normalizedOrigin}`;
-  const nowIso = new Date().toISOString();
-
-  const current = legacyApiUsage.get(key) || {
-    endpoint,
-    origin: normalizedOrigin,
-    count: 0,
-    firstSeen: nowIso,
-    lastSeen: nowIso,
-  };
-
-  current.count += 1;
-  current.lastSeen = nowIso;
-  legacyApiUsage.set(key, current);
-
-  if (legacyApiHitCount <= 5 || legacyApiHitCount % 100 === 0) {
-    console.warn(
-      `[legacy-api] hit#${legacyApiHitCount} endpoint="${endpoint}" origin="${normalizedOrigin}" ip="${req.ip || 'unknown'}"`
-    );
-  }
-};
-
-const flushLegacyApiUsage = () => {
-  if (!legacyApiUsage.size) return;
-
-  const snapshot = buildLegacyApiTelemetrySnapshot(LEGACY_API_TELEMETRY_TOP_N);
-
-  console.warn(
-    `[legacy-api] usage-snapshot total_hits=${snapshot.totalHits} buckets=${snapshot.uniqueBuckets} top=${JSON.stringify(snapshot.top)}`
-  );
-};
-
-if (LEGACY_API_TELEMETRY_ENABLED) {
-  const telemetryTimer = setInterval(() => {
-    flushLegacyApiUsage();
-  }, LEGACY_API_TELEMETRY_FLUSH_MS);
-
-  // Do not keep process alive just for telemetry interval.
-  if (typeof telemetryTimer.unref === 'function') {
-    telemetryTimer.unref();
-  }
-}
-
-app.locals.legacyApiTelemetry = {
-  snapshot: buildLegacyApiTelemetrySnapshot,
-  reset: resetLegacyApiTelemetry,
-};
 
 app.use(
   cors({
@@ -262,33 +142,6 @@ app.use((req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
 
   return res.status(403).json({ error: 'Origin not allowed' });
-});
-
-/* -------------------- Legacy API controls -------------------- */
-app.use((req, res, next) => {
-  if (!isLegacyApiPath(req.path)) return next();
-
-  if (LEGACY_API_DEPRECATION_ENABLED) {
-    res.setHeader('Deprecation', 'true');
-    res.setHeader('Sunset', LEGACY_API_SUNSET_HEADER);
-    res.setHeader('X-API-Legacy', 'true');
-    res.append('Link', `<${LEGACY_API_DOC_URL}>; rel="successor-version"`);
-  }
-
-  if (LEGACY_API_TELEMETRY_ENABLED) {
-    recordLegacyApiHit(req);
-  }
-
-  if (!LEGACY_API_ENABLED) {
-    return res.status(410).json({
-      error: 'Legacy API is disabled. Use /api/v1 routes.',
-      code: 'API_LEGACY_DISABLED',
-      successor: '/api/v1',
-      docs: LEGACY_API_DOC_URL,
-    });
-  }
-
-  return next();
 });
 
 /* -------------------- Rate limiting -------------------- */
@@ -312,14 +165,13 @@ const apiLimiter = createLimiter({
   max: parsePositiveInt(process.env.RATE_LIMIT_API_MAX, 120, 20, 20000),
   message: 'Too many requests from this IP, please try again later.',
 });
-app.use('/api/', apiLimiter);
+app.use('/api/v1', apiLimiter);
 
 const authLimiter = createLimiter({
   windowMs: parsePositiveInt(process.env.RATE_LIMIT_AUTH_WINDOW_MS, 15 * 60 * 1000, 60 * 1000, 24 * 60 * 60 * 1000),
   max: parsePositiveInt(process.env.RATE_LIMIT_AUTH_MAX, 30, 5, 1000),
   message: 'Too many authentication attempts. Please try again later.',
 });
-app.use('/api/auth', authLimiter);
 app.use('/api/v1/auth', authLimiter);
 
 const commentsWriteLimiter = createLimiter({
@@ -327,7 +179,6 @@ const commentsWriteLimiter = createLimiter({
   max: parsePositiveInt(process.env.RATE_LIMIT_COMMENTS_WRITE_MAX, 40, 5, 2000),
   message: 'Comment actions are temporarily limited. Please try again shortly.',
 });
-app.use('/api/comments', applyLimiterToMethods(writeMethods, commentsWriteLimiter));
 app.use('/api/v1/comments', applyLimiterToMethods(writeMethods, commentsWriteLimiter));
 
 const blogWriteLimiter = createLimiter({
@@ -335,7 +186,6 @@ const blogWriteLimiter = createLimiter({
   max: parsePositiveInt(process.env.RATE_LIMIT_BLOG_WRITE_MAX, 60, 5, 5000),
   message: 'Blog write actions are temporarily limited. Please try again shortly.',
 });
-app.use('/api/blog', applyLimiterToMethods(writeMethods, blogWriteLimiter));
 app.use('/api/v1/blog', applyLimiterToMethods(writeMethods, blogWriteLimiter));
 
 const reportRequestLimiter = createLimiter({
@@ -343,7 +193,6 @@ const reportRequestLimiter = createLimiter({
   max: parsePositiveInt(process.env.RATE_LIMIT_REPORTS_MAX, 10, 1, 500),
   message: 'Too many report requests. Please try again later.',
 });
-app.use('/api/reports/request', reportRequestLimiter);
 app.use('/api/v1/reports/request', reportRequestLimiter);
 
 const checkoutLimiter = createLimiter({
@@ -351,7 +200,6 @@ const checkoutLimiter = createLimiter({
   max: parsePositiveInt(process.env.RATE_LIMIT_CHECKOUT_MAX, 15, 1, 500),
   message: 'Checkout attempts are temporarily limited. Please try again shortly.',
 });
-app.use('/api/subscriptions/pdf-checkout', checkoutLimiter);
 app.use('/api/v1/subscriptions/pdf-checkout', checkoutLimiter);
 
 const newsletterLimiter = createLimiter({
@@ -359,7 +207,6 @@ const newsletterLimiter = createLimiter({
   max: parsePositiveInt(process.env.RATE_LIMIT_NEWSLETTER_MAX, 20, 1, 1000),
   message: 'Too many newsletter attempts. Please try again later.',
 });
-app.use('/api/subscriptions/newsletter', newsletterLimiter);
 app.use('/api/v1/subscriptions/newsletter', newsletterLimiter);
 
 const financeJobLimiter = createLimiter({
@@ -372,13 +219,10 @@ const financeJobLimiter = createLimiter({
   max: parsePositiveInt(process.env.RATE_LIMIT_FINANCE_MAX, 30, 1, 2000),
   message: 'Too many finance processing requests. Please try again shortly.',
 });
-app.use('/api/finance', applyLimiterToMethods(writeMethods, financeJobLimiter));
 app.use('/api/v1/finance', applyLimiterToMethods(writeMethods, financeJobLimiter));
 
 /* -------------------- Parsers -------------------- */
 const webhookPrefixes = [
-  '/api/subscriptions/webhooks/stripe',
-  '/api/subscriptions/webhooks/paystack',
   '/api/v1/subscriptions/webhooks/stripe',
   '/api/v1/subscriptions/webhooks/paystack',
 ];
@@ -418,28 +262,20 @@ app.get('/health', (_req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     environment: NODE_ENV,
-    // use the safe flag from supabase.js
     supabase_configured: hasServiceKey,
     message: 'Backend API is running',
   });
 });
 
 /* -------------------- API Routes -------------------- */
-app.use('/api/auth', authRoutes);
-app.use('/api/comments', commentRoutes);
-app.use('/api/blog', blogRoutes);
-app.use('/api/reports', reportRoutes);
-app.use('/api/subscriptions', subscriptionsRoutes);
 app.use('/api/v1', apiV1Routes);
 
 /* -------------------- Error handling -------------------- */
+const { sendError: sendGlobalError } = require('./modules/common/apiResponse');
 app.use((err, _req, res, _next) => {
-  console.error(err.stack);
-  res.status(500).json({
-    error: 'Something went wrong!',
-    message:
-      process.env.NODE_ENV === 'development' ? err.message : 'Internal server error',
-  });
+  logger.error({ err }, 'unhandled error');
+  if (res.headersSent) return;
+  return sendGlobalError(res, err);
 });
 
 /* -------------------- 404 -------------------- */
@@ -467,18 +303,10 @@ const checkExistingHealthOnPort = async (port) => {
 const startServer = async () => {
   const server = app.listen(PORT);
 
-  server.on('listening', () => {
-    console.log(`[backend] Server running on port ${PORT}`);
-    console.log(`[backend] Health check: http://localhost:${PORT}/health`);
-    console.log(`[backend] API base URL: http://localhost:${PORT}/api`);
-    console.log(
-      `[backend] Legacy API: ${LEGACY_API_ENABLED ? 'enabled (deprecated)' : 'disabled'} | telemetry: ${
-        LEGACY_API_TELEMETRY_ENABLED ? 'on' : 'off'
-      }`
-    );
-    if (LEGACY_API_DEPRECATION_ENABLED) {
-      console.log(`[backend] Legacy API sunset: ${LEGACY_API_SUNSET_HEADER}`);
-    }
+  server.on('listening', async () => {
+    logger.info({ port: PORT }, 'server listening');
+    logger.info({ url: `http://localhost:${PORT}/health` }, 'health endpoint');
+    logger.info({ url: `http://localhost:${PORT}/api/v1` }, 'api v1 endpoint');
 
     server.requestTimeout = DEFAULT_REQUEST_TIMEOUT_MS;
     server.headersTimeout = DEFAULT_REQUEST_TIMEOUT_MS + 5000;
@@ -490,31 +318,27 @@ const startServer = async () => {
       50000
     );
 
-    // Non-blocking DB connectivity check; never crashes the app
-    connectDB().catch((err) => {
-      console.log('[backend] DB check failed:', err?.message || err);
-      console.log('[backend] Server continues running without DB');
-    });
+    // Await DB connectivity check so startup log clearly reflects DB state
+    try {
+      await connectDB();
+      logger.info('server ready (db connected)');
+    } catch (err) {
+      logger.warn({ err: err?.message || err }, 'server ready (db unavailable)');
+    }
   });
 
   server.on('error', async (error) => {
     if (error?.code === 'EADDRINUSE') {
       const existing = await checkExistingHealthOnPort(PORT);
       if (existing.reachable && existing.isDataWebBackend) {
-        console.error(
-          `[backend] Port ${PORT} is already in use by an existing DataWeb backend instance. Stop the duplicate process or change PORT in backend/.env.`
-        );
+        logger.fatal({ port: PORT }, 'port already in use by existing DataWeb backend');
       } else if (existing.reachable) {
-        console.error(
-          `[backend] Port ${PORT} is already in use by another HTTP service. Stop that service or change PORT in backend/.env.`
-        );
+        logger.fatal({ port: PORT }, 'port already in use by another HTTP service');
       } else {
-        console.error(
-          `[backend] Port ${PORT} is already in use by another process. Stop it or change PORT in backend/.env.`
-        );
+        logger.fatal({ port: PORT }, 'port already in use by another process');
       }
     } else {
-      console.error('[backend] Failed to start server:', error);
+      logger.fatal({ err: error }, 'failed to start server');
     }
 
     process.exit(1);
@@ -525,4 +349,3 @@ if (require.main === module) {
 }
 
 module.exports = app;
-

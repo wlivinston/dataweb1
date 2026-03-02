@@ -642,7 +642,8 @@ export const runTimeSeriesAnalysis = (
   if (values.length < 5) return null;
 
   // Detect frequency if not provided
-  const detectedFreq = frequency || detectFrequency(sortedKeys.map(k => new Date(k)));
+  const rawFreq = frequency || detectFrequency(sortedKeys.map(k => new Date(k)));
+  const detectedFreq: TimeSeriesResult['frequency'] = rawFreq === 'irregular' ? 'daily' : rawFreq;
 
   // Determine decomposition period
   let period: number;
