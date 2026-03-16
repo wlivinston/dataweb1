@@ -79,6 +79,7 @@ import {
 } from '@/lib/financeEngine';
 import { generateOnePageFinancialNarrative } from '@/lib/financeNarrative';
 import { generateFinanceOnePagePDF, generateOffsetEntriesAppendixPDF } from '@/lib/financePdfReport';
+import { generateFullFinancePDF, captureChartImages } from '@/lib/financeFullPdfReport';
 import {
   CanonicalTransaction,
   FinancialDatasetFormatDetection,
@@ -312,6 +313,7 @@ const FinanceDashboard: React.FC = () => {
   const [writtenReport, setWrittenReport] = useState('');
   const [isGeneratingFinancePDF, setIsGeneratingFinancePDF] = useState(false);
   const [isGeneratingOffsetPDF, setIsGeneratingOffsetPDF] = useState(false);
+  const [isGeneratingFullPDF, setIsGeneratingFullPDF] = useState(false);
   const [showPaywall, setShowPaywall] = useState(false);
   const [checkoutLoadingProvider, setCheckoutLoadingProvider] = useState<'stripe' | 'paystack' | null>(null);
   const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
@@ -2148,6 +2150,43 @@ const FinanceDashboard: React.FC = () => {
       toast.error('Unable to generate finance PDF. Please try again.');
     } finally {
       setIsGeneratingFinancePDF(false);
+    }
+  };
+
+  const handleDownloadFullPDF = async () => {
+    if (!report || !writtenReport) {
+      toast.error('Generate a financial report first.');
+      return;
+    }
+    if (isGeneratingFullPDF) return;
+
+    const hasAccess = await hasPaidPDFAccess();
+    if (!hasAccess) {
+      if (paymentServiceUnavailable) {
+        showPaymentServiceUnavailableToast();
+        return;
+      }
+      setShowPaywall(true);
+      return;
+    }
+
+    setIsGeneratingFullPDF(true);
+    try {
+      const chartImages = await captureChartImages();
+      await generateFullFinancePDF({
+        report,
+        writtenReport,
+        trialBalance,
+        bankReconciliation: bankRecon,
+        chartImages,
+        filenamePrefix: `${report.companyName}_full_financial_report`,
+      });
+      toast.success('Full financial report PDF generated successfully.');
+    } catch (error) {
+      console.error('Full PDF generation error:', error);
+      toast.error('Unable to generate full report PDF. Please try again.');
+    } finally {
+      setIsGeneratingFullPDF(false);
     }
   };
 
@@ -4010,6 +4049,24 @@ const FinanceDashboard: React.FC = () => {
           <Button
             variant="outline"
             size="sm"
+            onClick={handleDownloadFullPDF}
+            disabled={isGeneratingFullPDF}
+          >
+            {isGeneratingFullPDF ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                Generating Full Report...
+              </>
+            ) : (
+              <>
+                <FileText className="h-4 w-4 mr-1" />
+                Full Report PDF (Paid)
+              </>
+            )}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => {
               setView('upload');
               setReport(null);
@@ -4401,7 +4458,7 @@ const FinanceDashboard: React.FC = () => {
         <TabsContent value="charts" className="p-4 sm:p-6">
           <div className="grid md:grid-cols-2 gap-6">
             {/* Revenue vs Expenses */}
-            <Card className="p-4">
+            <Card className="p-4" data-pdf-chart="revenue-vs-expenses">
               <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="font-semibold text-gray-700 flex items-center gap-2">
                   <BarChart3 className="h-4 w-4 text-emerald-500" />
@@ -4522,7 +4579,7 @@ const FinanceDashboard: React.FC = () => {
             </Card>
 
             {/* Expense Breakdown */}
-            <Card className="p-4">
+            <Card className="p-4" data-pdf-chart="expense-breakdown">
               <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="font-semibold text-gray-700 flex items-center gap-2">
                   <PieIcon className="h-4 w-4 text-violet-500" />
@@ -4644,7 +4701,7 @@ const FinanceDashboard: React.FC = () => {
             </Card>
 
             {/* Cash Flow Waterfall */}
-            <Card className="p-4">
+            <Card className="p-4" data-pdf-chart="cashflow-waterfall">
               <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="font-semibold text-gray-700 flex items-center gap-2">
                   <Activity className="h-4 w-4 text-cyan-500" />
@@ -4761,7 +4818,7 @@ const FinanceDashboard: React.FC = () => {
             </Card>
 
             {/* Asset Allocation */}
-            <Card className="p-4">
+            <Card className="p-4" data-pdf-chart="asset-allocation">
               <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="font-semibold text-gray-700 flex items-center gap-2">
                   <Landmark className="h-4 w-4 text-blue-500" />
@@ -4883,7 +4940,7 @@ const FinanceDashboard: React.FC = () => {
             </Card>
 
             {/* Profitability Margins */}
-            <Card className="p-4 md:col-span-2">
+            <Card className="p-4 md:col-span-2" data-pdf-chart="profitability-margins">
               <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <h4 className="font-semibold text-gray-700 flex items-center gap-2">
                   <TrendingUp className="h-4 w-4 text-green-500" />

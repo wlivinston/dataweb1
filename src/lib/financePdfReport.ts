@@ -13,7 +13,7 @@ interface OffsetAppendixPDFOptions {
   auditLines?: string[];
 }
 
-const formatCurrency = (value: number): string => {
+export const formatCurrency = (value: number): string => {
   const abs = Math.abs(value);
   const formatted = abs.toLocaleString(undefined, {
     minimumFractionDigits: 2,
@@ -22,12 +22,12 @@ const formatCurrency = (value: number): string => {
   return value < 0 ? `-$${formatted}` : `$${formatted}`;
 };
 
-const formatPercent = (value: number | null): string => {
+export const formatPercent = (value: number | null): string => {
   if (value == null || Number.isNaN(value)) return 'N/A';
   return `${value.toFixed(1)}%`;
 };
 
-const triggerPdfDownload = (doc: jsPDF, fileName: string): void => {
+export const triggerPdfDownload = (doc: jsPDF, fileName: string): void => {
   try {
     const blob = doc.output('blob');
     const url = URL.createObjectURL(blob);
