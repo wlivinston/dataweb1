@@ -1387,9 +1387,11 @@ const FinanceDashboard: React.FC = () => {
     console.log('[FinanceDashboard] overlay shown, financeApiJobsEnabled:', financeApiJobsEnabled);
 
     if (financeApiJobsEnabled) {
-      try {
-        console.log('[FinanceDashboard] starting API preflight...');
-        setOverlayMessage('Running backend preflight check...');
+      const PREFLIGHT_TIMEOUT_MS = 12000;
+      console.log('[FinanceDashboard] starting API preflight (max %dms)...', PREFLIGHT_TIMEOUT_MS);
+      setOverlayMessage('Running backend preflight check...');
+
+      const preflightWork = async () => {
         const reportJob = await submitFinanceJob<{
           summary?: {
             pnl?: { netIncome?: number; netMarginPct?: number };
@@ -1416,7 +1418,7 @@ const FinanceDashboard: React.FC = () => {
         });
 
         setOverlayMessage('Waiting for backend report preflight...');
-        const reportResult = await waitForFinanceJob<{
+        return waitForFinanceJob<{
           summary?: {
             pnl?: { netIncome?: number; netMarginPct?: number };
             balanceSheet?: { isBalanced?: boolean; difference?: number };
@@ -1426,7 +1428,17 @@ const FinanceDashboard: React.FC = () => {
           transactionCount?: number;
           caveats?: string[];
         }>(reportJob.id, 20000);
+      };
 
+      try {
+        const reportResult = await Promise.race([
+          preflightWork(),
+          new Promise<never>((_resolve, reject) =>
+            window.setTimeout(() => reject(new Error('Backend preflight timed out')), PREFLIGHT_TIMEOUT_MS)
+          ),
+        ]);
+
+        console.log('[FinanceDashboard] API preflight completed');
         const summaryWarnings = reportResult.result?.summary?.warnings || [];
         const caveats = reportResult.result?.caveats || [];
         summaryWarnings.forEach((warning) => importWarnings.push(`API caveat: ${warning}`));
