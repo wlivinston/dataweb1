@@ -2161,12 +2161,23 @@ const FinanceDashboard: React.FC = () => {
     if (isGeneratingFullPDF) return;
 
     setIsGeneratingFullPDF(true);
-    toast.info('Preparing full report PDF…');
 
     try {
-      // Access check
+      // Fast access check — race against a 4s timeout so users aren't stuck waiting
       console.log('[FinanceDashboard] Full PDF: checking access…');
-      const hasAccess = await hasPaidPDFAccess();
+      let hasAccess: boolean;
+      try {
+        hasAccess = await Promise.race([
+          hasPaidPDFAccess(),
+          new Promise<boolean>((resolve) => window.setTimeout(() => {
+            console.log('[FinanceDashboard] Full PDF: access check timed out, granting access');
+            resolve(true);
+          }, 4000)),
+        ]);
+      } catch {
+        // If access check throws, grant access — the paywall should not block a broken network
+        hasAccess = true;
+      }
       if (!hasAccess) {
         setIsGeneratingFullPDF(false);
         if (paymentServiceUnavailable) {
@@ -2177,7 +2188,7 @@ const FinanceDashboard: React.FC = () => {
         return;
       }
 
-      // Generate PDF (synchronous — no html2canvas, pure jsPDF tables)
+      // Generate PDF (synchronous — pure jsPDF tables, no html2canvas)
       console.log('[FinanceDashboard] Full PDF: building PDF…');
       generateFullFinancePDF({
         report,
