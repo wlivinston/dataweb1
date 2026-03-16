@@ -2163,20 +2163,19 @@ const FinanceDashboard: React.FC = () => {
     setIsGeneratingFullPDF(true);
 
     try {
-      // Fast access check — race against a 4s timeout so users aren't stuck waiting
+      // Access check with 5s hard cap so users don't wait forever
       console.log('[FinanceDashboard] Full PDF: checking access…');
       let hasAccess: boolean;
       try {
         hasAccess = await Promise.race([
           hasPaidPDFAccess(),
-          new Promise<boolean>((resolve) => window.setTimeout(() => {
-            console.log('[FinanceDashboard] Full PDF: access check timed out, granting access');
-            resolve(true);
-          }, 4000)),
+          new Promise<boolean>((_resolve, reject) =>
+            window.setTimeout(() => reject(new Error('access check timed out')), 5000),
+          ),
         ]);
       } catch {
-        // If access check throws, grant access — the paywall should not block a broken network
-        hasAccess = true;
+        // Timeout or error — default to no access so paywall works correctly
+        hasAccess = false;
       }
       if (!hasAccess) {
         setIsGeneratingFullPDF(false);
@@ -2189,13 +2188,21 @@ const FinanceDashboard: React.FC = () => {
       }
 
       // Generate PDF (synchronous — pure jsPDF tables, no html2canvas)
-      console.log('[FinanceDashboard] Full PDF: building PDF…');
+      console.log('[FinanceDashboard] Full PDF: building PDF…', {
+        hasReport: !!report,
+        hasChartData: !!chartData,
+        chartKeys: chartData ? Object.keys(chartData) : [],
+        hasTrialBalance: !!trialBalance,
+        hasBankRecon: !!bankRecon,
+      });
+      // If chartData is null but report exists, regenerate it on the fly
+      const resolvedChartData = chartData ?? (report ? generateFinanceChartData(report) : null);
       generateFullFinancePDF({
         report,
         writtenReport,
         trialBalance,
         bankReconciliation: bankRecon,
-        chartData,
+        chartData: resolvedChartData,
         filenamePrefix: `${report.companyName}_full_financial_report`,
       });
       toast.success('Full financial report PDF downloaded!');
