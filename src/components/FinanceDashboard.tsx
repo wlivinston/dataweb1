@@ -2360,21 +2360,31 @@ const FinanceDashboard: React.FC = () => {
   const submitFinanceJob = async <TResult,>(
     endpoint: string,
     body: Record<string, unknown>,
+    timeoutMs = 10000,
   ): Promise<FinanceApiJob<TResult>> => {
     const token = await getAccessToken();
     if (!token) {
       throw new Error('Authentication session expired. Please sign in again.');
     }
 
-    const response = await fetch(getApiUrl(endpoint), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-        'Idempotency-Key': uuidv4(),
-      },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
+    let response: Response;
+    try {
+      response = await fetch(getApiUrl(endpoint), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          'Idempotency-Key': uuidv4(),
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } finally {
+      window.clearTimeout(timer);
+    }
 
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
@@ -2406,12 +2416,26 @@ const FinanceDashboard: React.FC = () => {
         throw new Error('Authentication session expired while waiting for finance job completion.');
       }
 
-      const response = await fetch(getApiUrl(`/api/finance/jobs/${jobId}`), {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      const pollController = new AbortController();
+      const pollTimer = window.setTimeout(() => pollController.abort(), 8000);
+      let response: Response;
+      try {
+        response = await fetch(getApiUrl(`/api/finance/jobs/${jobId}`), {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          signal: pollController.signal,
+        });
+      } catch (fetchErr) {
+        window.clearTimeout(pollTimer);
+        if ((fetchErr as Error)?.name === 'AbortError') {
+          throw new Error('Finance job poll timed out (backend unreachable).');
+        }
+        throw fetchErr;
+      } finally {
+        window.clearTimeout(pollTimer);
+      }
 
       const payload = await response.json().catch(() => null);
       if (!response.ok) {
