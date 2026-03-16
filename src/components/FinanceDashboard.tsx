@@ -1343,8 +1343,10 @@ const FinanceDashboard: React.FC = () => {
     fallbackView: FinanceView,
     importSummaryFromWizard: string[] = []
   ) => {
+    console.log('[FinanceDashboard] runReportWithCanonicalJournal:', { journalLen: journal.length, fallbackView });
     const validation = validate_journal(journal);
     const liabilityValidation = validate_liability_journal(journal);
+    console.log('[FinanceDashboard] validation:', { valid: validation.isValid, errors: validation.errors.length, liabilityValid: liabilityValidation.isValid });
     const validationAuditLine = validation.isValid
       ? `Validation layer: passed with ${validation.warnings.length} warnings.`
       : `Validation layer: failed with ${validation.errors.length} errors.`;
@@ -1357,6 +1359,7 @@ const FinanceDashboard: React.FC = () => {
     setCanonicalTransactions(journal);
 
     if (!validation.isValid) {
+      console.log('[FinanceDashboard] validation failed, returning to fallbackView');
       toast.error('Import validation failed. Fix mapping/conversion and try again.');
       validation.errors.slice(0, 8).forEach(error => toast.error(error));
       setView(fallbackView);
@@ -1364,6 +1367,7 @@ const FinanceDashboard: React.FC = () => {
     }
 
     if (!liabilityValidation.isValid) {
+      console.log('[FinanceDashboard] liability validation failed, returning to fallbackView');
       toast.error('Liability validation failed. Liabilities must remain on Balance Sheet categories.');
       liabilityValidation.errors.slice(0, 8).forEach(error => toast.error(error));
       setView(fallbackView);
@@ -1374,8 +1378,18 @@ const FinanceDashboard: React.FC = () => {
     const importWarnings = [...warningsFromImport, ...validation.warnings, ...liabilityValidation.warnings];
     const backendPreflightAuditLines: string[] = [];
 
+    // Show processing overlay immediately so the user sees feedback
+    setView('processing');
+    setShowOverlay(true);
+    setOverlayStage('processing');
+    setOverlayProgress(0);
+    setOverlayMessage('Starting financial analysis...');
+    console.log('[FinanceDashboard] overlay shown, financeApiJobsEnabled:', financeApiJobsEnabled);
+
     if (financeApiJobsEnabled) {
       try {
+        console.log('[FinanceDashboard] starting API preflight...');
+        setOverlayMessage('Running backend preflight check...');
         const reportJob = await submitFinanceJob<{
           summary?: {
             pnl?: { netIncome?: number; netMarginPct?: number };
@@ -1401,6 +1415,7 @@ const FinanceDashboard: React.FC = () => {
           reportPeriod,
         });
 
+        setOverlayMessage('Waiting for backend report preflight...');
         const reportResult = await waitForFinanceJob<{
           summary?: {
             pnl?: { netIncome?: number; netMarginPct?: number };
@@ -1410,7 +1425,7 @@ const FinanceDashboard: React.FC = () => {
           };
           transactionCount?: number;
           caveats?: string[];
-        }>(reportJob.id, 90000);
+        }>(reportJob.id, 20000);
 
         const summaryWarnings = reportResult.result?.summary?.warnings || [];
         const caveats = reportResult.result?.caveats || [];
@@ -1430,18 +1445,15 @@ const FinanceDashboard: React.FC = () => {
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : 'unknown preflight error';
+        console.log('[FinanceDashboard] API preflight error (non-blocking):', message);
         importWarnings.push(`API caveat: backend report preflight unavailable (${message}). Local engine output used.`);
         backendPreflightAuditLines.push(`API preflight unavailable: ${message}. Local engine output used.`);
       }
     }
 
     importWarnings.forEach(warning => toast.warning(warning));
-
-    setView('processing');
-    setShowOverlay(true);
-    setOverlayStage('processing');
-    setOverlayProgress(0);
-    setOverlayMessage('Starting financial analysis...');
+    setOverlayMessage('Generating financial report...');
+    console.log('[FinanceDashboard] starting local generateFinancialReport...');
 
     try {
       const result = await generateFinancialReport(
@@ -1624,9 +1636,16 @@ const FinanceDashboard: React.FC = () => {
   };
 
   const confirmAssetJournalGeneration = async () => {
+    console.log('[FinanceDashboard] confirmAssetJournalGeneration called');
     try {
       const generated = buildGeneratedAssetJournal();
+      console.log('[FinanceDashboard] buildGeneratedAssetJournal OK:', {
+        modeUsed: generated.modeUsed,
+        txCount: generated.transactions.length,
+        warnings: generated.warnings.length,
+      });
       const mergedJournal = merge_with_existing_journal(pendingBaseJournal, generated.transactions);
+      console.log('[FinanceDashboard] mergedJournal length:', mergedJournal.length, 'pendingBaseJournal:', pendingBaseJournal.length);
       setPendingAssetJournal(generated.transactions);
       setLiabilityDetection(generated.liabilityDetection);
       setLiabilityAssumptions(generated.assumptions);
@@ -1641,6 +1660,7 @@ const FinanceDashboard: React.FC = () => {
         generated.assumptions.slice(0, 5).forEach(assumption => toast.warning(`Assumption: ${assumption}`));
       }
 
+      console.log('[FinanceDashboard] entering runReportWithCanonicalJournal...');
       await runReportWithCanonicalJournal(
         mergedJournal,
         [...pendingImportWarnings, ...generated.warnings],
@@ -1651,7 +1671,9 @@ const FinanceDashboard: React.FC = () => {
           ...generated.assumptions.map(assumption => `Assumption: ${assumption}`),
         ]
       );
+      console.log('[FinanceDashboard] runReportWithCanonicalJournal completed');
     } catch (error: any) {
+      console.error('[FinanceDashboard] confirmAssetJournalGeneration error:', error);
       toast.error(error?.message || 'Unable to apply selected asset handling mode.');
     }
   };
