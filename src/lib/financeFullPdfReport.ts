@@ -1,8 +1,8 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import html2canvas from 'html2canvas';
 import {
   FinancialReport,
+  FinanceChartData,
   LineItem,
   TrialBalance,
   BankReconciliation,
@@ -19,7 +19,7 @@ export interface FullReportPDFOptions {
   writtenReport: string;
   trialBalance: TrialBalance | null;
   bankReconciliation: BankReconciliation | null;
-  chartImages?: Record<string, string>;
+  chartData: FinanceChartData | null;
   filenamePrefix?: string;
 }
 
@@ -30,6 +30,7 @@ export interface FullReportPDFOptions {
 const MARGIN = 40;
 const HEADER_FILL: [number, number, number] = [16, 185, 129]; // emerald
 const DATA_HEADER_FILL: [number, number, number] = [15, 23, 42]; // slate-900
+const CHART_HEADER_FILL: [number, number, number] = [99, 102, 241]; // indigo-500
 const SECTION_HEADER_SIZE = 16;
 const LINE_HEIGHT = 12;
 
@@ -136,65 +137,37 @@ function addBoldRow(label: string, amount: number): any[] {
   ];
 }
 
-// ---------------------------------------------------------------------------
-// Chart capture
-// ---------------------------------------------------------------------------
-
-export async function captureChartImages(): Promise<Record<string, string>> {
-  const images: Record<string, string> = {};
-  const elements = document.querySelectorAll<HTMLElement>('[data-pdf-chart]');
-  if (elements.length === 0) return images;
-
-  // Find the parent TabsContent that may be hidden
-  const tabsContentSet = new Set<HTMLElement>();
-  elements.forEach((el) => {
-    const parent = el.closest('[data-state="inactive"]') as HTMLElement | null;
-    if (parent) tabsContentSet.add(parent);
-  });
-
-  // Temporarily make hidden tab content visible for html2canvas
-  const restoreFns: (() => void)[] = [];
-  tabsContentSet.forEach((el) => {
-    const prev = {
-      display: el.style.display,
-      position: el.style.position,
-      visibility: el.style.visibility,
-      left: el.style.left,
-    };
-    el.style.display = 'block';
-    el.style.position = 'absolute';
-    el.style.visibility = 'visible';
-    el.style.left = '-9999px';
-    restoreFns.push(() => {
-      el.style.display = prev.display;
-      el.style.position = prev.position;
-      el.style.visibility = prev.visibility;
-      el.style.left = prev.left;
-    });
-  });
-
-  // Brief delay to let the browser layout the newly-visible elements
-  await new Promise((r) => window.setTimeout(r, 200));
-
-  for (const el of elements) {
-    const key = el.getAttribute('data-pdf-chart') || '';
-    if (!key) continue;
-    try {
-      const canvas = await html2canvas(el, {
-        scale: 2,
-        backgroundColor: '#ffffff',
-        logging: false,
-        useCORS: true,
-      });
-      images[key] = canvas.toDataURL('image/jpeg', 0.85);
-    } catch {
-      // Non-blocking: skip this chart
-    }
+/** Add a small labeled table for chart data. Returns new Y position. */
+function addChartTable(
+  doc: jsPDF,
+  y: number,
+  title: string,
+  head: string[][],
+  body: (string | { content: string; styles?: Record<string, unknown> })[][],
+): number {
+  const pageHeight = doc.internal.pageSize.getHeight();
+  if (y + 60 > pageHeight - MARGIN) {
+    doc.addPage();
+    y = MARGIN + 16;
   }
 
-  // Restore hidden tab styles
-  restoreFns.forEach((fn) => fn());
-  return images;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(30, 30, 30);
+  doc.text(title, MARGIN, y);
+  y += 8;
+
+  autoTable(doc, {
+    startY: y,
+    margin: { left: MARGIN, right: MARGIN },
+    head,
+    body,
+    theme: 'grid',
+    styles: { fontSize: 8, cellPadding: 3.5 },
+    headStyles: { fillColor: CHART_HEADER_FILL, textColor: [255, 255, 255], fontSize: 8.5 },
+  });
+
+  return getAutoTableFinalY(doc, y) + 14;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +225,7 @@ function renderCover(
 // ---------------------------------------------------------------------------
 
 function renderProfitAndLoss(doc: jsPDF, report: FinancialReport): void {
-  let y = addSectionHeader(doc, 'Profit & Loss Statement', `Period: ${report.reportPeriod}`);
+  const y = addSectionHeader(doc, 'Profit & Loss Statement', `Period: ${report.reportPeriod}`);
   const pnl = report.profitAndLoss;
 
   const body: any[][] = [];
@@ -292,7 +265,7 @@ function renderProfitAndLoss(doc: jsPDF, report: FinancialReport): void {
 }
 
 function renderCashFlow(doc: jsPDF, report: FinancialReport): void {
-  let y = addSectionHeader(doc, 'Cash Flow Statement', `Period: ${report.reportPeriod}`);
+  const y = addSectionHeader(doc, 'Cash Flow Statement', `Period: ${report.reportPeriod}`);
   const cf = report.cashFlow;
 
   const body: any[][] = [];
@@ -423,56 +396,98 @@ function renderRatios(doc: jsPDF, report: FinancialReport): void {
   });
 }
 
-function renderCharts(doc: jsPDF, chartImages: Record<string, string>): void {
-  const keys = Object.keys(chartImages);
-  if (keys.length === 0) return;
+// ---------------------------------------------------------------------------
+// Chart data tables (replaces slow html2canvas chart image capture)
+// ---------------------------------------------------------------------------
 
-  let y = addSectionHeader(doc, 'Financial Visualizations');
+function renderChartDataTables(doc: jsPDF, cd: FinanceChartData): void {
+  let y = addSectionHeader(doc, 'Financial Visualizations — Data Summary');
 
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const contentWidth = pageWidth - MARGIN * 2;
-  const imgW = (contentWidth - 10) / 2; // two columns with 10pt gap
-  const imgH = 180;
+  // 1. Revenue vs Expenses
+  if (cd.revenueVsExpenses.length > 0) {
+    const body = cd.revenueVsExpenses.map((d) => [
+      d.category,
+      formatCurrency(d.revenue),
+      formatCurrency(d.expenses),
+      formatCurrency(d.revenue - d.expenses),
+    ]);
+    const totals = cd.revenueVsExpenses.reduce(
+      (acc, d) => ({ rev: acc.rev + d.revenue, exp: acc.exp + d.expenses }),
+      { rev: 0, exp: 0 },
+    );
+    body.push([
+      { content: 'Total', styles: { fontStyle: 'bold' } } as any,
+      { content: formatCurrency(totals.rev), styles: { fontStyle: 'bold' } } as any,
+      { content: formatCurrency(totals.exp), styles: { fontStyle: 'bold' } } as any,
+      { content: formatCurrency(totals.rev - totals.exp), styles: { fontStyle: 'bold' } } as any,
+    ]);
+    y = addChartTable(doc, y, 'Revenue vs Expenses', [['Category', 'Revenue', 'Expenses', 'Net']], body);
+  }
 
-  const chartLabels: Record<string, string> = {
-    'revenue-vs-expenses': 'Revenue vs Expenses',
-    'expense-breakdown': 'Expense Breakdown',
-    'cashflow-waterfall': 'Cash Flow Waterfall',
-    'asset-allocation': 'Asset Allocation',
-    'liability-breakdown': 'Liability Breakdown',
-    'profitability-margins': 'Profitability Margins',
-  };
+  // 2. Expense Breakdown
+  if (cd.expenseBreakdown.length > 0) {
+    const total = cd.expenseBreakdown.reduce((s, d) => s + d.value, 0);
+    const body = cd.expenseBreakdown.map((d) => [
+      d.name,
+      formatCurrency(d.value),
+      total > 0 ? `${((d.value / total) * 100).toFixed(1)}%` : '—',
+    ]);
+    body.push([
+      { content: 'Total', styles: { fontStyle: 'bold' } } as any,
+      { content: formatCurrency(total), styles: { fontStyle: 'bold' } } as any,
+      { content: '100.0%', styles: { fontStyle: 'bold' } } as any,
+    ]);
+    y = addChartTable(doc, y, 'Expense Breakdown', [['Expense Category', 'Amount', '% of Total']], body);
+  }
 
-  keys.forEach((key, idx) => {
-    const col = idx % 2;
-    const isNewRow = col === 0 && idx > 0;
+  // 3. Cash Flow Components
+  if (cd.cashFlowWaterfall.length > 0) {
+    const body = cd.cashFlowWaterfall.map((d) => [
+      d.name,
+      formatCurrency(d.value),
+      d.value >= 0
+        ? { content: 'INFLOW', styles: { textColor: [16, 185, 129] as [number, number, number], fontStyle: 'bold' as const } }
+        : { content: 'OUTFLOW', styles: { textColor: [220, 38, 38] as [number, number, number], fontStyle: 'bold' as const } },
+    ]);
+    y = addChartTable(doc, y, 'Cash Flow Components', [['Component', 'Amount', 'Direction']], body);
+  }
 
-    if (isNewRow) y += imgH + 28;
+  // 4. Asset Allocation
+  if (cd.assetAllocation.length > 0) {
+    const total = cd.assetAllocation.reduce((s, d) => s + d.value, 0);
+    const body = cd.assetAllocation.map((d) => [
+      d.name,
+      formatCurrency(d.value),
+      total > 0 ? `${((d.value / total) * 100).toFixed(1)}%` : '—',
+    ]);
+    y = addChartTable(doc, y, 'Asset Allocation', [['Asset Category', 'Value', '% of Total']], body);
+  }
 
-    // Check if we need a new page
-    if (y + imgH + 20 > pageHeight - MARGIN) {
-      doc.addPage();
-      y = MARGIN + 16;
-    }
+  // 5. Liability Breakdown
+  if (cd.liabilityBreakdown.length > 0) {
+    const total = cd.liabilityBreakdown.reduce((s, d) => s + d.value, 0);
+    const body = cd.liabilityBreakdown.map((d) => [
+      d.name,
+      formatCurrency(d.value),
+      total > 0 ? `${((d.value / total) * 100).toFixed(1)}%` : '—',
+    ]);
+    y = addChartTable(doc, y, 'Liability Breakdown', [['Liability Category', 'Value', '% of Total']], body);
+  }
 
-    const x = col === 0 ? MARGIN : MARGIN + imgW + 10;
-
-    // Chart label
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8);
-    doc.setTextColor(60, 60, 60);
-    doc.text(chartLabels[key] || key, x, y);
-
-    try {
-      doc.addImage(chartImages[key], 'JPEG', x, y + 4, imgW, imgH);
-    } catch {
-      // skip
-    }
-  });
+  // 6. Profitability Margins
+  if (cd.profitabilityMargins.length > 0) {
+    const body = cd.profitabilityMargins.map((d) => {
+      const color: [number, number, number] = d.value >= 0 ? [16, 185, 129] : [220, 38, 38];
+      return [
+        d.name,
+        { content: `${d.value.toFixed(1)}%`, styles: { textColor: color, fontStyle: 'bold' as const } },
+      ];
+    });
+    y = addChartTable(doc, y, 'Profitability Margins', [['Margin', 'Percentage']], body);
+  }
 }
 
-function renderWrittenReport(doc: jsPDF, writtenReport: string, report: FinancialReport): void {
+function renderWrittenReport(doc: jsPDF, writtenReport: string): void {
   let y = addSectionHeader(doc, 'Written Financial Report');
 
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -724,8 +739,8 @@ function addPageFooters(doc: jsPDF, companyName: string): void {
 // Main export
 // ---------------------------------------------------------------------------
 
-export async function generateFullFinancePDF(options: FullReportPDFOptions): Promise<void> {
-  const { report, writtenReport, trialBalance, bankReconciliation, chartImages, filenamePrefix } = options;
+export function generateFullFinancePDF(options: FullReportPDFOptions): void {
+  const { report, writtenReport, trialBalance, bankReconciliation, chartData, filenamePrefix } = options;
 
   const doc = new jsPDF({ unit: 'pt', format: 'a4', compress: true });
 
@@ -736,7 +751,7 @@ export async function generateFullFinancePDF(options: FullReportPDFOptions): Pro
     'Balance Sheet',
     'Financial Ratios & Health Score',
   ];
-  if (chartImages && Object.keys(chartImages).length > 0) sections.push('Financial Visualizations');
+  if (chartData) sections.push('Financial Visualizations');
   sections.push('Written Financial Report');
   if (trialBalance) sections.push('Trial Balance');
   if (bankReconciliation) sections.push('Bank Reconciliation');
@@ -756,13 +771,13 @@ export async function generateFullFinancePDF(options: FullReportPDFOptions): Pro
   // 5. Ratios & Health
   renderRatios(doc, report);
 
-  // 6. Charts (optional)
-  if (chartImages && Object.keys(chartImages).length > 0) {
-    renderCharts(doc, chartImages);
+  // 6. Chart data tables (instant — no html2canvas)
+  if (chartData) {
+    renderChartDataTables(doc, chartData);
   }
 
   // 7. Written Report
-  renderWrittenReport(doc, writtenReport, report);
+  renderWrittenReport(doc, writtenReport);
 
   // 8. Trial Balance (optional)
   if (trialBalance) {

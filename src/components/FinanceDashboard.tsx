@@ -79,7 +79,7 @@ import {
 } from '@/lib/financeEngine';
 import { generateOnePageFinancialNarrative } from '@/lib/financeNarrative';
 import { generateFinanceOnePagePDF, generateOffsetEntriesAppendixPDF } from '@/lib/financePdfReport';
-import { generateFullFinancePDF, captureChartImages } from '@/lib/financeFullPdfReport';
+import { generateFullFinancePDF } from '@/lib/financeFullPdfReport';
 import {
   CanonicalTransaction,
   FinancialDatasetFormatDetection,
@@ -2161,7 +2161,7 @@ const FinanceDashboard: React.FC = () => {
     if (isGeneratingFullPDF) return;
 
     setIsGeneratingFullPDF(true);
-    toast.info('Preparing full report PDF — this may take a few seconds…');
+    toast.info('Preparing full report PDF…');
 
     try {
       // Access check
@@ -2177,21 +2177,17 @@ const FinanceDashboard: React.FC = () => {
         return;
       }
 
-      // Capture charts
-      console.log('[FinanceDashboard] Full PDF: capturing charts…');
-      const chartImages = await captureChartImages();
-      console.log('[FinanceDashboard] Full PDF: charts captured (%d images), building PDF…', Object.keys(chartImages).length);
-
-      // Generate PDF
-      await generateFullFinancePDF({
+      // Generate PDF (synchronous — no html2canvas, pure jsPDF tables)
+      console.log('[FinanceDashboard] Full PDF: building PDF…');
+      generateFullFinancePDF({
         report,
         writtenReport,
         trialBalance,
         bankReconciliation: bankRecon,
-        chartImages,
+        chartData,
         filenamePrefix: `${report.companyName}_full_financial_report`,
       });
-      toast.success('Full financial report PDF downloaded successfully!');
+      toast.success('Full financial report PDF downloaded!');
     } catch (error) {
       console.error('[FinanceDashboard] Full PDF generation error:', error);
       toast.error(`Unable to generate full report PDF: ${error instanceof Error ? error.message : 'unknown error'}`);
