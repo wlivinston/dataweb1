@@ -2160,19 +2160,29 @@ const FinanceDashboard: React.FC = () => {
     }
     if (isGeneratingFullPDF) return;
 
-    const hasAccess = await hasPaidPDFAccess();
-    if (!hasAccess) {
-      if (paymentServiceUnavailable) {
-        showPaymentServiceUnavailableToast();
+    setIsGeneratingFullPDF(true);
+    toast.info('Preparing full report PDF — this may take a few seconds…');
+
+    try {
+      // Access check
+      console.log('[FinanceDashboard] Full PDF: checking access…');
+      const hasAccess = await hasPaidPDFAccess();
+      if (!hasAccess) {
+        setIsGeneratingFullPDF(false);
+        if (paymentServiceUnavailable) {
+          showPaymentServiceUnavailableToast();
+          return;
+        }
+        setShowPaywall(true);
         return;
       }
-      setShowPaywall(true);
-      return;
-    }
 
-    setIsGeneratingFullPDF(true);
-    try {
+      // Capture charts
+      console.log('[FinanceDashboard] Full PDF: capturing charts…');
       const chartImages = await captureChartImages();
+      console.log('[FinanceDashboard] Full PDF: charts captured (%d images), building PDF…', Object.keys(chartImages).length);
+
+      // Generate PDF
       await generateFullFinancePDF({
         report,
         writtenReport,
@@ -2181,10 +2191,10 @@ const FinanceDashboard: React.FC = () => {
         chartImages,
         filenamePrefix: `${report.companyName}_full_financial_report`,
       });
-      toast.success('Full financial report PDF generated successfully.');
+      toast.success('Full financial report PDF downloaded successfully!');
     } catch (error) {
-      console.error('Full PDF generation error:', error);
-      toast.error('Unable to generate full report PDF. Please try again.');
+      console.error('[FinanceDashboard] Full PDF generation error:', error);
+      toast.error(`Unable to generate full report PDF: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
       setIsGeneratingFullPDF(false);
     }
