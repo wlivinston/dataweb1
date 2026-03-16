@@ -1997,19 +1997,22 @@ const FinanceDashboard: React.FC = () => {
     provider: 'stripe' | 'paystack',
     plan: 'single' | 'monthly'
   ) => {
+    console.log('[Payment] startProviderCheckout:', { provider, plan, hasUser: !!user });
+
     if (!user) {
-      toast.error('Please sign in first to complete payment.');
+      toast.error('Please sign in first to complete payment.', { duration: 6000 });
       return;
     }
 
     const token = await getAccessToken();
     if (!token) {
-      toast.error('Authentication session expired. Please sign in again.');
+      toast.error('Authentication session expired. Please sign in again.', { duration: 6000 });
       return;
     }
 
     setCheckoutLoadingProvider(provider);
     try {
+      console.log('[Payment] Calling pdf-checkout endpoint…');
       const response = await fetch(getApiUrl('/api/subscriptions/pdf-checkout'), {
         method: 'POST',
         headers: {
@@ -2024,19 +2027,20 @@ const FinanceDashboard: React.FC = () => {
       });
 
       const payload = await response.json();
+      console.log('[Payment] pdf-checkout response:', { status: response.status, ok: response.ok, hasUrl: !!payload?.data?.checkout_url });
       if (!response.ok || !payload?.data?.checkout_url) {
-        throw new Error(payload?.error?.message || 'Failed to initialize checkout.');
+        throw new Error(payload?.error?.message || `Checkout failed (HTTP ${response.status}). Check backend logs.`);
       }
 
       setShowPaywall(false);
       window.location.href = payload.data.checkout_url;
     } catch (error: any) {
-      console.error('Checkout initialization error:', error);
+      console.error('[Payment] Checkout initialization error:', error);
       if (isPaymentConnectionError(error)) {
         setPaymentServiceUnavailable(true);
         showPaymentServiceUnavailableToast();
       } else {
-        toast.error(error?.message || 'Could not start payment checkout.');
+        toast.error(error?.message || 'Could not start payment checkout.', { duration: 8000 });
       }
       setCheckoutLoadingProvider(null);
     }
