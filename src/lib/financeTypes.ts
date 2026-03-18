@@ -204,6 +204,9 @@ export interface FinanceChartData {
   assetAllocation: { name: string; value: number }[];
   liabilityBreakdown: { name: string; value: number }[];
   profitabilityMargins: { name: string; value: number; color: string }[];
+  financialHealthRadar: { subject: string; value: number; fullMark: number }[];
+  pnlWaterfall: { category: string; value: number; isTotal?: boolean }[];
+  marginRadialBars: { name: string; value: number; fill: string }[];
 }
 
 // === Manual Entry Row ===

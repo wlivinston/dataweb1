@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useRef } from 'react';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+  ScatterChart, Scatter, Legend,
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
 } from 'recharts';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -60,6 +62,9 @@ const ALGORITHM_INFO: Record<string, { label: string; desc: string; when: string
   logistic_regression: { label: 'Logistic Regression', desc: 'Probabilistic classifier with built-in confidence scores. Highly interpretable.', when: 'Binary or multi-class categorical target.' },
   decision_tree: { label: 'Decision Tree', desc: 'Non-linear model that captures complex feature interactions through hierarchical splits.', when: 'When interpretability and non-linear patterns matter.' },
   random_forest: { label: 'Random Forest', desc: 'Ensemble of trees that reduces variance. Often best performance for tabular data.', when: 'High-dimensional datasets where accuracy is priority.' },
+  gradient_boosting: { label: 'Gradient Boosting', desc: 'Sequential ensemble that corrects errors iteratively. Excellent for complex non-linear patterns.', when: 'When you need high accuracy on structured data with complex interactions.' },
+  naive_bayes: { label: 'Naive Bayes', desc: 'Fast probabilistic classifier based on Bayes theorem. Works well with independent features.', when: 'Quick classification with many features. Good baseline model.' },
+  knn: { label: 'K-Nearest Neighbors', desc: 'Instance-based learning that predicts based on similarity to training examples.', when: 'When local patterns matter more than global structure.' },
   k_means: { label: 'K-Means Clustering', desc: 'Groups similar rows into clusters when no target variable exists.', when: 'Unsupervised discovery of natural groups.' },
 };
 
@@ -1348,6 +1353,126 @@ const MLEngineDashboard: React.FC = () => {
                     ))}
                   </Bar>
                 </BarChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Predicted vs Actual scatter (regression) */}
+        {isRegression && evalModel.testPredictions && evalModel.testActuals && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Predicted vs Actual</CardTitle>
+              <CardDescription>Points near the diagonal line indicate accurate predictions</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={300}>
+                <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis type="number" dataKey="actual" name="Actual" tick={{ fontSize: 11 }}
+                    label={{ value: 'Actual', position: 'insideBottom', offset: -10, fontSize: 12 }} />
+                  <YAxis type="number" dataKey="predicted" name="Predicted" tick={{ fontSize: 11 }}
+                    label={{ value: 'Predicted', angle: -90, position: 'insideLeft', offset: 5, fontSize: 12 }} />
+                  <Tooltip formatter={(v: number) => v.toFixed(3)} />
+                  <Scatter
+                    data={evalModel.testActuals.map((a, i) => ({ actual: a, predicted: evalModel.testPredictions![i] }))}
+                    fill="#3b82f6" fillOpacity={0.6} r={3}
+                  />
+                </ScatterChart>
+              </ResponsiveContainer>
+              <p className="text-xs text-gray-400 text-center mt-1">Diagonal = perfect prediction</p>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Residual distribution (regression) */}
+        {isRegression && evalModel.residuals && evalModel.residuals.length > 0 && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Residual Distribution</CardTitle>
+              <CardDescription>Residuals should be centered around zero with no pattern</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart
+                  data={(() => {
+                    const res = evalModel.residuals!;
+                    const mn = Math.min(...res);
+                    const mx = Math.max(...res);
+                    const bins = 20;
+                    const binWidth = (mx - mn) / bins || 1;
+                    const counts = Array(bins).fill(0);
+                    res.forEach(r => {
+                      const idx = Math.min(Math.floor((r - mn) / binWidth), bins - 1);
+                      counts[idx]++;
+                    });
+                    return counts.map((count, i) => ({
+                      range: (mn + i * binWidth).toFixed(2),
+                      count,
+                    }));
+                  })()}
+                  margin={{ top: 5, right: 20, bottom: 20, left: 20 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="range" tick={{ fontSize: 9 }} interval="preserveStartEnd"
+                    label={{ value: 'Residual', position: 'insideBottom', offset: -10, fontSize: 12 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip />
+                  <Bar dataKey="count" fill="#8b5cf6" radius={[2, 2, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Model Comparison Radar */}
+        {comparison.results.length > 1 && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Model Comparison</CardTitle>
+              <CardDescription>Normalized metrics across all trained models</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={320}>
+                <RadarChart
+                  data={(() => {
+                    if (isRegression) {
+                      const models = comparison.results.filter(m => m.regressionMetrics);
+                      const maxRMSE = Math.max(...models.map(m => m.regressionMetrics!.rmse), 1e-10);
+                      return [
+                        { metric: 'R²', ...Object.fromEntries(models.map(m => [m.algorithmLabel, Math.max(0, m.regressionMetrics!.rSquared)])) },
+                        { metric: 'Adj R²', ...Object.fromEntries(models.map(m => [m.algorithmLabel, Math.max(0, m.regressionMetrics!.adjustedRSquared)])) },
+                        { metric: '1-RMSE(norm)', ...Object.fromEntries(models.map(m => [m.algorithmLabel, Math.max(0, 1 - m.regressionMetrics!.rmse / maxRMSE)])) },
+                        { metric: '1-MAE(norm)', ...Object.fromEntries(models.map(m => [m.algorithmLabel, Math.max(0, 1 - m.regressionMetrics!.mae / maxRMSE)])) },
+                      ];
+                    } else {
+                      const models = comparison.results.filter(m => m.classificationMetrics);
+                      return [
+                        { metric: 'Accuracy', ...Object.fromEntries(models.map(m => [m.algorithmLabel, m.classificationMetrics!.accuracy])) },
+                        { metric: 'Precision', ...Object.fromEntries(models.map(m => [m.algorithmLabel, Number(m.classificationMetrics!.precision)])) },
+                        { metric: 'Recall', ...Object.fromEntries(models.map(m => [m.algorithmLabel, Number(m.classificationMetrics!.recall)])) },
+                        { metric: 'F1', ...Object.fromEntries(models.map(m => [m.algorithmLabel, Number(m.classificationMetrics!.f1)])) },
+                      ];
+                    }
+                  })()}
+                  cx="50%" cy="50%" outerRadius="70%"
+                >
+                  <PolarGrid />
+                  <PolarAngleAxis dataKey="metric" tick={{ fontSize: 11 }} />
+                  <PolarRadiusAxis domain={[0, 1]} tick={{ fontSize: 9 }} />
+                  {comparison.results
+                    .filter(m => isRegression ? m.regressionMetrics : m.classificationMetrics)
+                    .map((m, i) => (
+                      <Radar key={m.algorithm} name={m.algorithmLabel} dataKey={m.algorithmLabel}
+                        stroke={['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'][i % 6]}
+                        fill={['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'][i % 6]}
+                        fillOpacity={0.1} strokeWidth={2}
+                      />
+                    ))
+                  }
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Tooltip />
+                </RadarChart>
               </ResponsiveContainer>
             </CardContent>
           </Card>

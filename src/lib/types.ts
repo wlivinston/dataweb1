@@ -61,7 +61,7 @@ export interface DAXCalculation {
 export interface Visualization {
   id: string;
   title: string;
-  type: 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'table' | 'gauge';
+  type: 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'table' | 'gauge' | 'radar' | 'treemap' | 'histogram' | 'boxplot' | 'heatmap' | 'funnel' | 'composed' | 'radialbar' | 'waterfall' | 'stacked_bar' | 'donut' | 'pareto' | 'pct_stacked_bar' | 'bubble' | 'dual_axis';
   data: any;
   colors: string[];
   gradient: string;

@@ -1319,6 +1319,38 @@ export function generateFinanceChartData(report: FinancialReport): FinanceChartD
     { name: 'Net Margin', value: pnl.netMargin, color: SHARED_CHART_PALETTE[4] },
   ];
 
+  // Financial Health Radar — key ratios normalized to 0-100 scale
+  const ratios = report.ratios;
+  const clamp = (v: number | null, max: number = 100): number =>
+    v == null ? 0 : Math.min(Math.max(Number(v) || 0, 0), max);
+  const financialHealthRadar = [
+    { subject: 'Gross Margin', value: clamp((ratios.grossMargin ?? 0) * 100), fullMark: 100 },
+    { subject: 'Net Margin', value: clamp((ratios.netProfitMargin ?? 0) * 100), fullMark: 100 },
+    { subject: 'Current Ratio', value: clamp((ratios.currentRatio ?? 0) * 20, 100), fullMark: 100 },
+    { subject: 'ROA', value: clamp((ratios.returnOnAssets ?? 0) * 100), fullMark: 100 },
+    { subject: 'ROE', value: clamp((ratios.returnOnEquity ?? 0) * 100), fullMark: 100 },
+    { subject: 'Asset Turnover', value: clamp((ratios.assetTurnover ?? 0) * 25, 100), fullMark: 100 },
+  ];
+
+  // P&L Waterfall — Revenue stepping through costs to Net Income
+  const pnlWaterfall: { category: string; value: number; isTotal?: boolean }[] = [
+    { category: 'Revenue', value: pnl.totalRevenue, isTotal: true },
+    { category: 'COGS', value: -pnl.totalCOGS },
+    { category: 'Gross Profit', value: pnl.grossProfit, isTotal: true },
+    { category: 'Op. Expenses', value: -pnl.totalOperatingExpenses },
+    { category: 'Op. Income', value: pnl.operatingIncome, isTotal: true },
+    { category: 'Other Net', value: pnl.totalOtherIncome - pnl.totalOtherExpenses },
+    { category: 'Tax', value: -pnl.taxExpense },
+    { category: 'Net Income', value: pnl.netIncome, isTotal: true },
+  ];
+
+  // Margin Radial Bars
+  const marginRadialBars = [
+    { name: 'Gross Margin', value: Math.round((pnl.grossMargin ?? 0) * 100), fill: SHARED_CHART_PALETTE[5] },
+    { name: 'Op. Margin', value: Math.round((safeDivide(pnl.operatingIncome, pnl.totalRevenue) ?? 0) * 100), fill: SHARED_CHART_PALETTE[0] },
+    { name: 'Net Margin', value: Math.round((pnl.netMargin ?? 0) * 100), fill: SHARED_CHART_PALETTE[4] },
+  ];
+
   return {
     revenueVsExpenses,
     expenseBreakdown,
@@ -1326,6 +1358,9 @@ export function generateFinanceChartData(report: FinancialReport): FinanceChartD
     assetAllocation,
     liabilityBreakdown,
     profitabilityMargins,
+    financialHealthRadar,
+    pnlWaterfall,
+    marginRadialBars,
   };
 }
 

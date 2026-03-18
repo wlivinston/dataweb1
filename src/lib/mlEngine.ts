@@ -15,7 +15,10 @@ export type MLAlgorithm =
   | 'logistic_regression'
   | 'decision_tree'
   | 'random_forest'
-  | 'k_means';
+  | 'k_means'
+  | 'gradient_boosting'
+  | 'naive_bayes'
+  | 'knn';
 
 export type PreprocessingStrategy =
   | 'mean_imputation'
@@ -149,6 +152,11 @@ export interface ModelResult {
   classValues?: number[];
   logisticOvRWeights?: number[][];
   logisticOvRBiases?: number[];
+  testPredictions?: number[];
+  testActuals?: number[];
+  residuals?: number[];
+  rocPoints?: { fpr: number; tpr: number }[];
+  aucScore?: number;
 }
 
 export interface ModelComparisonResult {
@@ -891,6 +899,8 @@ const trainLinearRegression = (
   const maxImp = Math.max(...importance.map(i => i.importance), 0.001);
   importance.forEach(i => { i.importance = i.importance / maxImp; });
 
+  const residuals = predictions.map((p, i) => actuals[i] - p);
+
   return {
     algorithm: 'linear_regression',
     algorithmLabel: 'Linear Regression',
@@ -905,6 +915,9 @@ const trainLinearRegression = (
     equation: regResult.equation,
     interpretation: `Linear Regression achieved R2 = ${metrics.rSquared.toFixed(3)}, RMSE = ${metrics.rmse.toFixed(3)}.`,
     isTopModel: false,
+    testPredictions: predictions,
+    testActuals: actuals,
+    residuals,
   };
 };
 
@@ -1043,6 +1056,8 @@ const trainLogisticRegression = (
     classValues: uniqueClasses,
     logisticOvRWeights: allWeights,
     logisticOvRBiases: allBiases,
+    testPredictions: predictions,
+    testActuals: actuals,
   };
 };
 
@@ -1442,6 +1457,8 @@ const trainDecisionTree = (
       isTopModel: false,
       tree,
       classValues,
+      testPredictions: predictions,
+      testActuals: actualIndices,
     };
   }
 
@@ -1474,6 +1491,9 @@ const trainDecisionTree = (
     interpretation: `Decision Tree (CART) depth ${treeStats.maxDepth} with ${treeStats.leafCount} leaves achieved R² ${metrics.rSquared.toFixed(3)} and RMSE ${metrics.rmse.toFixed(3)}.`,
     isTopModel: false,
     tree,
+    testPredictions: predictions,
+    testActuals: actuals,
+    residuals: predictions.map((p, i) => actuals[i] - p),
   };
 };
 
@@ -1565,6 +1585,8 @@ const trainRandomForest = (
       isTopModel: false,
       forest,
       classValues,
+      testPredictions: predictions,
+      testActuals: actualIndices,
     };
   }
 
@@ -1615,6 +1637,9 @@ const trainRandomForest = (
     interpretation: `Random Forest (CART, ${nTrees} trees) achieved R² ${metrics.rSquared.toFixed(3)} and RMSE ${metrics.rmse.toFixed(3)}.`,
     isTopModel: false,
     forest,
+    testPredictions: predictions,
+    testActuals: actuals,
+    residuals: predictions.map((p, i) => actuals[i] - p),
   };
 };
 
@@ -1678,6 +1703,376 @@ const trainKMeansModel = (
 };
 
 // ============================================================
+// E2. Gradient Boosting (simplified — uses decision stumps)
+// ============================================================
+
+interface BoostingStump {
+  featureIndex: number;
+  threshold: number;
+  leftPred: number;
+  rightPred: number;
+}
+
+const trainGradientBoosting = (
+  processedDataset: ProcessedDataset,
+  trainTestSplit: number,
+  problemType: MLProblemType
+): ModelResult => {
+  const t0 = performance.now();
+  const { X, y, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
+  const splitIdx = Math.floor(X.length * trainTestSplit);
+  const trainX = X.slice(0, splitIdx);
+  const trainY = y.slice(0, splitIdx);
+  const testX = X.slice(splitIdx);
+  const testY = y.slice(splitIdx);
+
+  const nStumps = 30;
+  const learningRate = 0.15;
+  const stumps: BoostingStump[] = [];
+
+  const meanY = trainY.reduce((s, v) => s + v, 0) / trainY.length;
+  const predictions = new Array(trainY.length).fill(meanY);
+  const residuals = trainY.map((y, i) => y - predictions[i]);
+  const featureUseCounts: Record<string, number> = {};
+  featureColumns.forEach(f => { featureUseCounts[f] = 0; });
+
+  // Build stumps sequentially on residuals
+  for (let t = 0; t < nStumps; t++) {
+    let bestStump: BoostingStump | null = null;
+    let bestSSE = Infinity;
+
+    for (let fi = 0; fi < featureColumns.length; fi++) {
+      const f = featureColumns[fi];
+      const vals = trainX.map(r => (r[f] as number) || 0);
+      const sorted = [...new Set(vals)].sort((a, b) => a - b);
+      const thresholds = sorted.length > 20
+        ? Array.from({ length: 10 }, (_, i) => sorted[Math.floor(i * sorted.length / 10)])
+        : sorted;
+
+      for (const thresh of thresholds) {
+        let leftSum = 0, leftCount = 0, rightSum = 0, rightCount = 0;
+        for (let i = 0; i < trainX.length; i++) {
+          const v = (trainX[i][f] as number) || 0;
+          if (v <= thresh) { leftSum += residuals[i]; leftCount++; }
+          else { rightSum += residuals[i]; rightCount++; }
+        }
+        if (leftCount === 0 || rightCount === 0) continue;
+        const leftPred = leftSum / leftCount;
+        const rightPred = rightSum / rightCount;
+        let sse = 0;
+        for (let i = 0; i < trainX.length; i++) {
+          const v = (trainX[i][f] as number) || 0;
+          const pred = v <= thresh ? leftPred : rightPred;
+          sse += (residuals[i] - pred) ** 2;
+        }
+        if (sse < bestSSE) {
+          bestSSE = sse;
+          bestStump = { featureIndex: fi, threshold: thresh, leftPred, rightPred };
+        }
+      }
+    }
+
+    if (!bestStump) break;
+    stumps.push(bestStump);
+    featureUseCounts[featureColumns[bestStump.featureIndex]]++;
+
+    // Update predictions and residuals
+    for (let i = 0; i < trainX.length; i++) {
+      const f = featureColumns[bestStump.featureIndex];
+      const v = (trainX[i][f] as number) || 0;
+      const pred = v <= bestStump.threshold ? bestStump.leftPred : bestStump.rightPred;
+      predictions[i] += learningRate * pred;
+      residuals[i] = trainY[i] - predictions[i];
+    }
+  }
+
+  // Predict function
+  const predictGB = (row: Record<string, number>): number => {
+    let pred = meanY;
+    for (const stump of stumps) {
+      const f = featureColumns[stump.featureIndex];
+      const v = (row[f] as number) || 0;
+      pred += learningRate * (v <= stump.threshold ? stump.leftPred : stump.rightPred);
+    }
+    return pred;
+  };
+
+  const testPreds = testX.map(predictGB);
+
+  // Feature importance from usage frequency
+  const maxUse = Math.max(...Object.values(featureUseCounts), 1);
+  const featureImportance = featureColumns.map(f => ({
+    feature: f,
+    importance: featureUseCounts[f] / maxUse,
+    correlationWithTarget: 0,
+    isSelected: true,
+  })).sort((a, b) => b.importance - a.importance);
+
+  const durationMs = performance.now() - t0;
+
+  if (problemType === 'regression') {
+    const metrics = computeRegressionMetrics(testY, testPreds, featureColumns.length);
+    return {
+      algorithm: 'gradient_boosting',
+      algorithmLabel: 'Gradient Boosting',
+      problemType,
+      trainingDurationMs: durationMs,
+      trainRows: trainX.length,
+      testRows: testX.length,
+      regressionMetrics: metrics,
+      featureImportance,
+      interpretation: `Gradient Boosting (${stumps.length} stumps, lr=${learningRate}): R² = ${metrics.rSquared.toFixed(3)}, RMSE = ${metrics.rmse.toFixed(3)}.`,
+      isTopModel: false,
+      testPredictions: testPreds,
+      testActuals: testY,
+      residuals: testPreds.map((p, i) => testY[i] - p),
+    };
+  } else {
+    const classVals = [...new Set(testY)].sort((a, b) => a - b);
+    const classTestPreds = testPreds.map(p => {
+      let best = classVals[0];
+      let bestDist = Math.abs(p - best);
+      for (const cv of classVals) {
+        const d = Math.abs(p - cv);
+        if (d < bestDist) { bestDist = d; best = cv; }
+      }
+      return best;
+    });
+    const metrics = computeClassificationMetrics(testY, classTestPreds, classVals, reverseLabelMappings, targetColumn);
+    return {
+      algorithm: 'gradient_boosting',
+      algorithmLabel: 'Gradient Boosting',
+      problemType,
+      trainingDurationMs: durationMs,
+      trainRows: trainX.length,
+      testRows: testX.length,
+      classificationMetrics: metrics,
+      featureImportance,
+      interpretation: `Gradient Boosting (${stumps.length} stumps): accuracy = ${(metrics.accuracy * 100).toFixed(1)}%, F1 = ${(metrics.f1 * 100).toFixed(1)}%.`,
+      isTopModel: false,
+      classValues: classVals,
+      testPredictions: classTestPreds,
+      testActuals: testY,
+    };
+  }
+};
+
+// ============================================================
+// E3. Naive Bayes (Gaussian)
+// ============================================================
+
+const trainNaiveBayes = (
+  processedDataset: ProcessedDataset,
+  trainTestSplit: number
+): ModelResult => {
+  const t0 = performance.now();
+  const { X, y, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
+  const splitIdx = Math.floor(X.length * trainTestSplit);
+  const trainX = X.slice(0, splitIdx);
+  const trainY = y.slice(0, splitIdx);
+  const testX = X.slice(splitIdx);
+  const testY = y.slice(splitIdx);
+
+  const classVals = [...new Set(trainY)].sort((a, b) => a - b);
+  const nClasses = classVals.length;
+
+  // Compute class priors and per-class feature stats
+  const classPriors: number[] = [];
+  const classMeans: number[][] = [];
+  const classVars: number[][] = [];
+
+  for (const cv of classVals) {
+    const rows = trainX.filter((_, i) => trainY[i] === cv);
+    classPriors.push(rows.length / trainX.length);
+
+    const means: number[] = [];
+    const vars: number[] = [];
+    for (let f = 0; f < featureColumns.length; f++) {
+      const vals = rows.map(r => r[featureColumns[f]] as number || 0);
+      const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+      const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length + 1e-9;
+      means.push(mean);
+      vars.push(variance);
+    }
+    classMeans.push(means);
+    classVars.push(vars);
+  }
+
+  // Predict function
+  const predict = (row: Record<string, number>): number => {
+    let bestClass = classVals[0];
+    let bestLogProb = -Infinity;
+    for (let c = 0; c < nClasses; c++) {
+      let logProb = Math.log(classPriors[c]);
+      for (let f = 0; f < featureColumns.length; f++) {
+        const x = (row[featureColumns[f]] as number) || 0;
+        const mu = classMeans[c][f];
+        const sigma2 = classVars[c][f];
+        logProb += -0.5 * Math.log(2 * Math.PI * sigma2) - ((x - mu) ** 2) / (2 * sigma2);
+      }
+      if (logProb > bestLogProb) {
+        bestLogProb = logProb;
+        bestClass = classVals[c];
+      }
+    }
+    return bestClass;
+  };
+
+  const testPreds = testX.map(predict);
+
+  // Feature importance: mutual information approximation
+  const impMap: Record<string, number> = {};
+  for (let f = 0; f < featureColumns.length; f++) {
+    // Measure how spread apart class means are for this feature
+    const overallMean = classMeans.reduce((s, m) => s + m[f], 0) / nClasses;
+    const betweenVar = classMeans.reduce((s, m, c) =>
+      s + classPriors[c] * (m[f] - overallMean) ** 2, 0);
+    impMap[featureColumns[f]] = betweenVar;
+  }
+  const maxImp = Math.max(...Object.values(impMap), 1e-10);
+
+  const featureImportance = featureColumns.map(f => ({
+    feature: f,
+    importance: impMap[f] / maxImp,
+    correlationWithTarget: 0,
+    isSelected: true,
+  })).sort((a, b) => b.importance - a.importance);
+
+  const metrics = computeClassificationMetrics(testY, testPreds, classVals, reverseLabelMappings, targetColumn);
+  const durationMs = performance.now() - t0;
+
+  return {
+    algorithm: 'naive_bayes',
+    algorithmLabel: 'Naive Bayes',
+    problemType: 'classification',
+    trainingDurationMs: durationMs,
+    trainRows: trainX.length,
+    testRows: testX.length,
+    classificationMetrics: metrics,
+    featureImportance,
+    interpretation: `Gaussian Naive Bayes: accuracy = ${(metrics.accuracy * 100).toFixed(1)}%, F1 = ${(metrics.f1 * 100).toFixed(1)}%. Fast probabilistic classifier.`,
+    isTopModel: false,
+    classValues: classVals,
+  };
+};
+
+// ============================================================
+// E4. K-Nearest Neighbors
+// ============================================================
+
+const trainKNN = (
+  processedDataset: ProcessedDataset,
+  trainTestSplit: number,
+  problemType: MLProblemType
+): ModelResult => {
+  const t0 = performance.now();
+  const { X, y, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
+  const splitIdx = Math.floor(X.length * trainTestSplit);
+  const trainX = X.slice(0, splitIdx);
+  const trainY = y.slice(0, splitIdx);
+  const testX = X.slice(splitIdx);
+  const testY = y.slice(splitIdx);
+
+  // Choose k (odd number, sqrt of n, capped at 15)
+  const k = Math.min(15, Math.max(3, Math.floor(Math.sqrt(trainX.length)) | 1));
+
+  const predictRow = (row: Record<string, number>): number => {
+    // Compute distances to all training points
+    const distances = trainX.map((tr, i) => {
+      const dist = featureColumns.reduce((d, f) =>
+        d + ((row[f] as number || 0) - (tr[f] as number || 0)) ** 2, 0);
+      return { dist, label: trainY[i] };
+    });
+    distances.sort((a, b) => a.dist - b.dist);
+    const neighbors = distances.slice(0, k);
+
+    if (problemType === 'regression') {
+      return neighbors.reduce((s, n) => s + n.label, 0) / k;
+    } else {
+      // Majority vote
+      const votes: Record<number, number> = {};
+      for (const n of neighbors) {
+        votes[n.label] = (votes[n.label] || 0) + 1;
+      }
+      let best = neighbors[0].label;
+      let bestCount = 0;
+      for (const [label, count] of Object.entries(votes)) {
+        if (count > bestCount) { bestCount = count; best = Number(label); }
+      }
+      return best;
+    }
+  };
+
+  // Limit test set for performance (KNN is O(n*m))
+  const maxTestSize = Math.min(testX.length, 500);
+  const testSubX = testX.slice(0, maxTestSize);
+  const testSubY = testY.slice(0, maxTestSize);
+  const testPreds = testSubX.map(predictRow);
+
+  // Feature importance: leave-one-out feature
+  const baseAccuracy = problemType === 'regression'
+    ? 1 - testSubY.reduce((s, y, i) => s + (y - testPreds[i]) ** 2, 0)
+    : testSubY.filter((y, i) => y === testPreds[i]).length / maxTestSize;
+
+  const impMap: Record<string, number> = {};
+  for (const f of featureColumns) {
+    // Shuffle the feature and measure accuracy drop
+    const shuffled = testSubX.map(row => {
+      const copy = { ...row };
+      copy[f] = trainX[Math.floor(Math.random() * trainX.length)][f];
+      return copy;
+    });
+    const shuffledPreds = shuffled.map(predictRow);
+    const shuffledAcc = problemType === 'regression'
+      ? 1 - testSubY.reduce((s, y, i) => s + (y - shuffledPreds[i]) ** 2, 0)
+      : testSubY.filter((y, i) => y === shuffledPreds[i]).length / maxTestSize;
+    impMap[f] = Math.max(0, baseAccuracy - shuffledAcc);
+  }
+  const maxImp = Math.max(...Object.values(impMap), 1e-10);
+
+  const featureImportance = featureColumns.map(f => ({
+    feature: f,
+    importance: impMap[f] / maxImp,
+    correlationWithTarget: 0,
+    isSelected: true,
+  })).sort((a, b) => b.importance - a.importance);
+
+  const durationMs = performance.now() - t0;
+
+  if (problemType === 'regression') {
+    const metrics = computeRegressionMetrics(testSubY, testPreds, featureColumns.length);
+    return {
+      algorithm: 'knn',
+      algorithmLabel: `KNN (k=${k})`,
+      problemType,
+      trainingDurationMs: durationMs,
+      trainRows: trainX.length,
+      testRows: maxTestSize,
+      regressionMetrics: metrics,
+      featureImportance,
+      interpretation: `K-Nearest Neighbors (k=${k}): R² = ${metrics.rSquared.toFixed(3)}, RMSE = ${metrics.rmse.toFixed(3)}.`,
+      isTopModel: false,
+    };
+  } else {
+    const classVals = [...new Set(testSubY)].sort((a, b) => a - b);
+    const metrics = computeClassificationMetrics(testSubY, testPreds, classVals, reverseLabelMappings, targetColumn);
+    return {
+      algorithm: 'knn',
+      algorithmLabel: `KNN (k=${k})`,
+      problemType: 'classification',
+      trainingDurationMs: durationMs,
+      trainRows: trainX.length,
+      testRows: maxTestSize,
+      classificationMetrics: metrics,
+      featureImportance,
+      interpretation: `K-Nearest Neighbors (k=${k}): accuracy = ${(metrics.accuracy * 100).toFixed(1)}%, F1 = ${(metrics.f1 * 100).toFixed(1)}%.`,
+      isTopModel: false,
+      classValues: classVals,
+    };
+  }
+};
+
+// ============================================================
 // F. Train All Models
 // ============================================================
 
@@ -1700,7 +2095,7 @@ export const trainAllModels = async (
     return { results, bestModel: km, rankingMetric: 'Silhouette Score', trainingComplete: true };
   }
 
-  const steps = problemType === 'regression' ? 3 : 3;
+  const totalSteps = problemType === 'regression' ? 5 : 6;
   let step = 0;
 
   // Linear Regression / Logistic Regression
@@ -1711,20 +2106,44 @@ export const trainAllModels = async (
     : trainLogisticRegression(processedDataset, trainTestSplit);
   results.push(model1);
   step++;
-  onProgress?.(Math.round((step / steps) * 80 + 10), 'Training Decision Tree...');
+  onProgress?.(Math.round((step / totalSteps) * 80 + 10), 'Training Decision Tree...');
   await yieldToBrowser();
 
   // Decision Tree
   const dt = trainDecisionTree(processedDataset, trainTestSplit, problemType);
   results.push(dt);
   step++;
-  onProgress?.(Math.round((step / steps) * 80 + 10), 'Training Random Forest...');
+  onProgress?.(Math.round((step / totalSteps) * 80 + 10), 'Training Random Forest...');
   await yieldToBrowser();
 
   // Random Forest
   const rf = trainRandomForest(processedDataset, trainTestSplit, problemType);
   results.push(rf);
   step++;
+  onProgress?.(Math.round((step / totalSteps) * 80 + 10), 'Training Gradient Boosting...');
+  await yieldToBrowser();
+
+  // Gradient Boosting
+  const gb = trainGradientBoosting(processedDataset, trainTestSplit, problemType);
+  results.push(gb);
+  step++;
+  onProgress?.(Math.round((step / totalSteps) * 80 + 10), 'Training KNN...');
+  await yieldToBrowser();
+
+  // KNN
+  const knnModel = trainKNN(processedDataset, trainTestSplit, problemType);
+  results.push(knnModel);
+  step++;
+
+  // Naive Bayes (classification only)
+  if (problemType === 'classification') {
+    onProgress?.(Math.round((step / totalSteps) * 80 + 10), 'Training Naive Bayes...');
+    await yieldToBrowser();
+    const nb = trainNaiveBayes(processedDataset, trainTestSplit);
+    results.push(nb);
+    step++;
+  }
+
   onProgress?.(95, 'Selecting best model...');
   await yieldToBrowser();
 

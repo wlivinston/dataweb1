@@ -1,13 +1,25 @@
 // Shared visualization renderer component
 import React from 'react';
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell, LineChart, Line, AreaChart, Area, ScatterChart, Scatter, ZAxis } from 'recharts';
+import {
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  PieChart, Pie, Cell, LineChart, Line, AreaChart, Area, ScatterChart, Scatter, ZAxis,
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+  Treemap as RechartsTreemap,
+  FunnelChart, Funnel, LabelList,
+  ComposedChart,
+  RadialBarChart, RadialBar,
+} from 'recharts';
 import { Visualization } from './types';
 import { Table } from '@/components/ui/table';
 import { optimizeVisualizationData, RENDERING_LIMITS } from './dataOptimization';
 import PaginatedTable from '@/components/PaginatedTable';
 import { SHARED_CHART_PALETTE } from './chartColors';
 
-export type SupportedVisualizationType = 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'table';
+export type SupportedVisualizationType =
+  | 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'table'
+  | 'radar' | 'treemap' | 'histogram' | 'boxplot' | 'heatmap'
+  | 'funnel' | 'composed' | 'radialbar' | 'waterfall' | 'stacked_bar' | 'donut'
+  | 'pareto' | 'pct_stacked_bar' | 'bubble' | 'dual_axis';
 
 const getFirstNumericValue = (entry: Record<string, any>): number => {
   const numericKey = Object.keys(entry).find(key => typeof entry[key] === 'number' && Number.isFinite(entry[key]));
@@ -109,8 +121,9 @@ const getSeriesKeys = (data: Record<string, any>[]): string[] => {
 };
 
 export const renderVisualization = (viz: Visualization, overrideType?: SupportedVisualizationType) => {
-  const effectiveType: SupportedVisualizationType =
-    overrideType ?? (viz.type === 'gauge' ? 'bar' : viz.type);
+  const mappedType: SupportedVisualizationType =
+    viz.type === 'gauge' ? 'bar' : (viz.type as SupportedVisualizationType);
+  const effectiveType: SupportedVisualizationType = overrideType ?? mappedType;
 
   if (effectiveType === 'table') {
     const data = viz.data as any[];
@@ -166,9 +179,18 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
   
   // Optimize chart data to prevent rendering crashes
   const rawData = Array.isArray(viz.data) ? viz.data : [];
+  // Types that pass data through as-is (complex data shapes)
+  const passthroughTypes = new Set<SupportedVisualizationType>([
+    'heatmap', 'boxplot', 'waterfall', 'radar', 'stacked_bar', 'composed',
+    'pareto', 'pct_stacked_bar', 'dual_axis',
+  ]);
   const normalizedData = effectiveType === 'scatter'
     ? toScatterData(rawData)
-    : toCategoryValueData(rawData);
+    : effectiveType === 'bubble'
+      ? rawData
+      : passthroughTypes.has(effectiveType)
+        ? rawData
+        : toCategoryValueData(rawData);
   const chartData = optimizeVisualizationData(
     normalizedData,
     effectiveType === 'scatter' ? 'scatter' : effectiveType
@@ -465,7 +487,542 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
     );
   }
 
-  // Placeholder for other chart types
+  // ── Donut chart (pie with inner radius) ──
+  if (effectiveType === 'donut') {
+    const total = chartData.reduce((sum, entry) => sum + (Number(entry.value) || 0), 0);
+    return (
+      <div className="space-y-1">
+        <ResponsiveContainer width="100%" height={260}>
+          <PieChart margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
+            <Pie
+              data={chartData}
+              cx="50%"
+              cy="45%"
+              outerRadius={typeof window !== 'undefined' && window.innerWidth > 768 ? 80 : 65}
+              innerRadius={typeof window !== 'undefined' && window.innerWidth > 768 ? 45 : 35}
+              fill={getColor(0)}
+              dataKey="value"
+              nameKey="category"
+              paddingAngle={2}
+              label={(props: any) => {
+                const val = Number(props.payload?.value) || 0;
+                const pct = total > 0 ? ((val / total) * 100).toFixed(1) : '0';
+                return pct === '0' || Number(pct) < 3 ? '' : `${pct}%`;
+              }}
+              labelLine={true}
+            >
+              {chartData.map((_, index) => (
+                <Cell key={`donut-${index}`} fill={getColor(index)} />
+              ))}
+            </Pie>
+            <Tooltip
+              formatter={(value: any) => {
+                const val = Number(value) || 0;
+                const pct = total > 0 ? ((val / total) * 100).toFixed(1) : '0';
+                return [`${val.toLocaleString()} (${pct}%)`, ''];
+              }}
+            />
+            <Legend
+              verticalAlign="bottom"
+              iconType="circle"
+              iconSize={8}
+              wrapperStyle={{ fontSize: '9px', lineHeight: '14px' }}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // ── Radar chart ──
+  if (effectiveType === 'radar') {
+    const radarData = chartData.map((entry: any) => ({
+      subject: String(entry.category || entry.subject || entry.name || ''),
+      value: Number(entry.value) || 0,
+      fullMark: Number(entry.fullMark || entry.max || entry.value) || 100,
+    }));
+
+    // Detect multi-series radar data
+    const seriesKeys = getSeriesKeys(chartData as Record<string, any>[]);
+
+    return (
+      <ResponsiveContainer width="100%" height={280}>
+        <RadarChart data={radarData} margin={{ top: 10, right: 30, bottom: 10, left: 30 }}>
+          <PolarGrid strokeDasharray="3 3" />
+          <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10 }} />
+          <PolarRadiusAxis tick={{ fontSize: 9 }} />
+          {seriesKeys.map((key, idx) => (
+            <Radar
+              key={`radar-${key}`}
+              name={key}
+              dataKey={key}
+              stroke={getColor(idx)}
+              fill={getColor(idx)}
+              fillOpacity={0.25}
+            />
+          ))}
+          <Legend wrapperStyle={{ fontSize: '10px' }} />
+          <Tooltip />
+        </RadarChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  // ── Treemap ──
+  if (effectiveType === 'treemap') {
+    const treemapData = chartData.map((entry: any, idx: number) => ({
+      name: String(entry.category || entry.name || `Item ${idx + 1}`),
+      size: Math.abs(Number(entry.value || entry.size) || 0),
+      fill: getColor(idx),
+    }));
+
+    const CustomTreemapContent = (props: any) => {
+      const { x, y, width, height, name, fill } = props;
+      if (width < 30 || height < 20) return null;
+      return (
+        <g>
+          <rect x={x} y={y} width={width} height={height} fill={fill} stroke="#fff" strokeWidth={2} rx={3} />
+          <text x={x + width / 2} y={y + height / 2} textAnchor="middle" dominantBaseline="central" fontSize={Math.min(11, width / 6)} fill="#fff" fontWeight="500">
+            {String(name).length > width / 7 ? String(name).substring(0, Math.floor(width / 7)) + '…' : name}
+          </text>
+        </g>
+      );
+    };
+
+    return (
+      <ResponsiveContainer width="100%" height={260}>
+        <RechartsTreemap
+          data={treemapData}
+          dataKey="size"
+          nameKey="name"
+          stroke="#fff"
+          content={<CustomTreemapContent />}
+        >
+          <Tooltip
+            formatter={(value: any, name: any) => [`${Number(value).toLocaleString()}`, name]}
+          />
+        </RechartsTreemap>
+      </ResponsiveContainer>
+    );
+  }
+
+  // ── Histogram (bar chart with no gaps) ──
+  if (effectiveType === 'histogram') {
+    return (
+      <div className="space-y-2 h-full">
+        {wasSampled && (
+          <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+            ⚠️ Showing {chartData.length.toLocaleString()} of {normalizedData.length.toLocaleString()} bins
+          </div>
+        )}
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={chartData} barGap={0} barCategoryGap={0} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="category" tick={{ fontSize: 9 }} angle={-30} textAnchor="end" height={50} />
+            <YAxis tick={{ fontSize: 10 }} label={{ value: 'Frequency', angle: -90, position: 'insideLeft', style: { fontSize: 10 } }} />
+            <Tooltip />
+            <Bar dataKey="value" name="Count">
+              {chartData.map((_, index) => (
+                <Cell key={`hist-${index}`} fill={getColor(0)} fillOpacity={0.85} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // ── Box Plot (using ComposedChart) ──
+  if (effectiveType === 'boxplot') {
+    // Expected data: { category, min, q1, median, q3, max }
+    const boxData = chartData.map((entry: any) => ({
+      category: String(entry.category || entry.name || ''),
+      min: Number(entry.min) || 0,
+      q1: Number(entry.q1) || 0,
+      median: Number(entry.median) || 0,
+      q3: Number(entry.q3) || 0,
+      max: Number(entry.max) || 0,
+      // invisible base for stacking
+      _base: Number(entry.q1) || 0,
+      _iqr: (Number(entry.q3) || 0) - (Number(entry.q1) || 0),
+    }));
+
+    return (
+      <ResponsiveContainer width="100%" height={260}>
+        <ComposedChart data={boxData} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="category" tick={{ fontSize: 10 }} />
+          <YAxis tick={{ fontSize: 10 }} />
+          <Tooltip
+            formatter={(_val: any, name: string, props: any) => {
+              const d = props.payload;
+              return [
+                `Min: ${d.min} | Q1: ${d.q1} | Med: ${d.median} | Q3: ${d.q3} | Max: ${d.max}`,
+                d.category,
+              ];
+            }}
+          />
+          {/* Invisible base bar */}
+          <Bar dataKey="_base" stackId="box" fill="transparent" />
+          {/* IQR box */}
+          <Bar dataKey="_iqr" stackId="box" fill={getColor(0)} fillOpacity={0.6} stroke={getColor(0)} strokeWidth={1} />
+          {/* Median line */}
+          <Line type="monotone" dataKey="median" stroke="#e11d48" strokeWidth={2} dot={{ r: 4, fill: '#e11d48' }} name="Median" />
+          {/* Min/Max as scatter */}
+          <Scatter dataKey="min" fill="#6b7280" name="Min" />
+          <Scatter dataKey="max" fill="#374151" name="Max" />
+          <Legend wrapperStyle={{ fontSize: '10px' }} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  // ── Heatmap (HTML-based grid) ──
+  if (effectiveType === 'heatmap') {
+    // Expected data: { x, y, value } or { category, [col]: value }
+    const heatData = chartData as any[];
+
+    // Try to detect if it's correlation-style data (rows with multiple numeric columns)
+    const sampleRow = heatData[0] || {};
+    const numericCols = Object.keys(sampleRow).filter(
+      k => k !== 'category' && k !== 'name' && typeof sampleRow[k] === 'number'
+    );
+
+    if (numericCols.length > 1) {
+      // Matrix-style: rows are categories, columns are numeric
+      const rowLabels = heatData.map((r: any) => String(r.category || r.name || ''));
+      const allValues = heatData.flatMap((r: any) => numericCols.map(c => Number(r[c]) || 0));
+      const minVal = Math.min(...allValues);
+      const maxVal = Math.max(...allValues);
+      const range = maxVal - minVal || 1;
+
+      const getCellColor = (val: number) => {
+        const normalized = (val - minVal) / range;
+        if (val < 0) {
+          const intensity = Math.min(1, Math.abs(val) / (Math.abs(minVal) || 1));
+          return `rgba(59, 130, 246, ${0.15 + intensity * 0.7})`;
+        }
+        const intensity = normalized;
+        return `rgba(239, 68, 68, ${0.1 + intensity * 0.7})`;
+      };
+
+      return (
+        <div className="overflow-x-auto max-h-[300px]">
+          <table className="text-xs border-collapse w-full">
+            <thead>
+              <tr>
+                <th className="sticky top-0 left-0 z-10 bg-white border border-gray-200 px-2 py-1 text-left font-medium"></th>
+                {numericCols.map(col => (
+                  <th key={col} className="sticky top-0 bg-white border border-gray-200 px-2 py-1 text-center font-medium" style={{ maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {col.length > 10 ? col.substring(0, 8) + '…' : col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {heatData.map((row: any, ri: number) => (
+                <tr key={ri}>
+                  <td className="sticky left-0 bg-white border border-gray-200 px-2 py-1 font-medium" style={{ maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {rowLabels[ri]?.length > 12 ? rowLabels[ri].substring(0, 10) + '…' : rowLabels[ri]}
+                  </td>
+                  {numericCols.map(col => {
+                    const val = Number(row[col]) || 0;
+                    return (
+                      <td key={col} className="border border-gray-200 px-2 py-1 text-center" style={{ backgroundColor: getCellColor(val) }} title={`${rowLabels[ri]} × ${col}: ${val.toFixed(2)}`}>
+                        {val.toFixed(2)}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex items-center justify-center h-full text-gray-400">
+        <p className="text-xs">Heatmap requires matrix data</p>
+      </div>
+    );
+  }
+
+  // ── Funnel chart ──
+  if (effectiveType === 'funnel') {
+    const funnelData = chartData.map((entry: any, idx: number) => ({
+      name: String(entry.category || entry.name || `Stage ${idx + 1}`),
+      value: Math.abs(Number(entry.value) || 0),
+      fill: getColor(idx),
+    }));
+
+    return (
+      <ResponsiveContainer width="100%" height={260}>
+        <FunnelChart margin={{ top: 10, right: 30, bottom: 10, left: 30 }}>
+          <Tooltip formatter={(value: any) => [Number(value).toLocaleString(), '']} />
+          <Funnel dataKey="value" data={funnelData} isAnimationActive>
+            {funnelData.map((entry, index) => (
+              <Cell key={`funnel-${index}`} fill={entry.fill} />
+            ))}
+            <LabelList position="right" fill="#333" fontSize={10} dataKey="name" />
+            <LabelList position="center" fill="#fff" fontSize={11} fontWeight="bold" dataKey="value" formatter={(v: number) => v.toLocaleString()} />
+          </Funnel>
+        </FunnelChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  // ── Composed chart (bar + line overlay) ──
+  if (effectiveType === 'composed') {
+    const seriesKeys = getSeriesKeys(chartData as Record<string, any>[]);
+    const barKey = seriesKeys[0] || 'value';
+    const lineKeys = seriesKeys.slice(1, 4);
+
+    return (
+      <div className="space-y-2">
+        {wasSampled && (
+          <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+            ⚠️ Showing {chartData.length.toLocaleString()} of {normalizedData.length.toLocaleString()} data points
+          </div>
+        )}
+        <ResponsiveContainer width="100%" height={250}>
+          <ComposedChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="category" tick={{ fontSize: 10 }} />
+            <YAxis tick={{ fontSize: 10 }} />
+            <Tooltip />
+            <Legend wrapperStyle={{ fontSize: '10px' }} />
+            <Bar dataKey={barKey} fill={getColor(0)} fillOpacity={0.7} name={barKey} />
+            {lineKeys.map((key, idx) => (
+              <Line
+                key={`composed-line-${key}`}
+                type="monotone"
+                dataKey={key}
+                stroke={getColor(idx + 1)}
+                strokeWidth={2}
+                dot={{ r: 2 }}
+                name={key}
+              />
+            ))}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // ── Radial Bar chart ──
+  if (effectiveType === 'radialbar') {
+    const radialData = chartData.slice(0, 8).map((entry: any, idx: number) => ({
+      name: String(entry.category || entry.name || `Item ${idx + 1}`),
+      value: Number(entry.value) || 0,
+      fill: getColor(idx),
+    }));
+
+    return (
+      <ResponsiveContainer width="100%" height={280}>
+        <RadialBarChart
+          innerRadius="20%"
+          outerRadius="90%"
+          data={radialData}
+          startAngle={180}
+          endAngle={0}
+        >
+          <RadialBar
+            label={{ position: 'insideStart', fill: '#fff', fontSize: 10 }}
+            background
+            dataKey="value"
+          />
+          <Legend
+            iconSize={8}
+            layout="vertical"
+            verticalAlign="middle"
+            align="right"
+            wrapperStyle={{ fontSize: '9px', lineHeight: '16px' }}
+          />
+          <Tooltip />
+        </RadialBarChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  // ── Waterfall chart ──
+  if (effectiveType === 'waterfall') {
+    // Build waterfall bars: invisible base + visible delta
+    let running = 0;
+    const waterfallData = chartData.map((entry: any) => {
+      const val = Number(entry.value) || 0;
+      const isTotal = entry.isTotal === true;
+      const base = isTotal ? 0 : (val >= 0 ? running : running + val);
+      const barVal = isTotal ? val : Math.abs(val);
+      if (!isTotal) running += val;
+      return {
+        category: String(entry.category || entry.name || ''),
+        _base: base,
+        _delta: barVal,
+        _isPositive: val >= 0,
+        _isTotal: isTotal,
+        value: val,
+      };
+    });
+
+    return (
+      <ResponsiveContainer width="100%" height={260}>
+        <BarChart data={waterfallData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="category" tick={{ fontSize: 9 }} angle={-20} textAnchor="end" height={50} />
+          <YAxis tick={{ fontSize: 10 }} />
+          <Tooltip
+            formatter={(_: any, __: any, props: any) => {
+              const d = props.payload;
+              return [`${d.value >= 0 ? '+' : ''}${d.value.toLocaleString()}`, d.category];
+            }}
+          />
+          <Bar dataKey="_base" stackId="waterfall" fill="transparent" />
+          <Bar dataKey="_delta" stackId="waterfall">
+            {waterfallData.map((entry, index) => (
+              <Cell
+                key={`wf-${index}`}
+                fill={entry._isTotal ? '#6366f1' : entry._isPositive ? '#10b981' : '#ef4444'}
+              />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  // ── Stacked Bar ──
+  if (effectiveType === 'stacked_bar') {
+    const seriesKeys = getSeriesKeys(chartData as Record<string, any>[]);
+
+    return (
+      <div className="space-y-2">
+        {wasSampled && (
+          <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+            ⚠️ Showing {chartData.length.toLocaleString()} of {normalizedData.length.toLocaleString()} data points
+          </div>
+        )}
+        <ResponsiveContainer width="100%" height={250}>
+          <BarChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="category" tick={{ fontSize: 10 }} />
+            <YAxis tick={{ fontSize: 10 }} />
+            <Tooltip />
+            <Legend wrapperStyle={{ fontSize: '10px' }} />
+            {seriesKeys.map((key, idx) => (
+              <Bar key={`stacked-${key}`} dataKey={key} stackId="stack" fill={getColor(idx)} name={key} />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // ── Pareto chart ──
+  if (effectiveType === 'pareto') {
+    return (
+      <div className="space-y-2">
+        {wasSampled && (
+          <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+            Showing {chartData.length.toLocaleString()} of {normalizedData.length.toLocaleString()} data points
+          </div>
+        )}
+        <ResponsiveContainer width="100%" height={250}>
+          <ComposedChart data={chartData} margin={{ top: 5, right: 30, left: 5, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="category" tick={{ fontSize: 10 }} angle={chartData.length > 10 ? -45 : 0} textAnchor={chartData.length > 10 ? 'end' : 'middle'} height={chartData.length > 10 ? 60 : 30} />
+            <YAxis yAxisId="left" tick={{ fontSize: 10 }} />
+            <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} domain={[0, 100]} tickFormatter={(v: number) => `${v}%`} />
+            <Tooltip formatter={(value: any, name: string) => name === 'cumulative' ? `${Number(value).toFixed(1)}%` : value} />
+            <Legend wrapperStyle={{ fontSize: '10px' }} />
+            <Bar yAxisId="left" dataKey="value" fill={getColor(0)} name="Value" />
+            <Line yAxisId="right" type="monotone" dataKey="cumulative" stroke={getColor(1)} strokeWidth={2} dot={false} name="Cumulative %" />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // ── Percentage stacked bar ──
+  if (effectiveType === 'pct_stacked_bar') {
+    const seriesKeys = getSeriesKeys(chartData as Record<string, any>[]);
+
+    return (
+      <div className="space-y-2">
+        {wasSampled && (
+          <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+            Showing {chartData.length.toLocaleString()} of {normalizedData.length.toLocaleString()} data points
+          </div>
+        )}
+        <ResponsiveContainer width="100%" height={250}>
+          <BarChart data={chartData} stackOffset="expand" margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="category" tick={{ fontSize: 10 }} />
+            <YAxis tick={{ fontSize: 10 }} tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} />
+            <Tooltip formatter={(value: any) => `${(Number(value) * 100).toFixed(1)}%`} />
+            <Legend wrapperStyle={{ fontSize: '10px' }} />
+            {seriesKeys.map((key, idx) => (
+              <Bar key={`pct-${key}`} dataKey={key} stackId="pctstack" fill={getColor(idx)} name={key} />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // ── Bubble chart ──
+  if (effectiveType === 'bubble') {
+    return (
+      <div className="space-y-2">
+        {wasSampled && (
+          <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+            Showing {chartData.length.toLocaleString()} of {normalizedData.length.toLocaleString()} data points
+          </div>
+        )}
+        <ResponsiveContainer width="100%" height={250}>
+          <ScatterChart margin={{ top: 5, right: 20, left: 5, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="x" tick={{ fontSize: 10 }} name="X" />
+            <YAxis dataKey="y" tick={{ fontSize: 10 }} name="Y" />
+            <ZAxis dataKey="z" range={[20, 400]} name="Size" />
+            <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+            <Scatter data={chartData} fill={getColor(0)} fillOpacity={0.6} />
+          </ScatterChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // ── Dual-axis composed ──
+  if (effectiveType === 'dual_axis') {
+    const seriesKeys = getSeriesKeys(chartData as Record<string, any>[]);
+    const leftKey = seriesKeys[0] || 'value';
+    const rightKey = seriesKeys[1] || seriesKeys[0] || 'value';
+
+    return (
+      <div className="space-y-2">
+        {wasSampled && (
+          <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+            Showing {chartData.length.toLocaleString()} of {normalizedData.length.toLocaleString()} data points
+          </div>
+        )}
+        <ResponsiveContainer width="100%" height={250}>
+          <ComposedChart data={chartData} margin={{ top: 5, right: 30, left: 5, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="category" tick={{ fontSize: 10 }} />
+            <YAxis yAxisId="left" tick={{ fontSize: 10 }} />
+            <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} />
+            <Tooltip />
+            <Legend wrapperStyle={{ fontSize: '10px' }} />
+            <Bar yAxisId="left" dataKey={leftKey} fill={getColor(0)} name={leftKey} />
+            <Line yAxisId="right" type="monotone" dataKey={rightKey} stroke={getColor(1)} strokeWidth={2} name={rightKey} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // Fallback for unsupported chart types
   return (
     <div className="flex items-center justify-center h-full text-gray-400">
       <p className="text-xs">{effectiveType} chart</p>

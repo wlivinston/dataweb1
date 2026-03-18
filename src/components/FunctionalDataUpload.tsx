@@ -59,6 +59,12 @@ import {
   RENDERING_LIMITS
 } from '@/lib/dataOptimization';
 import { CHART_COLOR_SCHEMES, SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATIVE_CHART_COLOR } from '@/lib/chartColors';
+import {
+  toHistogramData, toBoxPlotData, toRadarData, toTreemapData,
+  toHeatmapCorrelation, toFunnelData, toStackedBarData, toTopBottomData,
+  isFunnelCandidate, toParetoData, toCumulativeLineData, toStatsSummaryTable,
+  computeLinearTrend, toBubbleData, toYoYData,
+} from '@/lib/chartRecommender';
 
 interface DAXCalculation {
   id: string;
@@ -1407,6 +1413,464 @@ const FunctionalDataUpload: React.FC = () => {
           gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
           daxCalculations: [],
           datasetId: dataset.id
+        });
+      }
+    }
+
+    // ── NEW CHART TYPES ──
+
+    // Donut Chart - Same data as pie, different visual
+    if (pieCatCol && bestNumCol) {
+      const categoryCol = pieCatCol;
+      const valueCol = bestNumCol;
+      const donutAgg = dataToUse.reduce((acc, row) => {
+        const cat = String(row[categoryCol.name] || '');
+        const val = Number(row[valueCol.name]) || 0;
+        acc[cat] = (acc[cat] || 0) + val;
+        return acc;
+      }, {} as Record<string, number>);
+
+      let donutEntries = Object.entries(donutAgg)
+        .filter(([c]) => c && c !== 'null' && c !== 'undefined' && c !== '')
+        .sort((a, b) => b[1] - a[1]);
+      if (donutEntries.length > 10) {
+        const top = donutEntries.slice(0, 9);
+        const rest = donutEntries.slice(9).reduce((s, [, v]) => s + v, 0);
+        donutEntries = [...top, ['Other', rest]];
+      }
+      const donutData = donutEntries.map(([category, value]) => ({ category, value }));
+      if (donutData.length > 1) {
+        visualizations.push({
+          id: `donut-${dataset.id}`,
+          title: `${valueCol.name} Distribution (${categoryCol.name})`,
+          type: 'donut',
+          data: donutData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // Histogram - For top numeric columns with > 20 unique values
+    const histNumCols = rankedNumColumns.filter(
+      col => !isLikelyNumericId(col.name, dataToUse) && getUniqueCount(col.name) > 20
+    ).slice(0, 3);
+    for (const col of histNumCols) {
+      const values = dataToUse
+        .map(r => Number(r[col.name]))
+        .filter(v => Number.isFinite(v));
+      if (values.length < 10) continue;
+      const histData = toHistogramData(values, Math.min(20, Math.ceil(Math.sqrt(values.length))));
+      if (histData.length > 2) {
+        visualizations.push({
+          id: `histogram-${col.name}-${dataset.id}`,
+          title: `Distribution of ${col.name}`,
+          type: 'histogram',
+          data: histData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // Box Plot - Categorical (2-8 groups) × Numeric
+    if (bestCatCol && bestNumCol && bestCatUniques >= 2 && bestCatUniques <= 8) {
+      const groups = new Map<string, number[]>();
+      for (const row of dataToUse) {
+        const cat = String(row[bestCatCol.name] || '');
+        const val = Number(row[bestNumCol.name]);
+        if (!Number.isFinite(val) || !cat) continue;
+        if (!groups.has(cat)) groups.set(cat, []);
+        groups.get(cat)!.push(val);
+      }
+      const boxData = toBoxPlotData(groups);
+      if (boxData.length >= 2) {
+        visualizations.push({
+          id: `boxplot-${dataset.id}`,
+          title: `${bestNumCol.name} by ${bestCatCol.name} (Box Plot)`,
+          type: 'boxplot',
+          data: boxData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // Radar Chart - 3+ numeric cols, categorical with ≤ 6 categories
+    if (numericColumns.length >= 3 && bestCatCol && bestCatUniques >= 2 && bestCatUniques <= 6) {
+      const radarNumCols = rankedNumColumns
+        .filter(c => !isLikelyNumericId(c.name, dataToUse))
+        .slice(0, 8)
+        .map(c => c.name);
+      const catValues = [...new Set(dataToUse.slice(0, 2000).map(r => String(r[bestCatCol.name] || '')))].filter(Boolean).slice(0, 6);
+      if (radarNumCols.length >= 3 && catValues.length >= 2) {
+        const radarData = toRadarData(dataToUse, radarNumCols, bestCatCol.name, catValues);
+        if (radarData.length >= 3) {
+          visualizations.push({
+            id: `radar-${dataset.id}`,
+            title: `Metric Comparison by ${bestCatCol.name} (Radar)`,
+            type: 'radar',
+            data: radarData,
+            colors: currentScheme.colors,
+            gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+            daxCalculations: [],
+            datasetId: dataset.id,
+          });
+        }
+      }
+    }
+
+    // Treemap - Category + Numeric with 3+ categories
+    if (bestCatCol && bestNumCol && bestCatUniques >= 3) {
+      const treemapData = toTreemapData(dataToUse, bestCatCol.name, bestNumCol.name);
+      if (treemapData.length >= 3) {
+        visualizations.push({
+          id: `treemap-${dataset.id}`,
+          title: `${bestNumCol.name} by ${bestCatCol.name} (Treemap)`,
+          type: 'treemap',
+          data: treemapData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // Correlation Heatmap - 3+ numeric columns
+    if (numericColumns.length >= 3) {
+      const heatCols = rankedNumColumns
+        .filter(c => !isLikelyNumericId(c.name, dataToUse))
+        .slice(0, 12)
+        .map(c => c.name);
+      if (heatCols.length >= 3) {
+        const heatData = toHeatmapCorrelation(dataToUse, heatCols);
+        if (heatData.length >= 3) {
+          visualizations.push({
+            id: `heatmap-${dataset.id}`,
+            title: `Correlation Matrix (${heatCols.length} metrics)`,
+            type: 'heatmap',
+            data: heatData,
+            colors: currentScheme.colors,
+            gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+            daxCalculations: [],
+            datasetId: dataset.id,
+          });
+        }
+      }
+    }
+
+    // Stacked Bar - Two categorical + one numeric column
+    if (bestCatCol && secondCatCol && bestNumCol) {
+      const secondCatUniques = getUniqueCount(secondCatCol.name);
+      if (secondCatUniques >= 2 && secondCatUniques <= 8) {
+        const stackedData = toStackedBarData(dataToUse, bestCatCol.name, secondCatCol.name, bestNumCol.name);
+        if (stackedData.length >= 2) {
+          visualizations.push({
+            id: `stacked-bar-${dataset.id}`,
+            title: `${bestNumCol.name} by ${bestCatCol.name} × ${secondCatCol.name} (Stacked)`,
+            type: 'stacked_bar',
+            data: stackedData,
+            colors: currentScheme.colors,
+            gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+            daxCalculations: [],
+            datasetId: dataset.id,
+          });
+        }
+      }
+    }
+
+    // Funnel - Detect stage/status columns
+    if (bestCatCol && bestNumCol) {
+      const funnelCatCol = rankedCatColumns.find(c => isFunnelCandidate(c.name, getUniqueCount(c.name)));
+      if (funnelCatCol) {
+        const funnelData = toFunnelData(dataToUse, funnelCatCol.name, bestNumCol.name);
+        if (funnelData.length >= 3) {
+          visualizations.push({
+            id: `funnel-${dataset.id}`,
+            title: `${bestNumCol.name} Funnel by ${funnelCatCol.name}`,
+            type: 'funnel',
+            data: funnelData,
+            colors: currentScheme.colors,
+            gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+            daxCalculations: [],
+            datasetId: dataset.id,
+          });
+        }
+      }
+    }
+
+    // Composed Chart - 2+ numeric + date/category axis
+    if (bestNumCol && secondNumCol && (dateColumns.length > 0 || bestCatCol)) {
+      const axisCol = dateColumns.length > 0 ? dateColumns[0] : bestCatCol!;
+      const composedAgg: Record<string, Record<string, number>> = {};
+      const numKeys = rankedNumColumns.filter(c => !isLikelyNumericId(c.name, dataToUse)).slice(0, 3);
+      for (const row of dataToUse) {
+        const key = String(row[axisCol.name] || '');
+        if (!key || key === 'null') continue;
+        if (!composedAgg[key]) composedAgg[key] = {};
+        for (const nc of numKeys) {
+          composedAgg[key][nc.name] = (composedAgg[key][nc.name] || 0) + (Number(row[nc.name]) || 0);
+        }
+      }
+      const composedData = Object.entries(composedAgg)
+        .map(([category, vals]) => ({ category, ...vals }))
+        .slice(0, 50);
+      if (dateColumns.length > 0) {
+        composedData.sort((a, b) => new Date(a.category).getTime() - new Date(b.category).getTime());
+      }
+      if (composedData.length > 2) {
+        visualizations.push({
+          id: `composed-${dataset.id}`,
+          title: `${numKeys.map(c => c.name).join(' & ')} by ${axisCol.name} (Composed)`,
+          type: 'composed',
+          data: composedData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // Additional Scatter Plots - More numeric column pairs
+    const scatterNumCols = rankedNumColumns
+      .filter(c => !isLikelyNumericId(c.name, dataToUse))
+      .slice(0, 4);
+    for (let i = 0; i < scatterNumCols.length; i++) {
+      for (let j = i + 1; j < scatterNumCols.length; j++) {
+        // Skip the primary scatter that was already generated
+        if (scatterNumCols[i] === bestNumCol && scatterNumCols[j] === secondNumCol) continue;
+        if (scatterNumCols[j] === bestNumCol && scatterNumCols[i] === secondNumCol) continue;
+        const sd = dataToUse
+          .map(r => ({
+            x: Number(r[scatterNumCols[i].name]) || 0,
+            y: Number(r[scatterNumCols[j].name]) || 0,
+          }))
+          .filter(d => Number.isFinite(d.x) && Number.isFinite(d.y))
+          .slice(0, RENDERING_LIMITS.MAX_CHART_POINTS);
+        if (sd.length > 5) {
+          visualizations.push({
+            id: `scatter-${scatterNumCols[i].name}-${scatterNumCols[j].name}-${dataset.id}`,
+            title: `${scatterNumCols[i].name} vs ${scatterNumCols[j].name}`,
+            type: 'scatter',
+            data: sd,
+            colors: currentScheme.colors,
+            gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+            daxCalculations: [],
+            datasetId: dataset.id,
+          });
+        }
+      }
+    }
+
+    // Second Bar Chart - Using second-best categorical column
+    if (secondCatCol && bestNumCol && secondCatCol !== pieCatCol) {
+      const secondBarAgg = dataToUse.reduce((acc, row) => {
+        const cat = String(row[secondCatCol.name] || 'Other');
+        const val = Number(row[bestNumCol.name]) || 0;
+        acc[cat] = (acc[cat] || 0) + val;
+        return acc;
+      }, {} as Record<string, number>);
+      const secondBarData = Object.entries(secondBarAgg)
+        .map(([category, value]) => ({ category, value }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 25);
+      if (secondBarData.length > 1) {
+        visualizations.push({
+          id: `bar2-${dataset.id}`,
+          title: `${bestNumCol.name} by ${secondCatCol.name}`,
+          type: 'bar',
+          data: secondBarData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // Top/Bottom Analysis - horizontal bar of extremes
+    if (bestCatCol && bestNumCol && bestCatUniques > 10) {
+      const topBottomData = toTopBottomData(dataToUse, bestCatCol.name, bestNumCol.name, 8);
+      if (topBottomData.length >= 4) {
+        visualizations.push({
+          id: `topbottom-${dataset.id}`,
+          title: `Top & Bottom: ${bestNumCol.name} by ${bestCatCol.name}`,
+          type: 'bar',
+          data: topBottomData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // ── Pareto Chart ──
+    if (bestCatCol && bestNumCol && bestCatUniques >= 5 && bestCatUniques <= 30) {
+      const paretoData = toParetoData(dataToUse, bestCatCol.name, bestNumCol.name);
+      if (paretoData.length >= 3) {
+        visualizations.push({
+          id: `pareto-${dataset.id}`,
+          title: `Pareto Analysis: ${bestNumCol.name} by ${bestCatCol.name}`,
+          type: 'pareto',
+          data: paretoData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // ── Cumulative Line ──
+    if (dateColumns.length > 0 && bestNumCol) {
+      const cumulData = toCumulativeLineData(dataToUse, dateColumns[0].name, bestNumCol.name);
+      if (cumulData.length >= 5) {
+        visualizations.push({
+          id: `cumulative-${dataset.id}`,
+          title: `Cumulative Trend: ${bestNumCol.name}`,
+          type: 'line',
+          data: cumulData.map(d => ({ category: d.category, value: d.cumulative })),
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // ── Percentage Stacked Bar ──
+    if (bestCatCol && secondCatCol && bestNumCol) {
+      const pctData = toStackedBarData(dataToUse, bestCatCol.name, secondCatCol.name, bestNumCol.name);
+      if (pctData.length >= 2) {
+        visualizations.push({
+          id: `pctstacked-${dataset.id}`,
+          title: `% Composition: ${bestNumCol.name} by ${bestCatCol.name} × ${secondCatCol.name}`,
+          type: 'pct_stacked_bar',
+          data: pctData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // ── Bubble Chart ──
+    if (rankedNumColumns.length >= 3 && bestNumCol && secondNumCol) {
+      const thirdNumCol = rankedNumColumns.find(c => c.name !== bestNumCol!.name && c.name !== secondNumCol!.name);
+      if (thirdNumCol) {
+        const bubbleData = toBubbleData(dataToUse, bestNumCol.name, secondNumCol.name, thirdNumCol.name, bestCatCol?.name);
+        if (bubbleData.length >= 3) {
+          visualizations.push({
+            id: `bubble-${dataset.id}`,
+            title: `Bubble: ${bestNumCol.name} vs ${secondNumCol.name} (size: ${thirdNumCol.name})`,
+            type: 'bubble',
+            data: bubbleData,
+            colors: currentScheme.colors,
+            gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+            daxCalculations: [],
+            datasetId: dataset.id,
+          });
+        }
+      }
+    }
+
+    // ── Dual-Axis Composed ──
+    if (bestNumCol && secondNumCol && (dateColumns.length > 0 || bestCatCol)) {
+      // Only generate when scales differ significantly
+      const vals1 = dataToUse.map(r => Math.abs(Number(r[bestNumCol!.name]) || 0)).filter(Number.isFinite);
+      const vals2 = dataToUse.map(r => Math.abs(Number(r[secondNumCol!.name]) || 0)).filter(Number.isFinite);
+      const mean1 = vals1.length > 0 ? vals1.reduce((s, v) => s + v, 0) / vals1.length : 0;
+      const mean2 = vals2.length > 0 ? vals2.reduce((s, v) => s + v, 0) / vals2.length : 0;
+      const ratio = mean1 > 0 && mean2 > 0 ? Math.max(mean1, mean2) / Math.min(mean1, mean2) : 1;
+      if (ratio >= 10) {
+        const axisCol = dateColumns.length > 0 ? dateColumns[0].name : bestCatCol!.name;
+        const dualData = dataToUse
+          .slice(0, 200)
+          .map(r => ({
+            category: String(r[axisCol] || ''),
+            [bestNumCol!.name]: Number(r[bestNumCol!.name]) || 0,
+            [secondNumCol!.name]: Number(r[secondNumCol!.name]) || 0,
+          }));
+        visualizations.push({
+          id: `dualaxis-${dataset.id}`,
+          title: `Dual Axis: ${bestNumCol.name} & ${secondNumCol.name}`,
+          type: 'dual_axis',
+          data: dualData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // ── Statistical Summary Table ──
+    if (numericColumns.length >= 2) {
+      const statsData = toStatsSummaryTable(dataToUse, numericColumns.map(c => c.name));
+      if (statsData.length >= 2) {
+        visualizations.push({
+          id: `stats-${dataset.id}`,
+          title: `Statistical Summary - ${dataset.name}`,
+          type: 'table',
+          data: statsData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // ── Trend Line on Time Series ──
+    if (dateColumns.length > 0 && bestNumCol) {
+      const sorted = dataToUse
+        .map(r => ({ date: String(r[dateColumns[0].name] || ''), value: Number(r[bestNumCol!.name]) || 0 }))
+        .filter(r => r.date && Number.isFinite(r.value))
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .slice(0, 500);
+      if (sorted.length >= 10) {
+        const trend = computeLinearTrend(sorted.map(d => d.value));
+        const trendData = sorted.map((d, i) => ({
+          category: d.date,
+          [bestNumCol!.name]: d.value,
+          Trend: trend.projected[i],
+        }));
+        visualizations.push({
+          id: `trendline-${dataset.id}`,
+          title: `Trend Analysis: ${bestNumCol.name}`,
+          type: 'composed',
+          data: trendData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
+        });
+      }
+    }
+
+    // ── Year-over-Year Comparison ──
+    if (dateColumns.length > 0 && bestNumCol) {
+      const yoyData = toYoYData(dataToUse, dateColumns[0].name, bestNumCol.name);
+      if (yoyData && yoyData.length >= 3) {
+        visualizations.push({
+          id: `yoy-${dataset.id}`,
+          title: `Year-over-Year: ${bestNumCol.name}`,
+          type: 'stacked_bar',
+          data: yoyData,
+          colors: currentScheme.colors,
+          gradient: `linear-gradient(135deg, ${currentScheme.colors[0]}, ${currentScheme.colors[1]})`,
+          daxCalculations: [],
+          datasetId: dataset.id,
         });
       }
     }

@@ -161,41 +161,59 @@ export const createSafeDataset = (dataset: Dataset): Dataset => {
  */
 export const optimizeVisualizationData = (
   data: any[],
-  type: 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'table'
+  type: string
 ): any[] => {
   if (type === 'table') {
-    // For tables, just limit rows
     return data.slice(0, RENDERING_LIMITS.MAX_TABLE_ROWS);
   }
 
-  if (type === 'pie') {
-    // For pie charts, aggregate if too many categories
+  if (type === 'pie' || type === 'donut') {
     if (data.length > 20) {
-      // Aggregate small slices into "Others"
       const sorted = [...data].sort((a, b) => {
         const valA = typeof a.value === 'number' ? a.value : Number(a.value) || 0;
         const valB = typeof b.value === 'number' ? b.value : Number(b.value) || 0;
         return valB - valA;
       });
-      
       const top = sorted.slice(0, 19);
       const others = sorted.slice(19);
-      
       if (others.length > 0) {
         const othersValue = others.reduce((sum, item) => {
           const val = typeof item.value === 'number' ? item.value : Number(item.value) || 0;
           return sum + val;
         }, 0);
-        
         return [...top, { category: 'Others', value: othersValue }];
       }
-      
       return top;
     }
     return data;
   }
 
-  // For line/bar/area charts, sample data points
+  // Radar: limit axes
+  if (type === 'radar') {
+    return data.slice(0, 12);
+  }
+
+  // Treemap / funnel: limit nodes
+  if (type === 'treemap' || type === 'funnel') {
+    return data.slice(0, 50);
+  }
+
+  // Heatmap: limit grid size (pass through, renderer handles it)
+  if (type === 'heatmap') {
+    return data.slice(0, 400); // 20x20 max
+  }
+
+  // Radial bar: limit to 8 items
+  if (type === 'radialbar') {
+    return data.slice(0, 8);
+  }
+
+  // Box plot / waterfall: limit categories
+  if (type === 'boxplot' || type === 'waterfall') {
+    return data.slice(0, 30);
+  }
+
+  // For line/bar/area/scatter/histogram/composed/stacked_bar, sample data points
   return sampleDataForVisualization(data, RENDERING_LIMITS.MAX_CHART_POINTS);
 };
 

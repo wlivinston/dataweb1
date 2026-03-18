@@ -40,6 +40,8 @@ import {
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, PieChart, Pie, Cell, LineChart, Line, AreaChart, Area, ScatterChart, Scatter,
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+  RadialBarChart, RadialBar,
 } from 'recharts';
 import * as XLSX from 'xlsx';
 import DataProcessingOverlay from './DataProcessingOverlay';
@@ -2000,14 +2002,18 @@ const FinanceDashboard: React.FC = () => {
     console.log('[Payment] startProviderCheckout:', { provider, plan, hasUser: !!user });
 
     if (!user) {
-      toast.error('Please sign in first to complete payment.', { duration: 6000 });
-      return;
+      throw new Error('Please sign in first to complete payment.');
     }
 
-    const token = await getAccessToken();
+    let token = await getAccessToken();
+    console.log('[Payment] getAccessToken result:', { hasToken: !!token });
     if (!token) {
-      toast.error('Authentication session expired. Please sign in again.', { duration: 6000 });
-      return;
+      // Fallback: try session access_token directly
+      token = session?.access_token || null;
+      console.log('[Payment] fallback session token:', { hasToken: !!token });
+    }
+    if (!token) {
+      throw new Error('Authentication session expired. Please sign in again.');
     }
 
     setCheckoutLoadingProvider(provider);
@@ -2038,11 +2044,10 @@ const FinanceDashboard: React.FC = () => {
       console.error('[Payment] Checkout initialization error:', error);
       if (isPaymentConnectionError(error)) {
         setPaymentServiceUnavailable(true);
-        showPaymentServiceUnavailableToast();
-      } else {
-        toast.error(error?.message || 'Could not start payment checkout.', { duration: 8000 });
       }
       setCheckoutLoadingProvider(null);
+      // Re-throw so PDFPaywallDialog safeCheckout can display the error inline
+      throw error;
     }
   };
 
@@ -5080,6 +5085,62 @@ const FinanceDashboard: React.FC = () => {
                 </ResponsiveContainer>
               )}
             </Card>
+
+            {/* Financial Health Radar */}
+            {chartData.financialHealthRadar && chartData.financialHealthRadar.length > 0 && (
+              <Card className="p-4" data-pdf-chart="financial-health-radar">
+                <h4 className="text-sm font-semibold mb-3 text-gray-700">Financial Health Overview (Radar)</h4>
+                <ResponsiveContainer width="100%" height={280}>
+                  <RadarChart data={chartData.financialHealthRadar} margin={{ top: 10, right: 40, bottom: 10, left: 40 }}>
+                    <PolarGrid strokeDasharray="3 3" />
+                    <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10 }} />
+                    <PolarRadiusAxis tick={{ fontSize: 9 }} domain={[0, 100]} />
+                    <Radar name="Score" dataKey="value" stroke="#6366f1" fill="#6366f1" fillOpacity={0.3} />
+                    <Tooltip formatter={(v: number) => `${v.toFixed(1)}`} />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </Card>
+            )}
+
+            {/* P&L Waterfall */}
+            {chartData.pnlWaterfall && chartData.pnlWaterfall.length > 0 && (
+              <Card className="p-4" data-pdf-chart="pnl-waterfall">
+                <h4 className="text-sm font-semibold mb-3 text-gray-700">Profit & Loss Waterfall</h4>
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={chartData.pnlWaterfall.map((entry) => {
+                    const val = entry.value;
+                    const isTotal = entry.isTotal === true;
+                    const base = isTotal ? 0 : undefined;
+                    return { ...entry, _base: base ?? Math.min(0, val), _delta: Math.abs(val) };
+                  })} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="category" tick={{ fontSize: 9 }} />
+                    <YAxis tick={{ fontSize: 10 }} tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}k`} />
+                    <Tooltip formatter={(v: number, name: string) => name === '_base' ? null : [`${v.toLocaleString()}`, '']} />
+                    <Bar dataKey="_base" stackId="wf" fill="transparent" />
+                    <Bar dataKey="_delta" stackId="wf">
+                      {chartData.pnlWaterfall.map((entry, idx) => (
+                        <Cell key={`pnl-wf-${idx}`} fill={entry.isTotal ? '#6366f1' : entry.value >= 0 ? '#10b981' : '#ef4444'} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </Card>
+            )}
+
+            {/* Profitability Radial Bar */}
+            {chartData.marginRadialBars && chartData.marginRadialBars.length > 0 && (
+              <Card className="p-4" data-pdf-chart="margin-radial-bars">
+                <h4 className="text-sm font-semibold mb-3 text-gray-700">Profitability Margins (Radial)</h4>
+                <ResponsiveContainer width="100%" height={260}>
+                  <RadialBarChart innerRadius="25%" outerRadius="90%" data={chartData.marginRadialBars} startAngle={180} endAngle={0}>
+                    <RadialBar label={{ position: 'insideStart', fill: '#fff', fontSize: 10 }} background dataKey="value" />
+                    <Legend iconSize={8} layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '10px', lineHeight: '16px' }} />
+                    <Tooltip formatter={(v: number) => `${v}%`} />
+                  </RadialBarChart>
+                </ResponsiveContainer>
+              </Card>
+            )}
           </div>
         </TabsContent>
 

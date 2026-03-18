@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Check, FileText, Mail, ArrowRight, Loader2 } from 'lucide-react';
+import { Check, FileText, Mail, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { createSupportMailto, getApiUrl } from '@/lib/publicConfig';
 
@@ -44,8 +44,28 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
   checkoutLoadingProvider = null,
 }) => {
   const [pricingPreview, setPricingPreview] = useState<PDFPricingPreviewPayload | null>(null);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const showDirectCheckout = Boolean(onStripeCheckout || onPaystackCheckout);
   const isBusy = checkoutLoadingProvider !== null;
+
+  // Clear error when dialog reopens
+  useEffect(() => {
+    if (open) setCheckoutError(null);
+  }, [open]);
+
+  const safeCheckout = async (
+    handler: ((plan: 'single' | 'monthly') => Promise<void> | void) | undefined,
+    plan: 'single' | 'monthly'
+  ) => {
+    setCheckoutError(null);
+    try {
+      await handler?.(plan);
+    } catch (err: any) {
+      const msg = err?.message || 'Payment checkout failed. Please try again.';
+      console.error('[PDFPaywallDialog] checkout error:', msg);
+      setCheckoutError(msg);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -111,7 +131,7 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg md:max-w-xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-2xl flex items-center gap-2">
             <FileText className="h-6 w-6 text-blue-600" />
@@ -123,6 +143,14 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
         </DialogHeader>
 
         <div className="space-y-4 mt-4">
+          {/* Inline error banner */}
+          {checkoutError && (
+            <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-red-500" />
+              <span>{checkoutError}</span>
+            </div>
+          )}
+
           {/* Per-report option */}
           <div className="border-2 border-blue-600 rounded-lg p-4 relative">
             <Badge className="absolute -top-2.5 left-4 bg-blue-600">Recommended</Badge>
@@ -149,27 +177,27 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
               </li>
             </ul>
             {showDirectCheckout ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-4">
+              <div className="flex flex-col gap-2 mt-4">
                 <Button
-                  className="bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700"
+                  className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white text-sm px-4 py-3 h-auto"
                   disabled={isBusy || !onStripeCheckout}
-                  onClick={() => onStripeCheckout?.('single')}
+                  onClick={() => safeCheckout(onStripeCheckout, 'single')}
                 >
                   {checkoutLoadingProvider === 'stripe' ? (
-                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting to Stripe...</>
                   ) : (
-                    `Pay with Stripe (${singleStripePrice})`
+                    <>Pay with Stripe ({singleStripePrice})</>
                   )}
                 </Button>
                 <Button
-                  variant="outline"
+                  className="w-full bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white border-0 text-sm px-4 py-3 h-auto shadow-sm"
                   disabled={isBusy || !onPaystackCheckout}
-                  onClick={() => onPaystackCheckout?.('single')}
+                  onClick={() => safeCheckout(onPaystackCheckout, 'single')}
                 >
                   {checkoutLoadingProvider === 'paystack' ? (
-                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting to Paystack...</>
                   ) : (
-                    `Pay with Paystack (${singlePaystackPrice})`
+                    <>Pay with Paystack ({singlePaystackPrice})</>
                   )}
                 </Button>
               </div>
@@ -198,27 +226,27 @@ const PDFPaywallDialog: React.FC<PDFPaywallDialogProps> = ({
               </div>
             </div>
             {showDirectCheckout ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-4">
+              <div className="flex flex-col gap-2 mt-4">
                 <Button
-                  className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
+                  className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white text-sm px-4 py-3 h-auto"
                   disabled={isBusy || !onStripeCheckout}
-                  onClick={() => onStripeCheckout?.('monthly')}
+                  onClick={() => safeCheckout(onStripeCheckout, 'monthly')}
                 >
                   {checkoutLoadingProvider === 'stripe' ? (
-                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting to Stripe...</>
                   ) : (
-                    `Stripe Monthly (${monthlyStripePrice})`
+                    <>Stripe Monthly ({monthlyStripePrice})</>
                   )}
                 </Button>
                 <Button
-                  variant="outline"
+                  className="w-full bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white border-0 text-sm px-4 py-3 h-auto shadow-sm"
                   disabled={isBusy || !onPaystackCheckout}
-                  onClick={() => onPaystackCheckout?.('monthly')}
+                  onClick={() => safeCheckout(onPaystackCheckout, 'monthly')}
                 >
                   {checkoutLoadingProvider === 'paystack' ? (
-                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting...</>
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Redirecting to Paystack...</>
                   ) : (
-                    `Paystack Monthly (${monthlyPaystackPrice})`
+                    <>Paystack Monthly ({monthlyPaystackPrice})</>
                   )}
                 </Button>
               </div>
