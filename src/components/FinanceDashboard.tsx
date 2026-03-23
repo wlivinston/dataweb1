@@ -1995,11 +1995,11 @@ const FinanceDashboard: React.FC = () => {
     }
   };
 
-  const startProviderCheckout = async (
-    provider: 'stripe' | 'paystack',
-    plan: 'single' | 'monthly'
+  const startCurrencyCheckout = async (
+    plan: 'single' | 'monthly',
+    currency: string
   ) => {
-    console.log('[Payment] startProviderCheckout:', { provider, plan, hasUser: !!user });
+    console.log('[Payment] startCurrencyCheckout:', { plan, currency, hasUser: !!user });
 
     if (!user) {
       throw new Error('Please sign in first to complete payment.');
@@ -2008,7 +2008,6 @@ const FinanceDashboard: React.FC = () => {
     let token = await getAccessToken();
     console.log('[Payment] getAccessToken result:', { hasToken: !!token });
     if (!token) {
-      // Fallback: try session access_token directly
       token = session?.access_token || null;
       console.log('[Payment] fallback session token:', { hasToken: !!token });
     }
@@ -2016,7 +2015,7 @@ const FinanceDashboard: React.FC = () => {
       throw new Error('Authentication session expired. Please sign in again.');
     }
 
-    setCheckoutLoadingProvider(provider);
+    setCheckoutLoadingProvider(currency && ['NGN', 'GHS', 'ZAR', 'KES'].includes(currency.toUpperCase()) ? 'paystack' : 'stripe');
     try {
       console.log('[Payment] Calling pdf-checkout endpoint…');
       const response = await fetch(getApiUrl('/api/subscriptions/pdf-checkout'), {
@@ -2026,8 +2025,8 @@ const FinanceDashboard: React.FC = () => {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          provider,
           plan,
+          currency,
           return_path: window.location.pathname || '/finance',
         }),
       });
@@ -2046,7 +2045,6 @@ const FinanceDashboard: React.FC = () => {
         setPaymentServiceUnavailable(true);
       }
       setCheckoutLoadingProvider(null);
-      // Re-throw so PDFPaywallDialog safeCheckout can display the error inline
       throw error;
     }
   };
@@ -6016,8 +6014,7 @@ const FinanceDashboard: React.FC = () => {
       <PDFPaywallDialog
         open={showPaywall}
         onOpenChange={setShowPaywall}
-        onStripeCheckout={async (plan) => startProviderCheckout('stripe', plan)}
-        onPaystackCheckout={async (plan) => startProviderCheckout('paystack', plan)}
+        onCheckout={async (plan, currency) => startCurrencyCheckout(plan, currency)}
         checkoutLoadingProvider={checkoutLoadingProvider}
       />
     </div>

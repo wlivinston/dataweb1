@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -62,6 +61,7 @@ const splitTextForSpeech = (input: string): string[] => {
 
 const AccessibilityControls: React.FC = () => {
   const [open, setOpen] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [voices, setVoices] = useState<VoiceOption[]>([]);
   const [selectedVoiceURI, setSelectedVoiceURI] = useState("");
   const [rate, setRate] = useState(1);
@@ -69,6 +69,7 @@ const AccessibilityControls: React.FC = () => {
   const [status, setStatus] = useState("Ready");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   const queueRef = useRef<string[]>([]);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -274,7 +275,7 @@ const AccessibilityControls: React.FC = () => {
   const readSelection = useCallback(() => {
     const text = getSelectionText();
     if (!text) {
-      setStatus("Select text first, then choose Read Selection");
+      setStatus("Select text first, then tap Read Selection");
       return;
     }
     void (async () => {
@@ -320,6 +321,18 @@ const AccessibilityControls: React.FC = () => {
     setIsPaused(false);
     setStatus("Reading");
   }, [speechSupported]);
+
+  // Close panel on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
 
   useEffect(() => {
     if (!speechSupported) return;
@@ -383,107 +396,207 @@ const AccessibilityControls: React.FC = () => {
     window.localStorage.setItem(VOICE_STORAGE_KEY, selectedVoiceURI);
   }, [selectedVoiceURI, speechSupported]);
 
+  const isActive = isSpeaking || isPaused;
+
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-[min(92vw,22rem)]">
-      <Button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="w-full bg-slate-900 text-white hover:bg-slate-800"
-        aria-expanded={open}
-        aria-controls="accessibility-controls-panel"
-      >
-        Accessibility and Speech
-      </Button>
-
+    <div ref={panelRef} className="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2">
+      {/* Expanded panel */}
       {open && (
-        <Card
+        <div
           id="accessibility-controls-panel"
-          className="mt-2 border-slate-300 bg-white/95 shadow-xl backdrop-blur-sm"
+          role="dialog"
+          aria-label="Speech accessibility controls"
+          className="w-[min(92vw,20rem)] rounded-xl border border-slate-200 bg-white/95 shadow-2xl backdrop-blur-sm animate-in slide-in-from-bottom-2 fade-in duration-200"
         >
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Braille and TTS Support</CardTitle>
-            <p className="text-xs text-slate-600">
-              Screen-reader and refreshable-braille users benefit from this semantic content mode. Use controls below to read content aloud.
-            </p>
-            {SPECIALIZED_TTS_ENDPOINT && (
-              <p className="text-xs text-emerald-700">
-                Specialized speech endpoint detected.
-              </p>
-            )}
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="tts-voice">Voice</Label>
-              <select
-                id="tts-voice"
-                className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                value={selectedVoiceURI}
-                onChange={(event) => setSelectedVoiceURI(event.target.value)}
-                disabled={!speechSupported || voices.length === 0}
-              >
-                {voices.length === 0 && <option value="">No voice available</option>}
-                {voices.map((voice) => (
-                  <option key={voice.voiceURI} value={voice.voiceURI}>
-                    {voice.name} ({voice.lang})
-                  </option>
-                ))}
-              </select>
-            </div>
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2.5">
+            <span className="text-sm font-semibold text-slate-800">Speech Reader</span>
+            <button
+              onClick={() => setOpen(false)}
+              className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+              aria-label="Close speech controls"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 1l12 12M13 1L1 13" /></svg>
+            </button>
+          </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label htmlFor="tts-rate">Rate ({rate.toFixed(2)})</Label>
-                <Input
-                  id="tts-rate"
-                  type="range"
-                  min={0.6}
-                  max={1.6}
-                  step={0.05}
-                  value={rate}
-                  onChange={(event) => setRate(Number(event.target.value))}
-                  disabled={!canReadAloud}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="tts-pitch">Pitch ({pitch.toFixed(2)})</Label>
-                <Input
-                  id="tts-pitch"
-                  type="range"
-                  min={0.6}
-                  max={1.6}
-                  step={0.05}
-                  value={pitch}
-                  onChange={(event) => setPitch(Number(event.target.value))}
-                  disabled={!canReadAloud}
-                />
-              </div>
-            </div>
-
+          <div className="p-3 space-y-3">
+            {/* Quick actions — always visible */}
             <div className="grid grid-cols-2 gap-2">
-              <Button type="button" variant="secondary" onClick={readSelection} disabled={!canReadAloud}>
-                Read Selection
-              </Button>
-              <Button type="button" variant="secondary" onClick={readPage} disabled={!canReadAloud}>
+              <Button
+                type="button"
+                size="sm"
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs h-9"
+                onClick={() => { readPage(); }}
+                disabled={!canReadAloud || isSpeaking}
+              >
+                <svg className="w-3.5 h-3.5 mr-1.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
                 Read Page
               </Button>
-              <Button type="button" variant="outline" onClick={pause} disabled={!isSpeaking || isPaused}>
-                Pause
-              </Button>
-              <Button type="button" variant="outline" onClick={resume} disabled={!isPaused}>
-                Resume
+              <Button
+                type="button"
+                size="sm"
+                className="bg-slate-700 hover:bg-slate-800 text-white text-xs h-9"
+                onClick={() => { readSelection(); }}
+                disabled={!canReadAloud || isSpeaking}
+              >
+                <svg className="w-3.5 h-3.5 mr-1.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                Read Selection
               </Button>
             </div>
 
-            <Button type="button" variant="destructive" className="w-full" onClick={stop} disabled={!isSpeaking && !isPaused}>
-              Stop
-            </Button>
+            {/* Playback controls — only when active */}
+            {isActive && (
+              <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2">
+                <div className="flex-1 flex items-center gap-1.5">
+                  <span className={`inline-block h-2 w-2 rounded-full ${isPaused ? 'bg-amber-400' : 'bg-green-500 animate-pulse'}`} />
+                  <span className="text-xs text-slate-600 truncate">{status}</span>
+                </div>
+                {isPaused ? (
+                  <button
+                    onClick={resume}
+                    className="rounded-md bg-white border border-slate-200 p-1.5 text-slate-600 hover:bg-slate-100 transition-colors"
+                    aria-label="Resume reading"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21" /></svg>
+                  </button>
+                ) : (
+                  <button
+                    onClick={pause}
+                    className="rounded-md bg-white border border-slate-200 p-1.5 text-slate-600 hover:bg-slate-100 transition-colors"
+                    aria-label="Pause reading"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>
+                  </button>
+                )}
+                <button
+                  onClick={stop}
+                  className="rounded-md bg-white border border-red-200 p-1.5 text-red-500 hover:bg-red-50 transition-colors"
+                  aria-label="Stop reading"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg>
+                </button>
+              </div>
+            )}
 
-            <p className="text-xs text-slate-700" role="status" aria-live="polite">
-              Status: {canReadAloud ? status : "Speech not supported in this browser"}
-            </p>
-          </CardContent>
-        </Card>
+            {/* Status when idle */}
+            {!isActive && status !== "Ready" && (
+              <p className="text-xs text-slate-500 px-0.5" role="status" aria-live="polite">
+                {canReadAloud ? status : "Speech not supported in this browser"}
+              </p>
+            )}
+
+            {/* Settings toggle */}
+            <button
+              type="button"
+              onClick={() => setShowSettings((v) => !v)}
+              className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 transition-colors w-full"
+              aria-expanded={showSettings}
+            >
+              <svg className={`w-3 h-3 transition-transform ${showSettings ? 'rotate-90' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M9 18l6-6-6-6" /></svg>
+              Voice settings
+            </button>
+
+            {showSettings && (
+              <div className="space-y-3 pt-1 border-t border-slate-100">
+                <div className="space-y-1.5">
+                  <Label htmlFor="tts-voice" className="text-xs">Voice</Label>
+                  <select
+                    id="tts-voice"
+                    className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs"
+                    value={selectedVoiceURI}
+                    onChange={(event) => setSelectedVoiceURI(event.target.value)}
+                    disabled={!speechSupported || voices.length === 0}
+                  >
+                    {voices.length === 0 && <option value="">No voice available</option>}
+                    {voices.map((voice) => (
+                      <option key={voice.voiceURI} value={voice.voiceURI}>
+                        {voice.name} ({voice.lang})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="tts-rate" className="text-xs">Speed ({rate.toFixed(1)}x)</Label>
+                    <Input
+                      id="tts-rate"
+                      type="range"
+                      min={0.6}
+                      max={1.6}
+                      step={0.1}
+                      value={rate}
+                      onChange={(event) => setRate(Number(event.target.value))}
+                      disabled={!canReadAloud}
+                      className="h-6"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="tts-pitch" className="text-xs">Pitch ({pitch.toFixed(1)})</Label>
+                    <Input
+                      id="tts-pitch"
+                      type="range"
+                      min={0.6}
+                      max={1.6}
+                      step={0.1}
+                      value={pitch}
+                      onChange={(event) => setPitch(Number(event.target.value))}
+                      disabled={!canReadAloud}
+                      className="h-6"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
+
+      {/* Floating action button */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls="accessibility-controls-panel"
+        aria-label={open ? "Close speech controls" : "Open speech controls"}
+        className={`
+          group flex items-center justify-center
+          rounded-full shadow-lg transition-all duration-200
+          focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2
+          ${isActive
+            ? 'h-12 w-12 bg-blue-600 text-white hover:bg-blue-700 ring-2 ring-blue-300 ring-offset-1'
+            : open
+              ? 'h-11 w-11 bg-slate-700 text-white hover:bg-slate-800'
+              : 'h-11 w-11 bg-slate-800 text-white hover:bg-slate-700'
+          }
+        `}
+      >
+        {isActive && !open ? (
+          /* Animated speaking indicator */
+          <div className="flex items-end gap-[3px] h-4">
+            <span className="w-[3px] bg-white rounded-full animate-[speaking_0.8s_ease-in-out_infinite]" style={{ height: '40%' }} />
+            <span className="w-[3px] bg-white rounded-full animate-[speaking_0.8s_ease-in-out_0.15s_infinite]" style={{ height: '70%' }} />
+            <span className="w-[3px] bg-white rounded-full animate-[speaking_0.8s_ease-in-out_0.3s_infinite]" style={{ height: '100%' }} />
+            <span className="w-[3px] bg-white rounded-full animate-[speaking_0.8s_ease-in-out_0.45s_infinite]" style={{ height: '55%' }} />
+          </div>
+        ) : (
+          /* Speaker icon */
+          <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+          </svg>
+        )}
+      </button>
+
+      {/* Keyframe for speaking animation */}
+      <style>{`
+        @keyframes speaking {
+          0%, 100% { transform: scaleY(0.4); }
+          50% { transform: scaleY(1); }
+        }
+      `}</style>
     </div>
   );
 };

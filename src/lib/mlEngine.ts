@@ -1719,12 +1719,12 @@ const trainGradientBoosting = (
   problemType: MLProblemType
 ): ModelResult => {
   const t0 = performance.now();
-  const { X, y, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
-  const splitIdx = Math.floor(X.length * trainTestSplit);
-  const trainX = X.slice(0, splitIdx);
-  const trainY = y.slice(0, splitIdx);
-  const testX = X.slice(splitIdx);
-  const testY = y.slice(splitIdx);
+  const { data, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
+  const { train, test } = splitData(data, trainTestSplit, { seed: 20260220 });
+  const trainX = train;
+  const trainY = train.map(r => r[targetColumn]);
+  const testX = test;
+  const testY = test.map(r => r[targetColumn]);
 
   const nStumps = 30;
   const learningRate = 0.15;
@@ -1866,12 +1866,12 @@ const trainNaiveBayes = (
   trainTestSplit: number
 ): ModelResult => {
   const t0 = performance.now();
-  const { X, y, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
-  const splitIdx = Math.floor(X.length * trainTestSplit);
-  const trainX = X.slice(0, splitIdx);
-  const trainY = y.slice(0, splitIdx);
-  const testX = X.slice(splitIdx);
-  const testY = y.slice(splitIdx);
+  const { data, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
+  const { train, test } = splitData(data, trainTestSplit, { seed: 20260220 });
+  const trainX = train;
+  const trainY = train.map(r => r[targetColumn]);
+  const testX = test;
+  const testY = test.map(r => r[targetColumn]);
 
   const classVals = [...new Set(trainY)].sort((a, b) => a - b);
   const nClasses = classVals.length;
@@ -1966,12 +1966,12 @@ const trainKNN = (
   problemType: MLProblemType
 ): ModelResult => {
   const t0 = performance.now();
-  const { X, y, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
-  const splitIdx = Math.floor(X.length * trainTestSplit);
-  const trainX = X.slice(0, splitIdx);
-  const trainY = y.slice(0, splitIdx);
-  const testX = X.slice(splitIdx);
-  const testY = y.slice(splitIdx);
+  const { data, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
+  const { train, test } = splitData(data, trainTestSplit, { seed: 20260220 });
+  const trainX = train;
+  const trainY = train.map(r => r[targetColumn]);
+  const testX = test;
+  const testY = test.map(r => r[targetColumn]);
 
   // Choose k (odd number, sqrt of n, capped at 15)
   const k = Math.min(15, Math.max(3, Math.floor(Math.sqrt(trainX.length)) | 1));

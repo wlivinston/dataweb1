@@ -1,5 +1,5 @@
 const express = require('express');
-const { body } = require('express-validator');
+const { body, query, param } = require('express-validator');
 const { authenticateToken, optionalAuth } = require('../../../middleware/auth');
 const subscriptionsService = require('../../../modules/subscriptions/subscriptions.service');
 const { assertValidRequest } = require('../../../modules/common/validation');
@@ -17,9 +17,9 @@ router.get('/plans', async (_req, res) => {
   }
 });
 
-router.get('/pdf-pricing', async (_req, res) => {
+router.get('/pdf-pricing', async (req, res) => {
   try {
-    const pricing = await subscriptionsService.getPdfPricing();
+    const pricing = await subscriptionsService.getPdfPricing(req.query?.currency);
     return sendSuccess(res, { data: pricing });
   } catch (error) {
     return sendError(res, error);
@@ -62,8 +62,9 @@ router.post(
   '/pdf-checkout',
   authenticateToken,
   [
-    body('provider').isIn(Array.from(subscriptionsService.SUPPORTED_PAYMENT_PROVIDERS)),
+    body('provider').optional().isIn(Array.from(subscriptionsService.SUPPORTED_PAYMENT_PROVIDERS)),
     body('plan').optional().isIn(Array.from(subscriptionsService.SUPPORTED_PDF_PLANS)),
+    body('currency').optional().isString().isLength({ min: 3, max: 3 }),
     body('return_path').optional().isString(),
   ],
   async (req, res) => {
@@ -72,6 +73,7 @@ router.post(
       const payload = await subscriptionsService.createPdfCheckout({
         provider: req.body?.provider,
         plan: req.body?.plan,
+        currency: req.body?.currency,
         returnPath: req.body?.return_path,
         user: req.user,
         req,
@@ -83,19 +85,29 @@ router.post(
   }
 );
 
-router.get('/pdf-verify', authenticateToken, async (req, res) => {
-  try {
-    const payload = await subscriptionsService.verifyPdfPayment({
-      provider: req.query?.provider,
-      sessionId: req.query?.session_id,
-      reference: req.query?.reference,
-      user: req.user,
-    });
-    return sendSuccess(res, { data: payload });
-  } catch (error) {
-    return sendError(res, error);
+router.get(
+  '/pdf-verify',
+  authenticateToken,
+  [
+    query('provider').isIn(Array.from(subscriptionsService.SUPPORTED_PAYMENT_PROVIDERS)),
+    query('session_id').optional().isString().trim(),
+    query('reference').optional().isString().trim(),
+  ],
+  async (req, res) => {
+    try {
+      assertValidRequest(req);
+      const payload = await subscriptionsService.verifyPdfPayment({
+        provider: req.query?.provider,
+        sessionId: req.query?.session_id,
+        reference: req.query?.reference,
+        user: req.user,
+      });
+      return sendSuccess(res, { data: payload });
+    } catch (error) {
+      return sendError(res, error);
+    }
   }
-});
+);
 
 router.post(
   '/newsletter',
@@ -228,7 +240,10 @@ router.get('/admin/all', authenticateToken, async (req, res) => {
 router.put(
   '/admin/:subscriptionId/status',
   authenticateToken,
-  [body('status').isIn(['active', 'cancelled', 'expired', 'pending'])],
+  [
+    param('subscriptionId').isInt({ min: 1 }),
+    body('status').isIn(['active', 'cancelled', 'expired', 'pending']),
+  ],
   async (req, res) => {
     try {
       assertValidRequest(req);

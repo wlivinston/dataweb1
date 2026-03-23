@@ -290,9 +290,9 @@ const FunctionalDataUpload: React.FC = () => {
     }
   };
 
-  const startProviderCheckout = async (
-    provider: 'stripe' | 'paystack',
-    plan: 'single' | 'monthly'
+  const startCurrencyCheckout = async (
+    plan: 'single' | 'monthly',
+    currency: string
   ) => {
     if (!user) {
       toast.error('Please sign in first to complete payment.');
@@ -305,7 +305,7 @@ const FunctionalDataUpload: React.FC = () => {
       return;
     }
 
-    setCheckoutLoadingProvider(provider);
+    setCheckoutLoadingProvider(currency && ['NGN', 'GHS', 'ZAR', 'KES'].includes(currency.toUpperCase()) ? 'paystack' : 'stripe');
     try {
       const response = await fetch(getApiUrl('/api/subscriptions/pdf-checkout'), {
         method: 'POST',
@@ -314,8 +314,8 @@ const FunctionalDataUpload: React.FC = () => {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          provider,
           plan,
+          currency,
           return_path: window.location.pathname || '/analyze',
         }),
       });
@@ -507,7 +507,7 @@ const FunctionalDataUpload: React.FC = () => {
   const parseExcel = async (file: File): Promise<any[]> => {
     const buffer = await file.arrayBuffer();
     assertExcelBufferIsSafe(file.name, buffer);
-    const workbook = XLSX.read(buffer, { type: 'array', bookVBA: true });
+    const workbook = XLSX.read(buffer, { type: 'array' });
     assertWorkbookHasNoMacros(file.name, workbook);
 
     // Get the first worksheet
@@ -538,7 +538,7 @@ const FunctionalDataUpload: React.FC = () => {
   const parseExcelAllSheets = async (file: File): Promise<Array<{ sheetName: string; data: any[] }>> => {
     const buffer = await file.arrayBuffer();
     assertExcelBufferIsSafe(file.name, buffer);
-    const workbook = XLSX.read(buffer, { type: 'array', bookVBA: true });
+    const workbook = XLSX.read(buffer, { type: 'array' });
     assertWorkbookHasNoMacros(file.name, workbook);
 
     const allSheets: Array<{ sheetName: string; data: any[] }> = [];
@@ -682,14 +682,18 @@ const FunctionalDataUpload: React.FC = () => {
 
   // File Upload Handler with proper loading states
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+    const fileInput = event.target;
+    const file = fileInput.files?.[0];
     if (!file) return;
+
+    console.log('[Upload] Started:', file.name, 'size:', (file.size / 1024).toFixed(1) + 'KB', 'type:', file.type);
 
     const fileFormat = getFileFormat(file.name);
     const supportedFormats = ['csv', 'xlsx', 'xls', 'json'];
-    
+
     if (!supportedFormats.includes(file.name.toLowerCase().split('.').pop() || '')) {
       toast.error('Please upload a CSV, Excel (.xlsx, .xls), or JSON file');
+      fileInput.value = '';
       return;
     }
 
@@ -714,6 +718,13 @@ const FunctionalDataUpload: React.FC = () => {
     setUploadStage('uploading');
     setUploadMessage(`Uploading ${file.name}...`);
 
+    // Safety timeout — if upload hangs for 60s, reset state so user isn't stuck
+    const safetyTimeout = setTimeout(() => {
+      console.warn('[Upload] Safety timeout triggered after 60s — resetting upload state');
+      setIsUploading(false);
+      toast.error('Upload timed out. The file may be too large or in an unsupported format. Please try a smaller file.');
+    }, 60_000);
+
     try {
       let data: any[] = [];
 
@@ -727,19 +738,24 @@ const FunctionalDataUpload: React.FC = () => {
         setUploadStage('parsing');
         setUploadProgress(20);
         setUploadMessage('Parsing CSV data...');
-        
+
+        console.log('[Upload] Reading CSV text...');
         const text = await file.text();
+        console.log('[Upload] CSV text read, length:', text.length);
         if (!text || text.trim().length === 0) {
           setIsUploading(false);
           toast.error('CSV file is empty. Please upload a file with data.');
           return;
         }
-        
+
         await yieldToBrowser();
-        
+
         try {
           setUploadProgress(40);
+          console.log('[Upload] Parsing CSV...');
+          const t0 = performance.now();
           data = parseCSV(text);
+          console.log('[Upload] CSV parsed:', data.length, 'rows in', (performance.now() - t0).toFixed(0) + 'ms');
         } catch (parseError) {
           setIsUploading(false);
           const errorMessage = parseError instanceof Error ? parseError.message : 'Unknown parsing error';
@@ -751,13 +767,16 @@ const FunctionalDataUpload: React.FC = () => {
         setUploadStage('parsing');
         setUploadProgress(20);
         setUploadMessage('Parsing Excel file...');
-        
+
+        console.log('[Upload] Reading Excel file...');
         await yieldToBrowser();
-        
+
         try {
           setUploadProgress(30);
+          const t0 = performance.now();
           // Parse all sheets from Excel file
           const allSheets = await parseExcelAllSheets(file);
+          console.log('[Upload] Excel parsed:', allSheets.length, 'sheets in', (performance.now() - t0).toFixed(0) + 'ms');
           
           if (allSheets.length === 0) {
             setIsUploading(false);
@@ -838,39 +857,46 @@ const FunctionalDataUpload: React.FC = () => {
           
           await new Promise(resolve => setTimeout(resolve, 500));
           
+          clearTimeout(safetyTimeout);
           setIsUploading(false);
+          console.log('[Upload] Excel complete:', file.name, newDatasets.length, 'sheets');
           toast.success(
             `Successfully uploaded ${file.name} with ${newDatasets.length} sheet(s): ` +
             `${newDatasets.map(d => d.name).join(', ')}. ` +
             `Total rows: ${newDatasets.reduce((sum, d) => sum + d.rowCount, 0).toLocaleString()}`
           );
-          
+
           // Return early since we've already processed everything
           return;
-          
+
         } catch (parseError) {
+          clearTimeout(safetyTimeout);
           setIsUploading(false);
           toast.error(`Excel parsing error: ${parseError instanceof Error ? parseError.message : 'Unknown error'}`);
-          console.error('Excel parsing details:', parseError);
+          console.error('[Upload] Excel error:', parseError);
           return;
         }
       } else if (fileFormat === 'json') {
         setUploadStage('parsing');
         setUploadProgress(20);
         setUploadMessage('Parsing JSON data...');
-        
+
+        console.log('[Upload] Reading JSON text...');
         const text = await file.text();
+        console.log('[Upload] JSON text read, length:', text.length);
         if (!text || text.trim().length === 0) {
           setIsUploading(false);
           toast.error('JSON file is empty. Please upload a file with data.');
           return;
         }
-        
+
         await yieldToBrowser();
-        
+
         try {
           setUploadProgress(40);
+          const t0 = performance.now();
           data = parseJSON(text);
+          console.log('[Upload] JSON parsed:', data.length, 'rows in', (performance.now() - t0).toFixed(0) + 'ms');
         } catch (parseError) {
           setIsUploading(false);
           toast.error(`JSON parsing error: ${parseError instanceof Error ? parseError.message : 'Invalid JSON format'}`);
@@ -892,6 +918,8 @@ const FunctionalDataUpload: React.FC = () => {
       }
 
       // Stage 2: Analyzing columns (chunked for large datasets)
+      console.log('[Upload] Analyzing columns for', data.length, 'rows...');
+      const analysisStart = performance.now();
       setUploadStage('analyzing');
       setUploadProgress(50);
       setUploadMessage(`Analyzing ${data.length.toLocaleString()} rows...`);
@@ -920,6 +948,7 @@ const FunctionalDataUpload: React.FC = () => {
       }
 
       // Stage 3: Creating dataset
+      console.log('[Upload] Column analysis done in', (performance.now() - analysisStart).toFixed(0) + 'ms, columns:', columns.length);
       setUploadStage('processing');
       setUploadProgress(85);
       setUploadMessage('Finalizing dataset...');
@@ -951,14 +980,19 @@ const FunctionalDataUpload: React.FC = () => {
       
       await new Promise(resolve => setTimeout(resolve, 500));
       
+      clearTimeout(safetyTimeout);
       setIsUploading(false);
+      console.log('[Upload] Complete:', file.name, data.length, 'rows');
       toast.success(`Successfully uploaded ${file.name} (${fileFormat.toUpperCase()}) with ${data.length.toLocaleString()} rows`);
     } catch (error) {
+      clearTimeout(safetyTimeout);
       setIsUploading(false);
-      console.error(`Error parsing ${fileFormat}:`, error);
+      console.error('[Upload] Error parsing', fileFormat, ':', error);
       toast.error(`Error parsing ${fileFormat.toUpperCase()} file: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
-      // Reset after a delay to show completion
+      // Reset file input so the same file can be re-uploaded
+      fileInput.value = '';
+      // Reset progress after a delay to show completion
       setTimeout(() => {
         setUploadProgress(0);
         setUploadStage('uploading');
@@ -3434,8 +3468,7 @@ const FunctionalDataUpload: React.FC = () => {
           setShowPaywall(open);
           if (!open) setCheckoutLoadingProvider(null);
         }}
-        onStripeCheckout={async (plan) => startProviderCheckout('stripe', plan)}
-        onPaystackCheckout={async (plan) => startProviderCheckout('paystack', plan)}
+        onCheckout={async (plan, currency) => startCurrencyCheckout(plan, currency)}
         checkoutLoadingProvider={checkoutLoadingProvider}
       />
     </ErrorBoundary>

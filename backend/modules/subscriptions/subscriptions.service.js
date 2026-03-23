@@ -9,6 +9,12 @@ const logger = require('../../config/logger');
 
 const SUPPORTED_PAYMENT_PROVIDERS = new Set(['stripe', 'paystack']);
 const SUPPORTED_PDF_PLANS = new Set(['single', 'monthly']);
+const PAYSTACK_CURRENCIES = new Set(['NGN', 'GHS', 'ZAR', 'KES']);
+
+function deriveProviderFromCurrency(currency) {
+  const upper = String(currency || '').trim().toUpperCase();
+  return PAYSTACK_CURRENCIES.has(upper) ? 'paystack' : 'stripe';
+}
 const PAID_PDF_STATUSES = new Set([
   'professional',
   'enterprise',
@@ -190,17 +196,18 @@ function getPdfPlanConfig(plan) {
   };
 }
 
-async function resolvePaystackPricingForPlan(planKey) {
+async function resolvePaystackPricingForPlan(planKey, currencyOverride) {
   const requestedPlan = planKey === 'monthly' ? 'monthly' : 'single';
   const plan = getPdfPlanConfig(requestedPlan);
 
+  const overrideCurrency = String(currencyOverride || '').trim().toUpperCase();
   const configuredPaystackCurrency = String(process.env.PAYSTACK_CURRENCY || '')
     .trim()
     .toUpperCase();
   const paystackAccountCurrency = String(process.env.PAYSTACK_ACCOUNT_CURRENCY || '')
     .trim()
     .toUpperCase();
-  const targetCurrency = configuredPaystackCurrency || paystackAccountCurrency;
+  const targetCurrency = overrideCurrency || configuredPaystackCurrency || paystackAccountCurrency;
   const baseCurrency = String(
     process.env.PAYSTACK_BASE_CURRENCY || process.env.STRIPE_CURRENCY || 'USD'
   )
@@ -388,10 +395,58 @@ async function listPublicPlans() {
   }
 }
 
-async function getPdfPricing() {
+async function getPdfPricing(currency) {
+  const requestedCurrency = String(currency || '').trim().toUpperCase();
   const stripeCurrency = String(process.env.STRIPE_CURRENCY || 'USD').trim().toUpperCase();
   const singlePlan = getPdfPlanConfig('single');
   const monthlyPlan = getPdfPlanConfig('monthly');
+
+  // If a specific currency was requested, return routed pricing
+  if (requestedCurrency) {
+    const provider = deriveProviderFromCurrency(requestedCurrency);
+
+    const resolveForPlan = async (plan) => {
+      if (provider === 'paystack') {
+        const ps = await resolvePaystackPricingForPlan(plan.plan, requestedCurrency);
+        return {
+          amount: ps.amount,
+          currency: ps.displayCurrency,
+          provider: 'paystack',
+          base_currency: ps.baseCurrency,
+          converted_from_currency: ps.convertedFromCurrency,
+          exchange_rate: ps.exchangeRate,
+          auto_converted: ps.conversionApplied,
+        };
+      }
+      // Stripe path — convert from base USD if needed
+      const baseCurrency = stripeCurrency || 'USD';
+      if (requestedCurrency === baseCurrency) {
+        return { amount: plan.amount, currency: baseCurrency, provider: 'stripe' };
+      }
+      try {
+        const rate = await getExchangeRate(baseCurrency, requestedCurrency);
+        const converted = Number((plan.amount * rate).toFixed(2));
+        return {
+          amount: converted,
+          currency: requestedCurrency,
+          provider: 'stripe',
+          base_currency: baseCurrency,
+          converted_from_currency: baseCurrency,
+          exchange_rate: rate,
+          auto_converted: true,
+        };
+      } catch (_err) {
+        return { amount: plan.amount, currency: baseCurrency, provider: 'stripe' };
+      }
+    };
+
+    return {
+      single: await resolveForPlan(singlePlan),
+      monthly: await resolveForPlan(monthlyPlan),
+    };
+  }
+
+  // No currency specified — return both providers (backward compat)
   const singlePaystack = await resolvePaystackPricingForPlan('single');
   const monthlyPaystack = await resolvePaystackPricingForPlan('monthly');
 
@@ -553,11 +608,15 @@ async function getPdfAccess(authUser) {
 async function createPdfCheckout({
   provider,
   plan,
+  currency,
   returnPath,
   user,
   req,
 }) {
-  const selectedProvider = String(provider || '').toLowerCase();
+  const requestedCurrency = String(currency || '').trim().toUpperCase();
+  const selectedProvider = requestedCurrency
+    ? deriveProviderFromCurrency(requestedCurrency)
+    : String(provider || '').toLowerCase();
   const requestedPlan = String(plan || 'single').toLowerCase();
 
   if (!SUPPORTED_PAYMENT_PROVIDERS.has(selectedProvider)) {
@@ -595,12 +654,24 @@ async function createPdfCheckout({
       throw error;
     }
 
-    const stripeCurrency = (process.env.STRIPE_CURRENCY || 'usd').toLowerCase();
+    const defaultStripeCurrency = (process.env.STRIPE_CURRENCY || 'usd').toLowerCase();
+    const checkoutCurrency = requestedCurrency ? requestedCurrency.toLowerCase() : defaultStripeCurrency;
     const stripeSinglePriceId = (process.env.STRIPE_PDF_SINGLE_PRICE_ID || '').trim();
     const stripeMonthlyPriceId = (process.env.STRIPE_PDF_MONTHLY_PRICE_ID || '').trim();
     const mode = requestedPlan === 'monthly' ? 'subscription' : 'payment';
     const successUrl = `${frontendBase}${safeReturnPath}?pdfPayment=success&provider=stripe&session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${frontendBase}${safeReturnPath}?pdfPayment=cancel&provider=stripe`;
+
+    // Convert amount if user selected a non-default currency
+    let chargeAmount = selectedPlanConfig.amount;
+    if (requestedCurrency && requestedCurrency !== defaultStripeCurrency.toUpperCase()) {
+      try {
+        const rate = await getExchangeRate(defaultStripeCurrency.toUpperCase(), requestedCurrency);
+        chargeAmount = Number((selectedPlanConfig.amount * rate).toFixed(2));
+      } catch (_err) {
+        logger.warn({ from: defaultStripeCurrency, to: requestedCurrency }, 'stripe fx conversion failed, using base amount');
+      }
+    }
 
     const form = new URLSearchParams();
     form.append('mode', mode);
@@ -616,13 +687,14 @@ async function createPdfCheckout({
 
     const selectedPriceId =
       requestedPlan === 'monthly' ? stripeMonthlyPriceId : stripeSinglePriceId;
-    if (selectedPriceId) {
+    // Skip pre-created price IDs when user selected a different currency
+    if (selectedPriceId && !requestedCurrency) {
       form.append('line_items[0][price]', selectedPriceId);
     } else {
-      form.append('line_items[0][price_data][currency]', stripeCurrency);
+      form.append('line_items[0][price_data][currency]', checkoutCurrency);
       form.append(
         'line_items[0][price_data][unit_amount]',
-        String(Math.round(selectedPlanConfig.amount * 100))
+        String(Math.round(chargeAmount * 100))
       );
       form.append(
         'line_items[0][price_data][product_data][name]',
@@ -667,7 +739,7 @@ async function createPdfCheckout({
     throw error;
   }
 
-  const paystackPricing = await resolvePaystackPricingForPlan(requestedPlan);
+  const paystackPricing = await resolvePaystackPricingForPlan(requestedPlan, requestedCurrency || undefined);
   const amount = paystackPricing.amount;
   const paystackCurrency = paystackPricing.chargeCurrency;
   const resolvedExchangeRate = paystackPricing.exchangeRate;
@@ -920,6 +992,7 @@ async function processStripeWebhook({ rawBody, signature }) {
     };
 
     if (!identity.customerId && !identity.email) {
+      logger.warn({ event_type: event.type, session_id: session?.id }, 'stripe webhook ignored: missing identity metadata');
       return { received: true, ignored: 'Missing identity metadata' };
     }
 
@@ -981,6 +1054,7 @@ async function processPaystackWebhook({ rawBody, signature }) {
     };
 
     if (!identity.customerId && !identity.email) {
+      logger.warn({ event_type: event.event, reference: event.data?.reference }, 'paystack webhook ignored: missing identity metadata');
       return { received: true, ignored: 'Missing identity metadata' };
     }
 
@@ -988,6 +1062,7 @@ async function processPaystackWebhook({ rawBody, signature }) {
     return { received: true, provider: 'paystack', processed: true };
   }
 
+  logger.info({ event_type: event.event }, 'paystack webhook received but not processed (unhandled event type)');
   return { received: true, provider: 'paystack', processed: false };
 }
 
@@ -1174,6 +1249,7 @@ async function updateSubscriptionStatusAdmin({ subscriptionId, status }) {
 module.exports = {
   SUPPORTED_PAYMENT_PROVIDERS,
   SUPPORTED_PDF_PLANS,
+  PAYSTACK_CURRENCIES,
   listPublicPlans,
   getPdfPricing,
   subscribeNewsletter,
