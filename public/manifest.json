@@ -3,11 +3,15 @@
   "short_name": "DataAfrik",
   "description": "AI-powered data analytics, finance intelligence, and professional reporting tools.",
   "start_url": "/",
+  "scope": "/",
+  "id": "/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#e8e0d4",
   "theme_color": "#1d4ed8",
   "categories": ["business", "finance", "productivity"],
+  "lang": "en",
+  "dir": "ltr",
   "icons": [
     { "src": "/icons/icon-72x72.png", "sizes": "72x72", "type": "image/png" },
     { "src": "/icons/icon-96x96.png", "sizes": "96x96", "type": "image/png" },
@@ -19,6 +23,41 @@
     { "src": "/icons/icon-512x512.png", "sizes": "512x512", "type": "image/png" },
     { "src": "/icons/maskable-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
-  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "Analyze Data",
+      "short_name": "Analyze",
+      "description": "Upload and analyze your data",
+      "url": "/analyze",
+      "icons": [{ "src": "/icons/icon-96x96.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "Finance Dashboard",
+      "short_name": "Finance",
+      "description": "View financial reports and insights",
+      "url": "/finance",
+      "icons": [{ "src": "/icons/icon-96x96.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "ML Engine",
+      "short_name": "ML",
+      "description": "Train machine learning models",
+      "url": "/ml-engine",
+      "icons": [{ "src": "/icons/icon-96x96.png", "sizes": "96x96" }]
+    }
+  ],
+  "share_target": {
+    "action": "/analyze",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "file",
+          "accept": [".csv", ".xlsx", ".xls", ".json", "text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]
+        }
+      ]
+    }
+  },
   "prefer_related_applications": false
 }
