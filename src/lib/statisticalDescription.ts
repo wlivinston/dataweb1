@@ -44,7 +44,7 @@ const calculatePercentile = (sortedValues: number[], percentile: number): number
  */
 const calculateStdDev = (values: number[], mean: number): number => {
   if (values.length === 0) return 0;
-  const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / values.length;
+  const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / (values.length - 1 || 1);
   return Math.sqrt(variance);
 };
 

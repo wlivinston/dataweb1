@@ -407,9 +407,13 @@ export const confidenceInterval = (
   else if (level >= 0.90) z = 1.645;
   else z = 1.96;
 
-  // For small samples, use a wider interval (t-distribution approximation)
+  // For small samples, approximate t-distribution critical value
+  // Using Abramowitz & Stegun approximation for t_{n-1,alpha/2}
   if (n < 30) {
-    z *= 1 + 2 / n; // Rough adjustment for small samples
+    const df = n - 1;
+    // Better approximation: t ≈ z + (z^3 + z) / (4*df) + (5*z^5 + 16*z^3 + 3*z) / (96*df^2)
+    const z2 = z * z;
+    z = z + (z2 * z + z) / (4 * df) + (5 * z2 * z2 * z + 16 * z2 * z + 3 * z) / (96 * df * df);
   }
 
   const margin = z * standardError;
@@ -862,7 +866,9 @@ export const multipleRegression = (
   const ssTotal = y.reduce((sum, yi) => sum + (yi - yMean) ** 2, 0);
   const ssResidual = residuals.reduce((sum, r) => sum + r * r, 0);
   const rSquared = ssTotal > 0 ? 1 - ssResidual / ssTotal : 0;
-  const adjustedRSquared = 1 - ((1 - rSquared) * (validN - 1)) / (validN - p - 1);
+  const adjustedRSquared = validN > p + 1
+    ? 1 - ((1 - rSquared) * (validN - 1)) / (validN - p - 1)
+    : rSquared;
 
   // Build coefficients map
   const coefficients: Record<string, number> = {};

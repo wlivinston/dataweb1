@@ -379,7 +379,7 @@ export function toStatsSummaryTable(
     const median = n % 2 === 0 ? (values[n / 2 - 1] + values[n / 2]) / 2 : values[Math.floor(n / 2)];
     const q1 = values[Math.floor(n * 0.25)];
     const q3 = values[Math.floor(n * 0.75)];
-    const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
+    const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1 || 1);
     const stdDev = Math.sqrt(variance);
     // Skewness (Fisher's)
     const skewness = n > 2

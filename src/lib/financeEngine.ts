@@ -330,7 +330,9 @@ const CLASSIFICATION_RULES: ClassificationRule[] = [
   // Current Assets
   { category: 'current_asset', keywords: ['cash', 'cash in hand', 'cash at bank', 'bank', 'petty cash', 'accounts receivable', 'trade receivable', 'inventory', 'stock', 'prepaid', 'prepayment', 'short-term investment', 'marketable securities', 'notes receivable'] },
   // Non-Current Assets
-  { category: 'non_current_asset', keywords: ['property', 'plant', 'equipment', 'vehicle', 'building', 'land', 'furniture', 'fixture', 'intangible', 'goodwill', 'patent', 'trademark', 'long-term investment', 'capital work in progress', 'accumulated depreciation'] },
+  { category: 'non_current_asset', keywords: ['property', 'plant', 'equipment', 'vehicle', 'building', 'land', 'furniture', 'fixture', 'intangible', 'goodwill', 'patent', 'trademark', 'long-term investment', 'capital work in progress'] },
+  // Contra-assets — credit-normal accounts that reduce asset totals
+  { category: 'contra_asset', keywords: ['accumulated depreciation', 'accumulated amortization', 'allowance for doubtful', 'allowance for bad debt', 'provision for depreciation'] },
   // Current Liabilities
   { category: 'current_liability', keywords: ['accounts payable', 'trade payable', 'accrued', 'accrual', 'short-term loan', 'short-term debt', 'unearned revenue', 'deferred revenue', 'credit card', 'current portion', 'wages payable', 'salaries payable', 'tax payable', 'vat payable', 'gst payable', 'overdraft', 'notes payable'] },
   // Non-Current Liabilities
@@ -356,6 +358,7 @@ export function classifyAccount(
       'expense': 'operating_expense', 'operating expense': 'operating_expense', 'opex': 'operating_expense',
       'asset': 'current_asset', 'current asset': 'current_asset',
       'fixed asset': 'non_current_asset', 'non-current asset': 'non_current_asset',
+      'contra asset': 'contra_asset', 'accumulated depreciation': 'contra_asset',
       'liability': 'current_liability', 'current liability': 'current_liability',
       'long-term liability': 'non_current_liability', 'non-current liability': 'non_current_liability',
       'equity': 'equity', "owner's equity": 'equity',
@@ -504,6 +507,7 @@ function groupByAccount(
     'non_current_liability',
     'equity',
     'financing_cash',
+    'contra_asset',
   ]);
 
   for (const t of filtered) {
@@ -777,7 +781,7 @@ function detectOpeningBalances(transactions: ClassifiedTransaction[]): OpeningBa
   const openingAssetRegex = /(cash|bank|accounts receivable|trade receivable|inventory|stock|prepaid|petty cash)/i;
   const hasOpeningAssetDebit = firstDateRows.some(
     tx =>
-      (tx.category === 'current_asset' || tx.category === 'non_current_asset') &&
+      (tx.category === 'current_asset' || tx.category === 'non_current_asset' || tx.category === 'contra_asset') &&
       tx.type === 'debit' &&
       tx.amount > 0 &&
       openingAssetRegex.test(tx.account)
@@ -811,7 +815,7 @@ function detectOpeningBalances(transactions: ClassifiedTransaction[]): OpeningBa
     firstDateRows
       .filter(
         tx =>
-          (tx.category === 'current_asset' || tx.category === 'non_current_asset') &&
+          (tx.category === 'current_asset' || tx.category === 'non_current_asset' || tx.category === 'contra_asset') &&
           tx.type === 'debit'
       )
       .reduce((sum, tx) => sum + tx.amount, 0) * 100
@@ -915,7 +919,9 @@ export function generateBalanceSheet(
   const currentAssets = groupByAccount(transactions, ['current_asset']);
   const totalCurrentAssets = sumLineItems(currentAssets);
 
-  const nonCurrentAssets = groupByAccount(transactions, ['non_current_asset']);
+  const nonCurrentAssetsGross = groupByAccount(transactions, ['non_current_asset']);
+  const contraAssets = groupByAccount(transactions, ['contra_asset']);
+  const nonCurrentAssets = [...nonCurrentAssetsGross, ...contraAssets];
   const totalNonCurrentAssets = sumLineItems(nonCurrentAssets);
 
   const totalAssets = Math.round((totalCurrentAssets + totalNonCurrentAssets) * 100) / 100;
@@ -995,7 +1001,7 @@ export function generateCashFlow(
     .reduce((s, t) => s + (t.type === 'debit' ? t.amount : -t.amount), 0);
   if (receivables !== 0) {
     operatingItems.push({
-      label: receivables > 0 ? 'Decrease in Accounts Receivable' : 'Increase in Accounts Receivable',
+      label: receivables > 0 ? 'Increase in Accounts Receivable' : 'Decrease in Accounts Receivable',
       amount: Math.round(-receivables * 100) / 100,
     });
   }
@@ -1005,7 +1011,7 @@ export function generateCashFlow(
     .reduce((s, t) => s + (t.type === 'debit' ? t.amount : -t.amount), 0);
   if (inventoryChanges !== 0) {
     operatingItems.push({
-      label: inventoryChanges > 0 ? 'Decrease in Inventory' : 'Increase in Inventory',
+      label: inventoryChanges > 0 ? 'Increase in Inventory' : 'Decrease in Inventory',
       amount: Math.round(-inventoryChanges * 100) / 100,
     });
   }
@@ -1144,7 +1150,10 @@ export function calculateFinancialRatios(
           const inventory = bs.currentAssets
             .filter(a => a.label.toLowerCase().includes('inventor'))
             .reduce((s, a) => s + a.amount, 0);
-          return Math.round(((bs.totalCurrentAssets - inventory) / bs.totalCurrentLiabilities) * 100) / 100;
+          const prepaid = bs.currentAssets
+            .filter(a => a.label.toLowerCase().includes('prepaid'))
+            .reduce((s, a) => s + a.amount, 0);
+          return Math.round(((bs.totalCurrentAssets - inventory - prepaid) / bs.totalCurrentLiabilities) * 100) / 100;
         })()
       : null,
     debtToEquity: bs.totalEquity > 0

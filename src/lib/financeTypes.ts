@@ -12,6 +12,7 @@ export type AccountCategory =
   | 'tax'
   | 'current_asset'
   | 'non_current_asset'
+  | 'contra_asset'
   | 'current_liability'
   | 'non_current_liability'
   | 'equity'

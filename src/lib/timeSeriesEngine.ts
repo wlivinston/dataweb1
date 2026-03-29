@@ -366,7 +366,7 @@ export const detectSeasonality = (
   if (maxPeriod < 2) return { period: 0, strength: 0 };
 
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
-  const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length;
+  const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (values.length - 1 || 1);
   if (variance === 0) return { period: 0, strength: 0 };
 
   let bestPeriod = 0;

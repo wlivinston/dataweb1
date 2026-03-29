@@ -79,7 +79,7 @@ const calculateCorrelation = (x: number[], y: number[]): number => {
 const calculateStdDev = (values: number[]): number => {
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
   const squareDiffs = values.map(v => (v - mean) ** 2);
-  return Math.sqrt(squareDiffs.reduce((a, b) => a + b, 0) / values.length);
+  return Math.sqrt(squareDiffs.reduce((a, b) => a + b, 0) / (values.length - 1 || 1));
 };
 
 /**

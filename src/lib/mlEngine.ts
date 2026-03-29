@@ -1838,7 +1838,9 @@ const trainGradientBoosting = (
       }
       return best;
     });
-    const metrics = computeClassificationMetrics(testY, classTestPreds, classVals, reverseLabelMappings, targetColumn);
+    const reverseLM = reverseLabelMappings[targetColumn] || {};
+    const classLabels = classVals.map(v => reverseLM[v] !== undefined ? reverseLM[v] : String(v));
+    const metrics = computeClassificationMetrics(testY, classTestPreds, classLabels);
     return {
       algorithm: 'gradient_boosting',
       algorithmLabel: 'Gradient Boosting',
@@ -1890,7 +1892,7 @@ const trainNaiveBayes = (
     for (let f = 0; f < featureColumns.length; f++) {
       const vals = rows.map(r => r[featureColumns[f]] as number || 0);
       const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
-      const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length + 1e-9;
+      const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / Math.max(1, vals.length - 1) + 1e-9;
       means.push(mean);
       vars.push(variance);
     }
@@ -1938,7 +1940,9 @@ const trainNaiveBayes = (
     isSelected: true,
   })).sort((a, b) => b.importance - a.importance);
 
-  const metrics = computeClassificationMetrics(testY, testPreds, classVals, reverseLabelMappings, targetColumn);
+  const reverseLM = reverseLabelMappings[targetColumn] || {};
+  const classLabels = classVals.map(v => reverseLM[v] !== undefined ? reverseLM[v] : String(v));
+  const metrics = computeClassificationMetrics(testY, testPreds, classLabels);
   const durationMs = performance.now() - t0;
 
   return {
@@ -2055,7 +2059,9 @@ const trainKNN = (
     };
   } else {
     const classVals = [...new Set(testSubY)].sort((a, b) => a - b);
-    const metrics = computeClassificationMetrics(testSubY, testPreds, classVals, reverseLabelMappings, targetColumn);
+    const reverseLM = reverseLabelMappings[targetColumn] || {};
+    const classLabels = classVals.map(v => reverseLM[v] !== undefined ? reverseLM[v] : String(v));
+    const metrics = computeClassificationMetrics(testSubY, testPreds, classLabels);
     return {
       algorithm: 'knn',
       algorithmLabel: `KNN (k=${k})`,
