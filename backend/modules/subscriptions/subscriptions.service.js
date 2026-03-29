@@ -6,6 +6,7 @@ const {
 } = require('../../services/emailService');
 const subscriptionsRepository = require('./subscriptions.repository');
 const logger = require('../../config/logger');
+const pushService = require('../../services/pushService');
 
 const SUPPORTED_PAYMENT_PROVIDERS = new Set(['stripe', 'paystack']);
 const SUPPORTED_PDF_PLANS = new Set(['single', 'monthly']);
@@ -997,6 +998,14 @@ async function processStripeWebhook({ rawBody, signature }) {
     }
 
     await updateCustomerSubscriptionStatusByIdentity(identity, planConfig.statusOnSuccess);
+    if (identity.email) {
+      pushService.sendNotificationByEmail(identity.email, {
+        type: 'payment_confirmed',
+        title: 'Payment Confirmed',
+        body: 'Your payment has been received. Thank you for your purchase!',
+        url: '/finance',
+      }).catch((err) => logger.warn({ err: err?.message }, 'push notification failed for stripe payment'));
+    }
     return { received: true, provider: 'stripe', processed: true };
   }
 
@@ -1015,6 +1024,14 @@ async function processStripeWebhook({ rawBody, signature }) {
 
     if (identity.customerId || identity.email) {
       await updateCustomerSubscriptionStatusByIdentity(identity, planConfig.statusOnSuccess);
+      if (identity.email) {
+        pushService.sendNotificationByEmail(identity.email, {
+          type: 'payment_confirmed',
+          title: 'Subscription Renewed',
+          body: 'Your subscription payment was successful.',
+          url: '/finance',
+        }).catch((err) => logger.warn({ err: err?.message }, 'push notification failed for invoice'));
+      }
     }
   }
 
@@ -1059,6 +1076,14 @@ async function processPaystackWebhook({ rawBody, signature }) {
     }
 
     await updateCustomerSubscriptionStatusByIdentity(identity, planConfig.statusOnSuccess);
+    if (identity.email) {
+      pushService.sendNotificationByEmail(identity.email, {
+        type: 'payment_confirmed',
+        title: 'Payment Confirmed',
+        body: 'Your Paystack payment has been received. Thank you!',
+        url: '/finance',
+      }).catch((err) => logger.warn({ err: err?.message }, 'push notification failed for paystack payment'));
+    }
     return { received: true, provider: 'paystack', processed: true };
   }
 

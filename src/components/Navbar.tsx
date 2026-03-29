@@ -4,6 +4,7 @@ import { Menu, X, LogIn } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { PUBLIC_CONFIG } from '@/lib/publicConfig';
+import NotificationBell from '@/components/NotificationBell';
 
 interface NavbarProps {
   activeSection?: string;
@@ -122,6 +123,7 @@ const Navbar: React.FC<NavbarProps> = ({
 
             {user ? (
               <div className="flex items-center ml-4 space-x-2">
+                <NotificationBell />
                 <div className="w-8 h-8 bg-green-600 rounded-full flex items-center justify-center text-white text-sm font-semibold">
                   {user.email?.charAt(0).toUpperCase()}
                 </div>
@@ -200,6 +202,7 @@ const Navbar: React.FC<NavbarProps> = ({
             {user ? (
                 <div className="flex items-center justify-between px-3 py-2">
                   <div className="flex items-center space-x-2">
+                    <NotificationBell />
                     <div className="w-8 h-8 bg-green-600 rounded-full flex items-center justify-center text-white text-sm font-semibold">
                       {user.email?.charAt(0).toUpperCase()}
                     </div>

@@ -5,6 +5,8 @@ const matter = require('gray-matter');
 const { supabase } = require('../../config/supabase');
 const { query } = require('../../config/database');
 const blogRepository = require('./blog.repository');
+const pushService = require('../../services/pushService');
+const logger = require('../../config/logger');
 
 const BLOGS_DIR = path.join(__dirname, '../../../src/blogs');
 
@@ -617,6 +619,7 @@ async function ensurePost(incoming) {
     read_time: parseReadTimeMinutes(payloadIn.read_time ?? payloadIn.readTime),
   };
 
+  const existingPost = await fetchBlogPostIdentityBySlug(slug);
   await writeBlogPostBySlug(payload);
   const ensuredPost = await fetchBlogPostIdentityBySlug(slug);
 
@@ -624,6 +627,16 @@ async function ensurePost(incoming) {
     const error = new Error('Unable to ensure blog post row');
     error.statusCode = 500;
     throw error;
+  }
+
+  // Broadcast push notification for NEW published posts only
+  if (!existingPost && payload.published) {
+    pushService.broadcastNotification({
+      type: 'new_blog_post',
+      title: 'New Blog Post',
+      body: payload.title,
+      url: `/blog/${slug}`,
+    }).catch((err) => logger.warn({ err: err?.message, slug }, 'push broadcast failed for new blog post'));
   }
 
   return {
