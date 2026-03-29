@@ -422,10 +422,10 @@ const AccessibilityControls: React.FC = () => {
 
   return (
     <>
-      {/* --- Mobile: slim bottom bar trigger --- */}
+      {/* --- Mobile: bottom-anchored speech controls --- */}
       <div
         ref={panelRef}
-        className="fixed bottom-0 left-0 right-0 z-50 sm:bottom-4 sm:right-4 sm:left-auto flex flex-col items-end pointer-events-none"
+        className="fixed z-50 bottom-4 right-4 sm:bottom-4 sm:right-4 flex flex-col items-end gap-2 pointer-events-none"
       >
         {/* Expanded panel */}
         {open && (
@@ -434,10 +434,14 @@ const AccessibilityControls: React.FC = () => {
             role="dialog"
             aria-label="Speech accessibility controls"
             className="
-              pointer-events-auto w-full rounded-t-2xl border-t border-slate-200 bg-white shadow-[0_-4px_24px_rgba(0,0,0,0.12)]
-              sm:w-80 sm:rounded-xl sm:border sm:shadow-2xl sm:mb-2
+              pointer-events-auto
+              fixed bottom-0 left-0 right-0 sm:static sm:bottom-auto sm:left-auto sm:right-auto
+              w-full rounded-t-2xl border-t border-slate-200 bg-white shadow-[0_-4px_24px_rgba(0,0,0,0.12)]
+              max-h-[65vh] overflow-y-auto
+              sm:w-80 sm:rounded-xl sm:border sm:shadow-2xl sm:max-h-none sm:overflow-visible
               animate-in slide-in-from-bottom-4 fade-in duration-200
             "
+            style={{ paddingBottom: 'env(safe-area-inset-bottom, 8px)' }}
           >
             {/* Header bar — drag-handle on mobile */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
@@ -588,8 +592,6 @@ const AccessibilityControls: React.FC = () => {
               )}
             </div>
 
-            {/* Safe area padding for phones with gesture bars */}
-            <div className="h-[env(safe-area-inset-bottom,0px)] sm:hidden" />
           </div>
         )}
 
