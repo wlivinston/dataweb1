@@ -1,6 +1,16 @@
 const nodemailer = require('nodemailer');
 const logger = require('../config/logger');
 
+// Escape user-supplied values for safe embedding in HTML email templates
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // Create transporter
 const createTransporter = () => {
   return nodemailer.createTransport({
@@ -33,7 +43,7 @@ const sendVerificationEmail = async (email, firstName, token) => {
           </div>
           
           <div style="padding: 30px; background: #f9f9f9;">
-            <h2 style="color: #333; margin-bottom: 20px;">Hello ${firstName}!</h2>
+            <h2 style="color: #333; margin-bottom: 20px;">Hello ${escapeHtml(firstName)}!</h2>
             
             <p style="color: #666; line-height: 1.6; margin-bottom: 25px;">
               Thank you for registering with DataWeb! To complete your registration and start commenting on our blog posts, 
@@ -105,7 +115,7 @@ const sendPasswordResetEmail = async (email, firstName, token) => {
           </div>
           
           <div style="padding: 30px; background: #f9f9f9;">
-            <h2 style="color: #333; margin-bottom: 20px;">Hello ${firstName}!</h2>
+            <h2 style="color: #333; margin-bottom: 20px;">Hello ${escapeHtml(firstName)}!</h2>
             
             <p style="color: #666; line-height: 1.6; margin-bottom: 25px;">
               We received a request to reset your password for your DataWeb account. 
@@ -175,7 +185,7 @@ const sendSubscriptionEmail = async (email, firstName) => {
           </div>
           
           <div style="padding: 30px; background: #f9f9f9;">
-            <h2 style="color: #333; margin-bottom: 20px;">Hello ${firstName}!</h2>
+            <h2 style="color: #333; margin-bottom: 20px;">Hello ${escapeHtml(firstName)}!</h2>
             
             <p style="color: #666; line-height: 1.6; margin-bottom: 25px;">
               Thank you for subscribing to the DataWeb newsletter! You'll now receive updates about our latest blog posts, 
@@ -235,7 +245,7 @@ const sendUnsubscribeEmail = async (email, firstName) => {
           </div>
           
           <div style="padding: 30px; background: #f9f9f9;">
-            <h2 style="color: #333; margin-bottom: 20px;">Hello ${firstName}!</h2>
+            <h2 style="color: #333; margin-bottom: 20px;">Hello ${escapeHtml(firstName)}!</h2>
             
             <p style="color: #666; line-height: 1.6; margin-bottom: 25px;">
               We're sorry to see you go! You have been successfully unsubscribed from the DataWeb newsletter.
@@ -286,9 +296,9 @@ const sendCommentNotificationEmail = async (postTitle, commentAuthor, commentCon
             <h2 style="color: #333; margin-bottom: 20px;">New Comment Posted</h2>
             
             <div style="background: #fff; padding: 20px; border-radius: 5px; border-left: 4px solid #667eea;">
-              <h3 style="color: #333; margin-top: 0;">Post: ${postTitle}</h3>
-              <p style="color: #666; margin-bottom: 10px;"><strong>Author:</strong> ${commentAuthor}</p>
-              <p style="color: #333; line-height: 1.6; font-style: italic;">"${commentContent}"</p>
+              <h3 style="color: #333; margin-top: 0;">Post: ${escapeHtml(postTitle)}</h3>
+              <p style="color: #666; margin-bottom: 10px;"><strong>Author:</strong> ${escapeHtml(commentAuthor)}</p>
+              <p style="color: #333; line-height: 1.6; font-style: italic;">"${escapeHtml(commentContent)}"</p>
             </div>
             
             <p style="color: #666; line-height: 1.6; margin-top: 20px;">

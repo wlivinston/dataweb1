@@ -325,8 +325,23 @@ const FunctionalDataUpload: React.FC = () => {
         throw new Error(payload?.error?.message || 'Failed to initialize checkout.');
       }
 
+      const checkoutUrl = String(payload.data.checkout_url || '');
+      try {
+        const parsed = new URL(checkoutUrl);
+        if (parsed.protocol !== 'https:' || (
+          !parsed.hostname.endsWith('.stripe.com') &&
+          !parsed.hostname.endsWith('.paystack.com') &&
+          parsed.hostname !== 'paystack.com'
+        )) {
+          throw new Error('Untrusted checkout URL received from server.');
+        }
+      } catch (urlErr: any) {
+        if (urlErr.message.includes('Untrusted')) throw urlErr;
+        throw new Error('Invalid checkout URL received from server.');
+      }
+
       setShowPaywall(false);
-      window.location.href = payload.data.checkout_url;
+      window.location.href = checkoutUrl;
     } catch (error: any) {
       console.error('Checkout initialization error:', error);
       if (isPaymentConnectionError(error)) {

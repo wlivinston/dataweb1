@@ -726,7 +726,7 @@ const BlogComments: React.FC<BlogCommentsProps> = ({ postId, postSlug, postSeed 
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-2 flex-wrap">
             <span className="font-semibold text-gray-900">{comment.author_name}</span>
-            {comment.author_website && (
+            {comment.author_website && /^https?:\/\//i.test(comment.author_website) && (
               <a
                 href={comment.author_website}
                 target="_blank"
