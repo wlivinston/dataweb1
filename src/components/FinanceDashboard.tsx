@@ -5120,12 +5120,22 @@ const FinanceDashboard: React.FC = () => {
               <Card className="p-4" data-pdf-chart="pnl-waterfall">
                 <h4 className="text-sm font-semibold mb-3 text-gray-700">Profit & Loss Waterfall</h4>
                 <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={chartData.pnlWaterfall.map((entry) => {
-                    const val = entry.value;
-                    const isTotal = entry.isTotal === true;
-                    const base = isTotal ? 0 : undefined;
-                    return { ...entry, _base: base ?? Math.min(0, val), _delta: Math.abs(val) };
-                  })} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                  <BarChart data={(() => {
+                    let runningTotal = 0;
+                    return chartData.pnlWaterfall.map((entry) => {
+                      const isTotal = entry.isTotal === true;
+                      if (isTotal) {
+                        // Total bars sit on the x-axis (base=0) and show the cumulative value
+                        runningTotal = entry.value;
+                        return { ...entry, _base: 0, _delta: entry.value };
+                      } else {
+                        // Incremental bars float from the running total
+                        const base = entry.value >= 0 ? runningTotal : runningTotal + entry.value;
+                        runningTotal += entry.value;
+                        return { ...entry, _base: base, _delta: Math.abs(entry.value) };
+                      }
+                    });
+                  })()} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="category" tick={{ fontSize: 9 }} />
                     <YAxis tick={{ fontSize: 10 }} tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}k`} />
