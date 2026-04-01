@@ -10,8 +10,12 @@ const VAPID_PRIVATE_KEY = (process.env.VAPID_PRIVATE_KEY || '').trim();
 const VAPID_SUBJECT = (process.env.VAPID_SUBJECT || '').trim();
 
 if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY && VAPID_SUBJECT) {
-  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-  logger.info('Web Push VAPID configured');
+  try {
+    webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+    logger.info('Web Push VAPID configured');
+  } catch (err) {
+    logger.error('Web Push VAPID configuration failed:', err.message);
+  }
 } else {
   logger.warn('Web Push VAPID not configured — push notifications disabled');
 }

@@ -9,11 +9,15 @@ const router = express.Router();
 
 // Public — frontend needs this to subscribe
 router.get('/vapid-public-key', (_req, res) => {
-  const key = pushService.getVapidPublicKey();
-  if (!key) {
-    return res.status(503).json({ success: false, error: { message: 'Push notifications not configured' } });
+  try {
+    const key = pushService.getVapidPublicKey();
+    if (!key) {
+      return res.status(503).json({ success: false, error: { message: 'Push notifications not configured' } });
+    }
+    return sendSuccess(res, { data: { key } });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: { message: err.message || 'Internal error' } });
   }
-  return sendSuccess(res, { data: { key } });
 });
 
 // Save a push subscription
