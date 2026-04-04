@@ -23,7 +23,7 @@ const Login = lazy(() => import("./pages/Login"));
 const FinancePage = lazy(() => import("./pages/Finance"));
 const CookiePolicyPage = lazy(() => import("./pages/CookiePolicy"));
 const MLEnginePage = lazy(() => import("./pages/MLEngine"));
-const PivotTradingPage = lazy(() => import("./pages/PivotTrading"));
+
 
 const RouteLoader = () => (
   <div
@@ -63,7 +63,7 @@ const App = () => (
                 <Route path="/login" element={withSuspense(<Login />)} />
                 <Route path="/cookie-policy" element={withSuspense(<CookiePolicyPage />)} />
                 <Route path="/ml-engine" element={withSuspense(<MLEnginePage />)} />
-                <Route path="/pivot-trading" element={withSuspense(<PivotTradingPage />)} />
+
                 <Route path="*" element={withSuspense(<NotFound />)} />
               </Routes>
             </div>
