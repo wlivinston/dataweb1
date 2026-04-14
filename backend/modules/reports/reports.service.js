@@ -2,8 +2,8 @@ const nodemailer = require('nodemailer');
 const reportsRepository = require('./reports.repository');
 const logger = require('../../config/logger');
 
-const supportEmail = process.env.ADMIN_EMAIL || process.env.SUPPORT_EMAIL || 'senyo@diaspora-n.com';
-const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER || 'noreply@example.com';
+const supportEmail = process.env.ADMIN_EMAIL || process.env.SUPPORT_EMAIL || 'info@connectafrik.com';
+const fromEmail = process.env.FROM_EMAIL || process.env.SMTP_USER || 'info@connectafrik.com';
 
 const ALLOWED_REPORT_TYPES = new Set([
   'data-analysis',

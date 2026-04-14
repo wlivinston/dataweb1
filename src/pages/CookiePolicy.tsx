@@ -52,10 +52,10 @@ const CookiePolicyPage: React.FC = () => {
               <p>
                 If you have questions about this policy, contact us at{" "}
                 <a
-                  href="mailto:senyo@diaspora-n.com"
+                  href="mailto:info@connectafrik.com"
                   className="text-blue-600 underline underline-offset-2"
                 >
-                  senyo@diaspora-n.com
+                  info@connectafrik.com
                 </a>
                 .
               </p>

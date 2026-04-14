@@ -10,7 +10,7 @@ const apiVersion = apiVersionRaw === 'v1' ? 'v1' : '';
 export const PUBLIC_CONFIG = {
   brandName: (import.meta.env.VITE_BRAND_NAME || "DataAfrik").trim(),
   logoUrl: (import.meta.env.VITE_LOGO_URL || "/images/logo.png").trim(),
-  supportEmail: (import.meta.env.VITE_SUPPORT_EMAIL || "senyo@diaspora-n.com").trim(),
+  supportEmail: (import.meta.env.VITE_SUPPORT_EMAIL || "info@connectafrik.com").trim(),
   linkedinUrl: (import.meta.env.VITE_LINKEDIN_URL || "").trim(),
   githubUrl: (import.meta.env.VITE_GITHUB_URL || "").trim(),
   phoneGh: (import.meta.env.VITE_PHONE_GH || "").trim(),

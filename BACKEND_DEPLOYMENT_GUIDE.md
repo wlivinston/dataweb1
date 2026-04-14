@@ -59,7 +59,7 @@ SMTP_PASS=your-app-password
 FRONTEND_URL=https://your-frontend-domain.com
 
 # Admin Email
-ADMIN_EMAIL=admin@dataweb.com
+ADMIN_EMAIL=info@connectafrik.com
 ```
 
 ### 2. Email Service Setup
