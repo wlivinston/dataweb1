@@ -17,7 +17,10 @@
     "start-backend": "node backend/server.js",
     "commit:guard": "node scripts/commit-guard.mjs",
     "hooks:install": "node scripts/install-git-hooks.mjs",
-    "monitor:legacy-usage": "node scripts/monitor-legacy-usage.mjs"
+    "monitor:legacy-usage": "node scripts/monitor-legacy-usage.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
@@ -105,6 +108,7 @@
     "eslint-plugin-react-refresh": "^0.4.9",
     "globals": "^15.9.0",
     "typescript": "^5.5.3",
-    "typescript-eslint": "^8.0.1"
+    "typescript-eslint": "^8.0.1",
+    "vitest": "^3.2.7"
   }
 }

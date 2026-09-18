@@ -128,14 +128,80 @@ const lnGamma = (x: number): number => {
 };
 
 /**
- * Approximate p-value for chi-square distribution
+ * Regularized lower incomplete gamma P(a, x) via its series expansion.
+ * Converges quickly for x < a + 1.
+ */
+const lowerIncompleteGammaSeries = (a: number, x: number): number => {
+  const maxIter = 1000;
+  const epsilon = 1e-14;
+
+  let ap = a;
+  let sum = 1 / a;
+  let term = sum;
+
+  for (let n = 1; n <= maxIter; n++) {
+    ap += 1;
+    term *= x / ap;
+    sum += term;
+    if (Math.abs(term) < Math.abs(sum) * epsilon) break;
+  }
+
+  return sum * Math.exp(-x + a * Math.log(x) - lnGamma(a));
+};
+
+/**
+ * Regularized upper incomplete gamma Q(a, x) via a continued fraction
+ * (modified Lentz). Converges quickly for x >= a + 1.
+ */
+const upperIncompleteGammaCF = (a: number, x: number): number => {
+  const maxIter = 1000;
+  const epsilon = 1e-14;
+  const tiny = 1e-300;
+
+  let b = x + 1 - a;
+  let c = 1 / tiny;
+  let d = 1 / b;
+  let h = d;
+
+  for (let i = 1; i <= maxIter; i++) {
+    const an = -i * (i - a);
+    b += 2;
+
+    d = an * d + b;
+    if (Math.abs(d) < tiny) d = tiny;
+    c = b + an / c;
+    if (Math.abs(c) < tiny) c = tiny;
+
+    d = 1 / d;
+    const delta = d * c;
+    h *= delta;
+
+    if (Math.abs(delta - 1) < epsilon) break;
+  }
+
+  return Math.exp(-x + a * Math.log(x) - lnGamma(a)) * h;
+};
+
+/**
+ * Exact upper-tail p-value for the chi-square distribution.
+ *
+ * This is Q(df/2, chi2/2), the regularized upper incomplete gamma function.
+ * It replaces the Wilson-Hilferty cube-root approximation, which carried
+ * ~5% relative error at low degrees of freedom and could flip significance
+ * decisions at alpha = 0.05 (chi2 = 3.8415, df = 1 returned p = 0.0472
+ * instead of 0.0500).
  */
 const chiSquarePValue = (chi2: number, df: number): number => {
   if (chi2 <= 0 || df <= 0) return 1;
-  // Use Wilson-Hilferty approximation
-  const z = Math.pow(chi2 / df, 1 / 3) - (1 - 2 / (9 * df));
-  const denom = Math.sqrt(2 / (9 * df));
-  return 1 - normalCDF(z / denom);
+
+  const a = df / 2;
+  const x = chi2 / 2;
+
+  const p = x < a + 1
+    ? 1 - lowerIncompleteGammaSeries(a, x)
+    : upperIncompleteGammaCF(a, x);
+
+  return Math.min(1, Math.max(0, p));
 };
 
 /**
@@ -145,6 +211,74 @@ const fDistributionPValue = (f: number, df1: number, df2: number): number => {
   if (f <= 0) return 1;
   const x = df2 / (df2 + df1 * f);
   return incompleteBeta(x, df2 / 2, df1 / 2);
+};
+
+/** Smallest p-value we will report; anything below underflows double precision. */
+const P_VALUE_FLOOR = 1e-300;
+
+/**
+ * Round a p-value for reporting without collapsing small ones to zero.
+ *
+ * Rounding to 4 decimals turned any p below 0.00005 into exactly 0, and a
+ * reported "p = 0" is not a claim any test can support. Below that threshold
+ * we keep three significant digits instead.
+ */
+const roundPValue = (pValue: number): number => {
+  if (!Number.isFinite(pValue)) return 1;
+  const clamped = Math.min(1, Math.max(0, pValue));
+  // Extreme statistics underflow to 0 in double precision. Floor them rather
+  // than reporting p = 0, which would assert an impossible certainty.
+  if (clamped === 0) return P_VALUE_FLOOR;
+  if (clamped >= 0.0001) return Math.round(clamped * 10000) / 10000;
+  return Number(clamped.toPrecision(3));
+};
+
+/** Render a p-value for human-readable interpretation strings. */
+const formatPValue = (pValue: number): string => {
+  if (!Number.isFinite(pValue)) return 'n/a';
+  if (pValue < 0.0001) return '<0.0001';
+  return pValue.toFixed(4);
+};
+
+/**
+ * Two-sided p-value for a Pearson (or Spearman) correlation coefficient.
+ *
+ * Under H0: rho = 0, the statistic t = r * sqrt((n - 2) / (1 - r^2)) follows a
+ * t-distribution with n - 2 degrees of freedom.
+ */
+export const correlationPValue = (r: number, n: number): number => {
+  if (!Number.isFinite(r) || n < 3) return 1;
+  const absR = Math.min(Math.abs(r), 1);
+  if (absR >= 1) return 0;
+
+  const df = n - 2;
+  const t = absR * Math.sqrt(df / (1 - absR * absR));
+  return roundPValue(tDistributionPValue(t, df));
+};
+
+/**
+ * Benjamini-Hochberg false discovery rate control.
+ *
+ * Scanning every pair of numeric columns runs k(k-1)/2 simultaneous tests, so
+ * at alpha = 0.05 roughly one in twenty "findings" is noise by construction.
+ * Returns the indices of the p-values that stay significant once that is
+ * accounted for, controlling the expected proportion of false discoveries at
+ * `fdr` rather than the per-test error rate.
+ */
+export const benjaminiHochberg = (pValues: number[], fdr: number = 0.05): number[] => {
+  const m = pValues.length;
+  if (m === 0) return [];
+
+  const ordered = pValues
+    .map((p, index) => ({ p, index }))
+    .sort((a, b) => a.p - b.p);
+
+  let cutoffRank = 0;
+  for (let i = 0; i < m; i++) {
+    if (ordered[i].p <= ((i + 1) / m) * fdr) cutoffRank = i + 1;
+  }
+
+  return ordered.slice(0, cutoffRank).map(o => o.index).sort((a, b) => a - b);
 };
 
 // ============================================================
@@ -212,12 +346,12 @@ export const tTest = (
   return {
     testName: "Welch's t-test",
     statistic: Math.round(tStat * 1000) / 1000,
-    pValue: Math.round(pValue * 10000) / 10000,
+    pValue: roundPValue(pValue),
     degreesOfFreedom: Math.round(df * 10) / 10,
     significant,
     interpretation: significant
-      ? `Statistically significant difference detected (p=${pValue.toFixed(4)}). Group 1 mean (${mean1.toFixed(2)}) differs from Group 2 mean (${mean2.toFixed(2)}) with a ${effectLabel} effect size (d=${effectSize.toFixed(2)}).`
-      : `No statistically significant difference found (p=${pValue.toFixed(4)}). The means (${mean1.toFixed(2)} vs ${mean2.toFixed(2)}) are not significantly different at the ${(confidenceLevel * 100).toFixed(0)}% confidence level.`,
+      ? `Statistically significant difference detected (p=${formatPValue(pValue)}). Group 1 mean (${mean1.toFixed(2)}) differs from Group 2 mean (${mean2.toFixed(2)}) with a ${effectLabel} effect size (d=${effectSize.toFixed(2)}).`
+      : `No statistically significant difference found (p=${formatPValue(pValue)}). The means (${mean1.toFixed(2)} vs ${mean2.toFixed(2)}) are not significantly different at the ${(confidenceLevel * 100).toFixed(0)}% confidence level.`,
     confidenceLevel,
     effectSize: Math.round(effectSize * 1000) / 1000
   };
@@ -288,12 +422,12 @@ export const chiSquareTest = (
   return {
     testName: 'Chi-Square Test of Independence',
     statistic: Math.round(chi2 * 1000) / 1000,
-    pValue: Math.round(pValue * 10000) / 10000,
+    pValue: roundPValue(pValue),
     degreesOfFreedom: df,
     significant,
     interpretation: significant
-      ? `Significant association found between the variables (χ²=${chi2.toFixed(2)}, p=${pValue.toFixed(4)}). Cramér's V=${cramersV.toFixed(3)} indicates a ${cramersV >= 0.5 ? 'strong' : cramersV >= 0.3 ? 'moderate' : 'weak'} association.`
-      : `No significant association found (χ²=${chi2.toFixed(2)}, p=${pValue.toFixed(4)}). The variables appear to be independent.`,
+      ? `Significant association found between the variables (χ²=${chi2.toFixed(2)}, p=${formatPValue(pValue)}). Cramér's V=${cramersV.toFixed(3)} indicates a ${cramersV >= 0.5 ? 'strong' : cramersV >= 0.3 ? 'moderate' : 'weak'} association.`
+      : `No significant association found (χ²=${chi2.toFixed(2)}, p=${formatPValue(pValue)}). The variables appear to be independent.`,
     confidenceLevel,
     effectSize: Math.round(cramersV * 1000) / 1000
   };
@@ -368,12 +502,12 @@ export const oneWayANOVA = (
   return {
     testName: 'One-Way ANOVA',
     statistic: Math.round(fStat * 1000) / 1000,
-    pValue: Math.round(pValue * 10000) / 10000,
+    pValue: roundPValue(pValue),
     degreesOfFreedom: dfBetween,
     significant,
     interpretation: significant
-      ? `Significant difference found among ${k} groups (F=${fStat.toFixed(2)}, p=${pValue.toFixed(4)}). η²=${etaSquared.toFixed(3)} means the grouping explains ${(etaSquared * 100).toFixed(1)}% of variance.`
-      : `No significant difference found among ${k} groups (F=${fStat.toFixed(2)}, p=${pValue.toFixed(4)}).`,
+      ? `Significant difference found among ${k} groups (F=${fStat.toFixed(2)}, p=${formatPValue(pValue)}). η²=${etaSquared.toFixed(3)} means the grouping explains ${(etaSquared * 100).toFixed(1)}% of variance.`
+      : `No significant difference found among ${k} groups (F=${fStat.toFixed(2)}, p=${formatPValue(pValue)}).`,
     confidenceLevel,
     effectSize: Math.round(etaSquared * 1000) / 1000
   };
