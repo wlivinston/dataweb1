@@ -322,7 +322,7 @@ const CLASSIFICATION_RULES: ClassificationRule[] = [
   // Operating Expenses
   { category: 'operating_expense', keywords: ['salary', 'salaries', 'wages', 'rent', 'utilities', 'electricity', 'water', 'marketing', 'advertising', 'depreciation', 'amortization', 'insurance', 'office supplies', 'office expense', 'travel', 'professional fees', 'legal fees', 'audit fees', 'software', 'maintenance', 'repairs', 'telephone', 'internet', 'postage', 'printing', 'training', 'subscription', 'cleaning', 'security', 'entertainment', 'meals', 'fuel', 'transport', 'delivery', 'commission expense', 'bad debt', 'bank charges', 'bank fees', 'payroll'] },
   // Tax
-  { category: 'tax', keywords: ['income tax', 'tax expense', 'corporate tax', 'tax provision', 'tax payable'] },
+  { category: 'tax', keywords: ['income tax', 'tax expense', 'corporate tax', 'tax provision'] }, // 'tax payable' belongs to current_liability, not here
   // Other Income
   { category: 'other_income', keywords: ['interest income', 'dividend income', 'gain on sale', 'gain on disposal', 'other income', 'miscellaneous income', 'rental income', 'foreign exchange gain'] },
   // Other Expense
@@ -367,19 +367,43 @@ export function classifyAccount(
       'other expense': 'other_expense',
     };
 
+    // Exact hint match first, then the longest substring match. Scanning in
+    // insertion order resolved the hint 'contra asset' to the generic 'asset'
+    // key before ever reaching 'contra asset'.
+    if (hintMap[hint]) return hintMap[hint];
+
+    let hintCategory: AccountCategory | null = null;
+    let hintKeyLength = 0;
     for (const [key, cat] of Object.entries(hintMap)) {
-      if (hint === key || hint.includes(key)) return cat;
+      if (key.length > hintKeyLength && hint.includes(key)) {
+        hintCategory = cat;
+        hintKeyLength = key.length;
+      }
     }
+    if (hintCategory) return hintCategory;
   }
 
-  // Keyword matching against account name
+  // Keyword matching against account name.
+  //
+  // The most SPECIFIC match wins, not the first rule in the list. First-match
+  // ordering misfiled any account whose name contains a shorter, more generic
+  // keyword from an earlier rule: "Accumulated Depreciation" matched
+  // 'depreciation' under operating_expense and never reached the contra_asset
+  // rule, which both inflated operating expenses and dropped the account off the
+  // balance sheet entirely. Longest keyword wins, ties fall back to rule order.
+  let bestCategory: AccountCategory | null = null;
+  let bestKeywordLength = 0;
+
   for (const rule of CLASSIFICATION_RULES) {
     for (const keyword of rule.keywords) {
-      if (name.includes(keyword)) {
-        return rule.category;
+      if (keyword.length > bestKeywordLength && name.includes(keyword)) {
+        bestCategory = rule.category;
+        bestKeywordLength = keyword.length;
       }
     }
   }
+
+  if (bestCategory) return bestCategory;
 
   // Fallback: use amount sign if available
   if (amountHint !== undefined && amountHint !== 0) {
@@ -507,8 +531,14 @@ function groupByAccount(
     'non_current_liability',
     'equity',
     'financing_cash',
-    'contra_asset',
   ]);
+
+  // Contra-assets (accumulated depreciation, allowance for doubtful debts) carry
+  // a credit balance but are presented as a deduction inside the asset section.
+  // Treating them as credit-normal made a credit ADD to total assets, so a fully
+  // depreciated asset inflated the balance sheet instead of netting to zero.
+  // Signing them like a debit-normal account makes a credit reduce net assets,
+  // which is how they must roll up.
 
   for (const t of filtered) {
     const isCreditNormal = creditNormalCategories.has(t.category);
