@@ -46,7 +46,7 @@ export interface BuildModelOptions {
 }
 
 /** Values are compared case-insensitively, as Power BI does for keys. */
-const keyOf = (value: unknown): string | null => {
+export const keyOf = (value: unknown): string | null => {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   return text.length === 0 ? null : text.toLowerCase();
@@ -430,10 +430,17 @@ export const buildSemanticModel = (
 
   const relationships = detectRelationships(prepared, datasets, warnings);
 
-  const relatedColumns = new Set<string>();
+  // Which columns take part in a relationship, table -> columns, lower-cased.
+  const relatedColumns = new Map<string, Set<string>>();
+  const noteRelated = (table: string, column: string): void => {
+    const key = table.toLowerCase();
+    const columns = relatedColumns.get(key) ?? new Set<string>();
+    columns.add(column.toLowerCase());
+    relatedColumns.set(key, columns);
+  };
   for (const relationship of relationships) {
-    relatedColumns.add(`${relationship.from.table} ${relationship.from.column}`);
-    relatedColumns.add(`${relationship.to.table} ${relationship.to.column}`);
+    noteRelated(relationship.from.table, relationship.from.column);
+    noteRelated(relationship.to.table, relationship.to.column);
   }
 
   const tables: SemanticTable[] = prepared.map(table => {
@@ -449,7 +456,8 @@ export const buildSemanticModel = (
           values: table.rows.map(row => row[info.name]),
         },
         {
-          participatesInRelationship: relatedColumns.has(`${table.name} ${info.name}`),
+          participatesInRelationship:
+            relatedColumns.get(table.name.toLowerCase())?.has(info.name.toLowerCase()) ?? false,
         }
       );
 

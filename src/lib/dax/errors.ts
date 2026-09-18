@@ -43,9 +43,37 @@ export class DaxSyntaxError extends DaxError {
   }
 }
 
+/**
+ * A failure during evaluation.
+ *
+ * Source and position are optional because the deepest helpers - value
+ * coercion, cell reads - genuinely do not know which part of the expression
+ * they are serving. The evaluator fills them in on the way out via
+ * `locate`, so the message still reaches the UI with something to underline.
+ */
 export class DaxRuntimeError extends DaxError {
-  constructor(message: string, source: string, position: number, length = 1) {
+  /** False until a position has been attached. */
+  readonly located: boolean;
+
+  constructor(message: string, source = '', position = 0, length = 1) {
     super(message, source, position, length);
     this.name = 'DaxRuntimeError';
+    this.located = source.length > 0;
   }
 }
+
+/**
+ * Attach a source position to an error that was raised without one.
+ *
+ * An error that already knows where it came from is returned untouched, so
+ * the innermost - and most specific - location wins.
+ */
+export const locate = (
+  error: unknown,
+  source: string,
+  position: number,
+  length: number
+): unknown => {
+  if (!(error instanceof DaxRuntimeError) || error.located) return error;
+  return new DaxRuntimeError(error.message, source, position, length);
+};
