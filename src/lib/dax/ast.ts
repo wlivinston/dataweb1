@@ -88,6 +88,15 @@ export interface InExpression extends NodeBase {
   negated: boolean;
 }
 
+/**
+ * `{ 1, 2, 3 }` - a literal table. DAX writes IN lists this way, so an
+ * expression copied out of Power BI depends on this parsing.
+ */
+export interface TableConstructor extends NodeBase {
+  kind: 'tableConstructor';
+  rows: Expression[];
+}
+
 export interface VariableRef extends NodeBase {
   kind: 'variable';
   name: string;
@@ -118,6 +127,7 @@ export type Expression =
   | UnaryExpression
   | BinaryExpression
   | InExpression
+  | TableConstructor
   | VariableRef
   | LetExpression;
 
@@ -138,6 +148,9 @@ export const visit = (node: Expression, fn: (n: Expression) => void): void => {
     case 'in':
       visit(node.value, fn);
       node.candidates.forEach(c => visit(c, fn));
+      break;
+    case 'tableConstructor':
+      node.rows.forEach(r => visit(r, fn));
       break;
     case 'let':
       node.declarations.forEach(d => visit(d.value, fn));

@@ -33,6 +33,8 @@ const sexp = (node: Expression): string => {
       return `(${node.negated ? 'NOT-IN' : 'IN'} ${sexp(node.value)} ${node.candidates.map(sexp).join(' ')})`;
     case 'variable':
       return `$${node.name}`;
+    case 'tableConstructor':
+      return `{${node.rows.map(sexp).join(' ')}}`;
     case 'let':
       return `(LET ${node.declarations.map(d => `[${d.name}=${sexp(d.value)}]`).join(' ')} ${sexp(node.body)})`;
   }
@@ -237,7 +239,7 @@ describe('Parser: IN', () => {
 describe('Parser: VAR / RETURN', () => {
   it('parses a single variable', () => {
     expect(sexp(parseDax('VAR Total = SUM(Sales[Amount]) RETURN Total'))).toBe(
-      '(LET [Total=(SUM Sales[Amount])] Total)'
+      '(LET [Total=(SUM Sales[Amount])] $Total)'
     );
   });
 
@@ -248,7 +250,7 @@ describe('Parser: VAR / RETURN', () => {
       RETURN DIVIDE(Curr - Prior, Prior)
     `;
     expect(sexp(parseDax(src))).toBe(
-      '(LET [Curr=(SUM Sales[Amount])] [Prior=(CALCULATE (SUM Sales[Amount]) (SAMEPERIODLASTYEAR Dates[Date]))] (DIVIDE (- Curr Prior) Prior))'
+      '(LET [Curr=(SUM Sales[Amount])] [Prior=(CALCULATE (SUM Sales[Amount]) (SAMEPERIODLASTYEAR Dates[Date]))] (DIVIDE (- $Curr $Prior) $Prior))'
     );
   });
 
@@ -373,5 +375,108 @@ describe('AST analysis helpers', () => {
       'Sales[Amount]',
       'Sales[Region]',
     ]);
+  });
+});
+
+describe('Parser: table constructors', () => {
+  it('parses a brace list, which is how DAX writes IN', () => {
+    expect(sexp(parseDax('Sales[Region] IN {"Accra", "Kumasi"}'))).toBe(
+      '(IN Sales[Region] "Accra" "Kumasi")'
+    );
+  });
+
+  it('parses an expression copied verbatim out of Power BI', () => {
+    expect(
+      sexp(parseDax('CALCULATE(SUM(Sales[Amount]), Sales[Year] IN {2023, 2024})'))
+    ).toBe('(CALCULATE (SUM Sales[Amount]) (IN Sales[Year] 2023 2024))');
+  });
+
+  it('parses a standalone table constructor', () => {
+    expect(sexp(parseDax('{1, 2, 3}'))).toBe('{1 2 3}');
+  });
+
+  it('parses an empty table constructor', () => {
+    expect(sexp(parseDax('{}'))).toBe('{}');
+  });
+
+  it('parses NOT IN with braces', () => {
+    expect(sexp(parseDax('Sales[Region] NOT IN {"Accra"}'))).toBe(
+      '(NOT-IN Sales[Region] "Accra")'
+    );
+  });
+
+  it('reports an unclosed constructor', () => {
+    expect(() => parseDax('a IN {1, 2')).toThrow(/Expected "}" to close the table constructor/);
+  });
+
+  it('reports a trailing comma in a constructor', () => {
+    expect(() => parseDax('{1, 2,}')).toThrow(/Trailing comma in the table constructor/);
+  });
+
+  it('rejects an empty brace list after IN', () => {
+    expect(() => parseDax('a IN {}')).toThrow(/IN needs at least one value/);
+  });
+});
+
+describe('Parser: variable scope', () => {
+  const declOf = (src: string) => parseDax(src);
+
+  it('resolves a RETURN reference to the variable, not a table', () => {
+    expect(sexp(declOf('VAR Total = 1 RETURN Total'))).toBe('(LET [Total=1] $Total)');
+  });
+
+  it('lets a variable shadow a table of the same name', () => {
+    // Without scope tracking this parsed as the table `Sales`, so the evaluator
+    // would have read the table and silently returned the wrong number.
+    expect(sexp(declOf('VAR Sales = 1 RETURN Sales'))).toBe('(LET [Sales=1] $Sales)');
+  });
+
+  it('makes a variable visible to later variables', () => {
+    expect(sexp(declOf('VAR a = 1 VAR b = a + 1 RETURN b'))).toBe(
+      '(LET [a=1] [b=(+ $a 1)] $b)'
+    );
+  });
+
+  it('does not make a variable visible inside its own initialiser', () => {
+    // `x` on the right-hand side refers to a table, not to the variable being
+    // declared - a self-reference is not a cycle, it is a different thing.
+    expect(sexp(declOf('VAR x = COUNTROWS(x) RETURN x'))).toBe(
+      '(LET [x=(COUNTROWS x)] $x)'
+    );
+  });
+
+  it('is case-insensitive, as DAX identifiers are', () => {
+    expect(sexp(declOf('VAR Total = 1 RETURN TOTAL'))).toBe('(LET [Total=1] $TOTAL)');
+  });
+
+  it('closes the scope when the VAR block ends', () => {
+    // The inner `x` is out of scope in the outer RETURN, so it is a table there.
+    const src = 'VAR outer = (VAR x = 1 RETURN x) RETURN outer + COUNTROWS(x)';
+    expect(sexp(declOf(src))).toBe(
+      '(LET [outer=(LET [x=1] $x)] (+ $outer (COUNTROWS x)))'
+    );
+  });
+
+  it('still treats an unbound bare name as a table reference', () => {
+    expect(sexp(parseDax('COUNTROWS(Sales)'))).toBe('(COUNTROWS Sales)');
+  });
+});
+
+describe('Parser: recursion limit', () => {
+  it('fails deep nesting as a syntax error rather than a stack overflow', () => {
+    const deep = '('.repeat(5000) + '1' + ')'.repeat(5000);
+    // A RangeError here would escape tryParseDax and crash the caller.
+    expect(() => parseDax(deep)).toThrow(DaxSyntaxError);
+    expect(() => parseDax(deep)).toThrow(/nested too deeply/);
+  });
+
+  it('keeps tryParseDax total even on pathological input', () => {
+    const result = tryParseDax('('.repeat(5000) + '1' + ')'.repeat(5000));
+    expect(result.ok).toBe(false);
+  });
+
+  it('still accepts nesting depth a real measure could reach', () => {
+    const nested = '('.repeat(50) + '1 + 1' + ')'.repeat(50);
+    expect(sexp(parseDax(nested))).toBe('(+ 1 1)');
   });
 });

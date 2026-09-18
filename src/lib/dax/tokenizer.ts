@@ -6,7 +6,7 @@ export type TokenType =
   | 'identifier'   // bare name: a function name, or a table name before [Column]
   | 'bracket'      // [Column] or [Measure] - the text inside the brackets
   | 'operator'
-  | 'punct'        // ( ) ,
+  | 'punct'        // ( ) , { }
   | 'keyword'      // VAR RETURN NOT IN TRUE FALSE
   | 'eof';
 
@@ -196,7 +196,7 @@ export const tokenize = (source: string): Token[] => {
     }
 
     // --- punctuation ---
-    if (char === '(' || char === ')' || char === ',') {
+    if (char === '(' || char === ')' || char === ',' || char === '{' || char === '}') {
       push('punct', char, i, 1);
       i++;
       continue;

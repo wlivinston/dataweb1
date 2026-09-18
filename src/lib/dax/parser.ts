@@ -36,12 +36,37 @@ const RIGHT_ASSOCIATIVE = new Set(['^']);
 /** Unary minus binds tighter than * and / but looser than ^. */
 const UNARY_BINDING_POWER = 6.5;
 
+/**
+ * Recursion is bounded so a pathological expression fails as a DaxSyntaxError
+ * rather than a RangeError. Without this, deeply nested input blew the stack
+ * and tryParseDax re-threw it, so the UI got an unhandled crash instead of a
+ * message. 200 is far beyond any hand-written measure.
+ */
+const MAX_DEPTH = 200;
+
 class Parser {
   private tokens: Token[];
   private pos = 0;
+  private depth = 0;
+  /**
+   * Names currently bound by an enclosing VAR, innermost scope last.
+   *
+   * Without this a bare name after RETURN parsed as a table reference, so
+   * `VAR Sales = 1 RETURN Sales` was indistinguishable from the table `Sales` -
+   * the evaluator would silently read the table instead of the variable.
+   */
+  private scopes: Set<string>[] = [];
 
   constructor(private source: string) {
     this.tokens = tokenize(source);
+  }
+
+  private isVariableInScope(name: string): boolean {
+    const lower = name.toLowerCase();
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      if (this.scopes[i].has(lower)) return true;
+    }
+    return false;
   }
 
   private peek(offset = 0): Token {
@@ -88,6 +113,20 @@ class Parser {
 
   /** Pratt loop: parse a prefix, then absorb infix operators while they bind tightly enough. */
   private parseExpression(minBindingPower: number): Expression {
+    if (++this.depth > MAX_DEPTH) {
+      this.depth--;
+      this.error(
+        `Expression is nested too deeply (limit ${MAX_DEPTH}). This usually means unbalanced parentheses.`
+      );
+    }
+    try {
+      return this.parseExpressionInner(minBindingPower);
+    } finally {
+      this.depth--;
+    }
+  }
+
+  private parseExpressionInner(minBindingPower: number): Expression {
     let left = this.parsePrefix();
 
     for (;;) {
@@ -136,9 +175,24 @@ class Parser {
     const inToken = this.next(); // consume IN
     const candidates: Expression[] = [];
 
-    // DAX writes the list as { a, b, c }. Braces are not otherwise part of the
-    // grammar, so the tokenizer never sees them; accept a parenthesised list
-    // and a brace-free single value too.
+    // DAX writes the list as { a, b, c }. A parenthesised list and a bare
+    // single value are both accepted too, since users reach for those.
+    if (this.peek().type === 'punct' && this.peek().value === '{') {
+      const table = this.parseTableConstructor();
+      if (table.kind === 'tableConstructor') candidates.push(...table.rows);
+      if (candidates.length === 0) {
+        this.error('IN needs at least one value to compare against.', inToken);
+      }
+      return {
+        kind: 'in',
+        value,
+        candidates,
+        negated,
+        start: value.start,
+        length: table.start + table.length - value.start,
+      };
+    }
+
     if (this.peek().type === 'punct' && this.peek().value === '(') {
       this.next();
       if (!(this.peek().type === 'punct' && this.peek().value === ')')) {
@@ -165,6 +219,36 @@ class Parser {
       negated,
       start: value.start,
       length: last.start + last.length - value.start,
+    };
+  }
+
+  private parseTableConstructor(): Expression {
+    const open = this.next(); // consume "{"
+    const rows: Expression[] = [];
+
+    if (!(this.peek().type === 'punct' && this.peek().value === '}')) {
+      rows.push(this.parseExpression(0));
+      while (this.peek().type === 'punct' && this.peek().value === ',') {
+        this.next();
+        if (this.peek().type === 'punct' && this.peek().value === '}') {
+          this.error('Trailing comma in the table constructor - remove it or add another value.', this.peek());
+        }
+        rows.push(this.parseExpression(0));
+      }
+    }
+
+    const close = this.peek();
+    if (!(close.type === 'punct' && close.value === '}')) {
+      const found = close.type === 'eof' ? 'end of expression' : `"${close.value}"`;
+      this.error(`Expected "}" to close the table constructor, but found ${found}.`, close);
+    }
+    this.next();
+
+    return {
+      kind: 'tableConstructor',
+      rows,
+      start: open.start,
+      length: close.start + close.length - open.start,
     };
   }
 
@@ -214,6 +298,9 @@ class Parser {
         break;
 
       case 'punct':
+        if (token.value === '{') {
+          return this.parseTableConstructor();
+        }
         if (token.value === '(') {
           this.next();
           const inner = this.parseExpression(0);
@@ -283,6 +370,22 @@ class Parser {
     const start = this.peek().start;
     const declarations: VariableDeclaration[] = [];
 
+    // A VAR is visible to later VARs and to the RETURN body, but not to its own
+    // initialiser, so each name is bound only after its value has been parsed.
+    const scope = new Set<string>();
+    this.scopes.push(scope);
+    try {
+      return this.parseLetBody(start, declarations, scope);
+    } finally {
+      this.scopes.pop();
+    }
+  }
+
+  private parseLetBody(
+    start: number,
+    declarations: VariableDeclaration[],
+    scope: Set<string>
+  ): Expression {
     while (this.peek().type === 'keyword' && this.peek().value === 'VAR') {
       const varToken = this.next();
       const nameToken = this.peek();
@@ -302,6 +405,7 @@ class Parser {
       this.next();
 
       const value = this.parseExpression(0);
+      scope.add(nameToken.value.toLowerCase());
       declarations.push({
         name: nameToken.value,
         value,
@@ -390,8 +494,18 @@ class Parser {
       };
     }
 
-    // A bare name: a table reference (COUNTROWS(Sales)) or a VAR reference.
+    // A bare name is a VAR reference when one is in scope, otherwise a table.
+    // A variable shadows a same-named table, matching DAX, and resolving it
+    // here means the evaluator can never mistake one for the other.
     this.next();
+    if (this.isVariableInScope(token.value)) {
+      return {
+        kind: 'variable',
+        name: token.value,
+        start: token.start,
+        length: token.length,
+      };
+    }
     return {
       kind: 'table',
       name: token.value,
