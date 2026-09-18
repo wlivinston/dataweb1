@@ -1155,6 +1155,23 @@ const MLEngineDashboard: React.FC = () => {
 
             {comparison && (
               <>
+                <p className="text-xs text-gray-600 mb-3 leading-relaxed">
+                  {comparison.selectionMethod === 'validation' ? (
+                    <>
+                      Models are ranked on a <strong>validation slice held out of the training
+                      data</strong>. The winner is then refit on the full training data and scored
+                      once on the untouched <strong>test set</strong> - that figure is the honest
+                      estimate of how it will perform on new data.
+                    </>
+                  ) : (
+                    <>
+                      This dataset was too small to hold back a separate validation slice, so
+                      ranking and reporting share one hold-out. The winner&apos;s headline score is
+                      therefore <strong>optimistically biased</strong> - treat it as an upper bound,
+                      not an estimate. More rows will fix this.
+                    </>
+                  )}
+                </p>
                 <div className="overflow-auto">
                   <table className="w-full text-sm border-collapse">
                     <thead>
@@ -1162,6 +1179,7 @@ const MLEngineDashboard: React.FC = () => {
                         <th className="text-left p-3 border">Algorithm</th>
                         <th className="text-right p-3 border">{comparison.rankingMetric}</th>
                         <th className="text-right p-3 border">Secondary</th>
+                        <th className="text-center p-3 border">Scored on</th>
                         <th className="text-right p-3 border">Train Time</th>
                         <th className="text-center p-3 border">Rank</th>
                       </tr>
@@ -1181,6 +1199,22 @@ const MLEngineDashboard: React.FC = () => {
                             <td className="p-3 border text-right font-mono">{primary.toFixed(4)}</td>
                             <td className="p-3 border text-right font-mono">
                               <span className="text-xs text-gray-500 mr-1">{secondLabel}</span>{secondary.toFixed(4)}
+                            </td>
+                            <td className="p-3 border text-center">
+                              <span
+                                className={`text-xs px-2 py-0.5 rounded ${
+                                  m.scoredOn === 'test'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : 'bg-slate-100 text-slate-700'
+                                }`}
+                                title={
+                                  m.scoredOn === 'test'
+                                    ? 'Refit on the full training data and scored once on the untouched test set.'
+                                    : 'Scored on a validation slice held out of the training data. Used for ranking only.'
+                                }
+                              >
+                                {m.scoredOn === 'test' ? 'Test set' : 'Validation'}
+                              </span>
                             </td>
                             <td className="p-3 border text-right">{m.trainingDurationMs}ms</td>
                             <td className="p-3 border text-center">
