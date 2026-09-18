@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { tokenize } from '../dax/tokenizer';
 import { parseDax, tryParseDax } from '../dax/parser';
+import { printDax } from '../dax/printer';
 import { collectFunctionNames, collectColumnRefs } from '../dax/ast';
 import { DaxSyntaxError } from '../dax/errors';
 import type { Expression } from '../dax/ast';
@@ -479,4 +480,157 @@ describe('Parser: recursion limit', () => {
     const nested = '('.repeat(50) + '1 + 1' + ')'.repeat(50);
     expect(sexp(parseDax(nested))).toBe('(+ 1 1)');
   });
+});
+
+describe('Tokenizer: real-world paste hazards', () => {
+  it('accepts // line comments, which are valid DAX alongside --', () => {
+    expect(sexp(parseDax('SUM(Sales[Amount]) // running total\n + 1'))).toBe(
+      '(+ (SUM Sales[Amount]) 1)'
+    );
+  });
+
+  it('names curly quotes rather than calling them an unexpected character', () => {
+    expect(() => parseDax('Sales[Region] = “Accra”')).toThrow(/curly quote/);
+    expect(() => parseDax('Sales[Region] = “Accra”')).toThrow(/straight "/);
+    expect(() => parseDax('‘Sales Data’[Amount]')).toThrow(/straight '/);
+  });
+
+  it('rejects dotted column syntax instead of inventing a table name', () => {
+    // Previously this lexed as one identifier, producing a phantom table called
+    // "Sales.Amount" that would only fail much later, with a worse message.
+    expect(() => parseDax('Sales.Amount')).toThrow(/not Table\.Column/);
+  });
+
+  it('still lexes numbers containing a decimal point', () => {
+    expect(sexp(parseDax('1.5 + .25'))).toBe('(+ 1.5 0.25)');
+  });
+
+  it('tolerates non-breaking spaces from a paste', () => {
+    expect(sexp(parseDax('SUM(Sales[Amount]) + 1'))).toBe('(+ (SUM Sales[Amount]) 1)');
+  });
+
+  it('names an empty argument precisely', () => {
+    expect(() => parseDax('IF(TRUE,,1)')).toThrow(/Empty argument in the call to IF/);
+  });
+
+  it('accepts lowercase keywords', () => {
+    expect(sexp(parseDax('var x = 1 return x'))).toBe('(LET [x=1] $x)');
+  });
+});
+
+describe('Printer', () => {
+  it('renders a simple call', () => {
+    expect(printDax(parseDax('sum( Sales[Amount] )'))).toBe('SUM(Sales[Amount])');
+  });
+
+  it('quotes a table name only when it needs quoting', () => {
+    expect(printDax(parseDax('Sales[Amount]'))).toBe('Sales[Amount]');
+    expect(printDax(parseDax("'Sales Data'[Amount]"))).toBe("'Sales Data'[Amount]");
+  });
+
+  it('omits parentheses that precedence makes redundant', () => {
+    expect(printDax(parseDax('1 + (2 * 3)'))).toBe('1 + 2 * 3');
+  });
+
+  it('keeps parentheses that precedence requires', () => {
+    expect(printDax(parseDax('(1 + 2) * 3'))).toBe('(1 + 2) * 3');
+  });
+
+  it('keeps parentheses that associativity requires', () => {
+    // Dropping these would change the value.
+    expect(printDax(parseDax('10 - (4 - 3)'))).toBe('10 - (4 - 3)');
+    expect(printDax(parseDax('100 / (5 / 2)'))).toBe('100 / (5 / 2)');
+    expect(printDax(parseDax('(2 ^ 3) ^ 2'))).toBe('(2 ^ 3) ^ 2');
+    expect(printDax(parseDax('2 ^ 3 ^ 2'))).toBe('2 ^ 3 ^ 2');
+  });
+
+  it('separates a negated negative so -- does not become a comment', () => {
+    const printed = printDax(parseDax('- -5'));
+    expect(printed).toBe('- -5');
+    // The dangerous version would re-parse as an empty expression.
+    expect(sexp(parseDax(printed))).toBe('(- (- 5))');
+  });
+
+  it('renders IN with braces, as DAX writes it', () => {
+    expect(printDax(parseDax('Sales[Region] IN ("Accra", "Kumasi")'))).toBe(
+      'Sales[Region] IN {"Accra", "Kumasi"}'
+    );
+  });
+
+  it('renders a VAR block over multiple lines', () => {
+    expect(printDax(parseDax('VAR a = 1 VAR b = 2 RETURN a + b'))).toBe(
+      'VAR a = 1\nVAR b = 2\nRETURN a + b'
+    );
+  });
+
+  it('escapes quotes and brackets it emits', () => {
+    expect(printDax(parseDax('"he said ""hi"""'))).toBe('"he said ""hi"""');
+    expect(printDax(parseDax('[Sales ]] Total]'))).toBe('[Sales ]] Total]');
+  });
+});
+
+describe('Round trip: parse -> print -> parse', () => {
+  /**
+   * The strongest check available on the parser. If precedence is wrong in
+   * either the parser or the printer, the second parse produces a different
+   * tree - which a hand-written expectation could easily agree with by mistake,
+   * since I wrote both.
+   */
+  const expressions = [
+    '1',
+    '-5',
+    '- -5',
+    'TRUE',
+    '"text"',
+    'Sales[Amount]',
+    "'Sales Data'[Amount]",
+    '[Total Revenue]',
+    'SUM(Sales[Amount])',
+    'DIVIDE(SUM(Sales[Amount]), COUNTROWS(Sales))',
+    '1 + 2 * 3',
+    '(1 + 2) * 3',
+    '10 - 4 - 3',
+    '10 - (4 - 3)',
+    '100 / 5 / 2',
+    '100 / (5 / 2)',
+    '2 ^ 3 ^ 2',
+    '(2 ^ 3) ^ 2',
+    '-2 ^ 2',
+    '-2 * 3',
+    '1 + 2 & "x"',
+    '"a" & "b" = "ab"',
+    '1 < 2 && 3 > 2',
+    'a || b && c',
+    '(a || b) && c',
+    'NOT TRUE && FALSE',
+    'NOT (TRUE && FALSE)',
+    'Sales[Region] IN {"Accra", "Kumasi"}',
+    'Sales[Region] NOT IN {"Accra"}',
+    'Sales[Region] IN {"Accra"} && Sales[Amount] > 0',
+    '{1, 2, 3}',
+    'CALCULATE(SUM(Sales[Amount]), Sales[Region] = "Accra")',
+    'FILTER(Sales, Sales[Amount] > 100 && Sales[Region] = "Accra")',
+    'ALLEXCEPT(Sales, Sales[Region], Sales[Year])',
+    'VAR Total = SUM(Sales[Amount]) RETURN Total',
+    'VAR a = 1 VAR b = a + 1 RETURN b * 2',
+    'VAR Curr = SUM(Sales[Amount]) VAR Prior = CALCULATE(SUM(Sales[Amount]), SAMEPERIODLASTYEAR(Dates[Date])) RETURN DIVIDE(Curr - Prior, Prior)',
+    'IF(SUM(Sales[Amount]) > 1000, "high", "low")',
+    'SUMX(Sales, Sales[Qty] * Sales[Price])',
+    'RANKX(ALL(Sales[Rep]), [Total Revenue])',
+    'DIVIDE(CALCULATE(SUM(Sales[Amount]), ALL(Sales)) - SUM(Sales[Amount]), 2)',
+  ];
+
+  for (const source of expressions) {
+    const label = source.length > 52 ? source.slice(0, 52) + '...' : source;
+    it(`round-trips ${label}`, () => {
+      const first = parseDax(source);
+      const printed = printDax(first);
+      const second = parseDax(printed);
+
+      // Structural equality, ignoring source positions which legitimately move.
+      expect(sexp(second)).toBe(sexp(first));
+      // Printing is idempotent, so the normalised form is stable.
+      expect(printDax(second)).toBe(printed);
+    });
+  }
 });

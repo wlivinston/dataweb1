@@ -33,9 +33,16 @@ const KEYWORDS = new Set(['VAR', 'RETURN', 'NOT', 'IN', 'TRUE', 'FALSE']);
  */
 const OPERATORS = ['<>', '<=', '>=', '&&', '||', '=', '<', '>', '+', '-', '*', '/', '^', '&'];
 
+/** Curly quotes, which a paste from Word, Confluence or a docs page carries in. */
+const SMART_QUOTES = new Set(['“', '”', '‘', '’']);
+
 const isDigit = (c: string) => c >= '0' && c <= '9';
 const isIdentStart = (c: string) => /[A-Za-z_]/.test(c);
-const isIdentPart = (c: string) => /[A-Za-z0-9_.]/.test(c);
+// `.` is deliberately excluded. DAX has no dotted column syntax, and allowing
+// it turned `Sales.Amount` into a single identifier - a phantom table name that
+// would fail much later with a worse message. Numbers are lexed before
+// identifiers, so `1.5` and `.5` are unaffected.
+const isIdentPart = (c: string) => /[A-Za-z0-9_]/.test(c);
 
 /**
  * Turn a DAX expression into a token stream.
@@ -62,7 +69,7 @@ export const tokenize = (source: string): Token[] => {
     }
 
     // --- comments: -- to end of line, and /* ... */ ---
-    if (char === '-' && source[i + 1] === '-') {
+    if ((char === '-' && source[i + 1] === '-') || (char === '/' && source[i + 1] === '/')) {
       while (i < source.length && source[i] !== '\n') i++;
       continue;
     }
@@ -208,6 +215,26 @@ export const tokenize = (source: string): Token[] => {
       push('operator', op, i, op.length);
       i += op.length;
       continue;
+    }
+
+    if (SMART_QUOTES.has(char)) {
+      const straight = char === '‘' || char === '’' ? "'" : '"';
+      throw new DaxSyntaxError(
+        `Found a curly quote (${char}) - replace it with a straight ${straight}. ` +
+          `Text pasted from a document or web page often carries these.`,
+        source,
+        i,
+        1
+      );
+    }
+
+    if (char === '.') {
+      throw new DaxSyntaxError(
+        'Unexpected ".". DAX refers to a column as Table[Column], not Table.Column.',
+        source,
+        i,
+        1
+      );
     }
 
     throw new DaxSyntaxError(`Unexpected character "${char}".`, source, i, 1);

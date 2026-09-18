@@ -469,6 +469,13 @@ class Parser {
               this.peek()
             );
           }
+          if (this.peek().type === 'punct' && this.peek().value === ',') {
+            this.error(
+              `Empty argument in the call to ${token.value.toUpperCase()} - ` +
+                `there are two commas with nothing between them.`,
+              this.peek()
+            );
+          }
           args.push(this.parseExpression(0));
         }
       }
