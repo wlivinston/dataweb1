@@ -167,6 +167,22 @@ describe('CALCULATE', () => {
     ).toBe(825);
   });
 
+  it('keeps the named columns with ALLEXCEPT and drops the rest', () => {
+    // Region survives, so only Greater Accra rows count; the Name filter is
+    // dropped, so Ama's row is joined by Yaa's.
+    expect(
+      scalar(
+        'CALCULATE(CALCULATE(SUM(Sales[Amount]), ALLEXCEPT(Customers, Customers[Region])), ' +
+          'Customers[Region] = "Greater Accra", Customers[Name] = "Ama")'
+      )
+    ).toBe(750);
+  });
+
+  it('means the same thing whether ALLEXCEPT is a modifier or a table', () => {
+    // The two paths share one implementation, so they cannot disagree.
+    expect(scalar('COUNTROWS(ALLEXCEPT(Customers, Customers[Region]))')).toBe(3);
+  });
+
   it('refuses a filter it cannot apply instead of ignoring it', () => {
     // A silently dropped filter is the worst failure available here: the
     // number still arrives, and it is the unfiltered one.

@@ -670,6 +670,18 @@ const HANDLERS: Record<string, Handler> = {
     return evaluator.tableArg(node, 0, context, scope);
   },
 
+  ALLEXCEPT: (evaluator, node, context) => {
+    const target = node.args[0];
+    if (target.kind !== 'table') {
+      throw evaluator.error(target, 'ALLEXCEPT needs a table as its first argument.');
+    }
+    const filter = allExceptFilter(evaluator, node, context.filter);
+    return makeTable(
+      target.name,
+      evaluator.visibleRowsOf(target.name, { filter, rowContexts: [] })
+    );
+  },
+
   VALUES: (evaluator, node, context, scope) => {
     const argument = node.args[0];
     if (argument.kind === 'table') {
@@ -904,6 +916,41 @@ const datePart = (
 };
 
 /**
+ * Drop every filter on a table except those on the named columns.
+ *
+ * Shared by CALCULATE's filter-modifier path and the standalone ALLEXCEPT
+ * handler, so the two cannot disagree about what ALLEXCEPT means.
+ */
+const allExceptFilter = (
+  evaluator: Evaluator,
+  call: FunctionCall,
+  filter: FilterContext
+): FilterContext => {
+  const model = evaluator.semanticModel;
+  const target = call.args[0];
+  if (target.kind !== 'table') {
+    throw evaluator.error(target, 'ALLEXCEPT needs a table as its first argument.');
+  }
+
+  let next = withoutTable(filter, target.name);
+  for (let i = 1; i < call.args.length; i += 1) {
+    const kept = call.args[i];
+    if (kept.kind !== 'column') {
+      throw evaluator.error(kept, 'ALLEXCEPT needs column references after the table.');
+    }
+    const resolved = findColumn(model, kept.table ?? undefined, kept.column);
+    if (!resolved.ok) throw evaluator.error(kept, resolved.error);
+    const existing = filter.columns
+      .get(resolved.value.table.toLowerCase())
+      ?.get(resolved.value.name.toLowerCase());
+    if (existing) {
+      next = withColumnFilter(next, resolved.value.table, resolved.value.name, existing);
+    }
+  }
+  return next;
+};
+
+/**
  * Apply one CALCULATE filter argument.
  *
  * Three shapes are understood, matching what DAX actually does with them:
@@ -943,27 +990,7 @@ const applyCalculateFilter = (
   }
 
   if (argument.kind === 'call' && argument.name === 'ALLEXCEPT') {
-    const target = argument.args[0];
-    if (target.kind !== 'table') {
-      throw evaluator.error(target, 'ALLEXCEPT needs a table as its first argument.');
-    }
-    // Drop everything on the table, then put back the named columns.
-    let next = withoutTable(filter, target.name);
-    for (let i = 1; i < argument.args.length; i += 1) {
-      const kept = argument.args[i];
-      if (kept.kind !== 'column') {
-        throw evaluator.error(kept, 'ALLEXCEPT needs column references after the table.');
-      }
-      const resolved = findColumn(model, kept.table ?? undefined, kept.column);
-      if (!resolved.ok) throw evaluator.error(kept, resolved.error);
-      const existing = filter.columns
-        .get(resolved.value.table.toLowerCase())
-        ?.get(resolved.value.name.toLowerCase());
-      if (existing) {
-        next = withColumnFilter(next, resolved.value.table, resolved.value.name, existing);
-      }
-    }
-    return next;
+    return allExceptFilter(evaluator, argument, filter);
   }
 
   const simple = asColumnPredicate(evaluator, argument);
@@ -1104,6 +1131,15 @@ export const evaluateDax = (
   };
   return evaluator.evaluate(expression, context, null);
 };
+
+/**
+ * Every function the evaluator can actually execute.
+ *
+ * The registry declares `implemented` as static data - it cannot import this
+ * module without a cycle - so a test compares the two. That check is the
+ * whole reason for having one catalogue rather than two lists that drift.
+ */
+export const implementedFunctionNames = (): string[] => Object.keys(HANDLERS).sort();
 
 /** Evaluate and require a single value, which is what a measure must return. */
 export const evaluateScalar = (

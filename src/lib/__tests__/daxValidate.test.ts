@@ -9,6 +9,7 @@ import {
   minArity,
   suggestFunctionNames,
 } from '../dax/registry';
+import { implementedFunctionNames } from '../dax/evaluate';
 import { buildSemanticModel } from '../semantic/model';
 import { makeDataset } from './fixtures';
 import type { SemanticMeasure } from '../semantic/types';
@@ -84,10 +85,24 @@ describe('registry', () => {
     expect(suggestFunctionNames('QQQQZZZZ')).toEqual([]);
   });
 
-  it('reports nothing as implemented until the evaluator exists', () => {
-    // Guards against the registry quietly overstating what the product can
-    // actually calculate.
-    expect(allFunctions().every(f => !f.implemented)).toBe(true);
+  it('agrees exactly with what the evaluator can run', () => {
+    // The whole argument for one catalogue rather than two lists is that two
+    // lists drift. The registry declares `implemented` as static data, since
+    // importing the evaluator would be a cycle, so this is what stops it
+    // overstating - or understating - what the product can calculate.
+    const declared = allFunctions()
+      .filter(f => f.implemented)
+      .map(f => f.name)
+      .sort();
+    expect(declared).toEqual(implementedFunctionNames());
+  });
+
+  it('still recognises more functions than it can run', () => {
+    // Deliberate: measures must be storable and exportable to Power BI
+    // before they are executable here.
+    const total = allFunctions().length;
+    const runnable = allFunctions().filter(f => f.implemented).length;
+    expect(runnable).toBeLessThan(total);
   });
 
   it('gives every function a description and a unique name', () => {
@@ -144,12 +159,21 @@ describe('validateDax: function names', () => {
   });
 
   it('reports unimplemented functions when asked', () => {
-    const issues = check('SUM(Sales[Amount])', { requireImplemented: true });
+    // TOTALYTD is in the catalogue so it parses and exports, but the
+    // evaluator has no handler for it yet.
+    const issues = check('TOTALYTD(SUM(Sales[Amount]), Date[Date])', {
+      requireImplemented: true,
+    });
     expect(issues).toHaveLength(1);
     expect(issues[0].code).toBe('not_implemented');
+    expect(issues[0].message).toMatch(/TOTALYTD is recognised but cannot be calculated/);
     expect(issues[0].severity).toBe('warning');
     // A warning, so the expression is still considered usable.
     expect(isValid(issues)).toBe(true);
+  });
+
+  it('stays quiet about functions the evaluator can run', () => {
+    expect(check('SUM(Sales[Amount])', { requireImplemented: true })).toEqual([]);
   });
 });
 
