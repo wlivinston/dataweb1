@@ -2,7 +2,7 @@
 // This engine makes the platform a cut above anything else in the field
 
 import { Dataset, ColumnInfo, DataInsight, Relationship, SpearmanCorrelationResult, LagCorrelationResult, CohortResult } from './types';
-import { spearmanCorrelation } from './advancedStatistics';
+import { spearmanCorrelation, correlationPValue, benjaminiHochberg } from './advancedStatistics';
 import { detectDateColumns } from './timeSeriesEngine';
 
 export interface CorrelationResult {
@@ -12,6 +12,10 @@ export interface CorrelationResult {
   strength: 'strong' | 'moderate' | 'weak' | 'none';
   direction: 'positive' | 'negative' | 'none';
   interpretation: string;
+  /** Two-sided p-value under H0: rho = 0. */
+  pValue?: number;
+  /** Paired observations the coefficient was computed from. */
+  sampleSize?: number;
 }
 
 export interface TrendResult {
@@ -119,68 +123,92 @@ const linearRegression = (values: number[]): { slope: number; intercept: number;
 /**
  * Detect correlations between all numeric columns
  */
+/** Minimum paired observations before a correlation is worth reporting at all. */
+const MIN_CORRELATION_SAMPLE = 30;
+
+/** False discovery rate applied across the full set of column pairs. */
+const CORRELATION_FDR = 0.05;
+
 export const detectCorrelations = (dataset: Dataset): CorrelationResult[] => {
-  const results: CorrelationResult[] = [];
   const numericColumns = dataset.columns.filter(col => col.type === 'number');
-  
+
+  // Pass 1: compute every pairwise correlation and its p-value.
+  const candidates: Array<CorrelationResult & { pValue: number }> = [];
+
   for (let i = 0; i < numericColumns.length; i++) {
     for (let j = i + 1; j < numericColumns.length; j++) {
       const col1 = numericColumns[i];
       const col2 = numericColumns[j];
-      
-      const values1 = dataset.data.map(row => Number(row[col1.name])).filter(v => !isNaN(v));
-      const values2 = dataset.data.map(row => Number(row[col2.name])).filter(v => !isNaN(v));
-      
-      // Align arrays
-      const alignedPairs: { v1: number; v2: number }[] = [];
-      dataset.data.forEach(row => {
+
+      const alignedX: number[] = [];
+      const alignedY: number[] = [];
+      for (const row of dataset.data) {
         const v1 = Number(row[col1.name]);
         const v2 = Number(row[col2.name]);
         if (!isNaN(v1) && !isNaN(v2)) {
-          alignedPairs.push({ v1, v2 });
+          alignedX.push(v1);
+          alignedY.push(v2);
         }
-      });
-      
-      if (alignedPairs.length < 3) continue;
-      
-      const correlation = calculateCorrelation(
-        alignedPairs.map(p => p.v1),
-        alignedPairs.map(p => p.v2)
-      );
-      
+      }
+
+      const sampleSize = alignedX.length;
+
+      // A large |r| on a handful of points is chance, not signal. At n = 3 an
+      // |r| above 0.7 happens roughly a third of the time on pure noise.
+      if (sampleSize < MIN_CORRELATION_SAMPLE) continue;
+
+      const correlation = calculateCorrelation(alignedX, alignedY);
       const absCorr = Math.abs(correlation);
+      if (absCorr < 0.2) continue;
+
+      const pValue = correlationPValue(correlation, sampleSize);
+
       let strength: CorrelationResult['strength'] = 'none';
       if (absCorr >= 0.7) strength = 'strong';
       else if (absCorr >= 0.4) strength = 'moderate';
       else if (absCorr >= 0.2) strength = 'weak';
-      
-      const direction: CorrelationResult['direction'] = 
+
+      const direction: CorrelationResult['direction'] =
         correlation > 0.1 ? 'positive' : correlation < -0.1 ? 'negative' : 'none';
-      
-      let interpretation = '';
-      if (strength === 'strong') {
-        interpretation = direction === 'positive' 
-          ? `Strong positive relationship: as ${col1.name} increases, ${col2.name} tends to increase significantly.`
-          : `Strong negative relationship: as ${col1.name} increases, ${col2.name} tends to decrease significantly.`;
-      } else if (strength === 'moderate') {
-        interpretation = direction === 'positive'
-          ? `Moderate positive relationship between ${col1.name} and ${col2.name}. Consider investigating causality.`
-          : `Moderate negative relationship between ${col1.name} and ${col2.name}. These may be inversely related.`;
-      }
-      
-      if (absCorr >= 0.2) {
-        results.push({
-          column1: col1.name,
-          column2: col2.name,
-          coefficient: Math.round(correlation * 1000) / 1000,
-          strength,
-          direction,
-          interpretation
-        });
-      }
+
+      candidates.push({
+        column1: col1.name,
+        column2: col2.name,
+        coefficient: Math.round(correlation * 1000) / 1000,
+        strength,
+        direction,
+        sampleSize,
+        pValue,
+        interpretation: '',
+      });
     }
   }
-  
+
+  if (candidates.length === 0) return [];
+
+  // Pass 2: control the false discovery rate across the whole family of tests.
+  const survivingIndices = new Set(
+    benjaminiHochberg(candidates.map(c => c.pValue), CORRELATION_FDR)
+  );
+
+  const results = candidates
+    .filter((_, index) => survivingIndices.has(index))
+    .map(candidate => {
+      const { column1, column2, coefficient, strength, direction, pValue, sampleSize } = candidate;
+      const moves = direction === 'positive' ? 'rises' : 'falls';
+
+      // Deliberately associational wording. A correlation says these columns
+      // move together; it does not say one causes the other.
+      const interpretation =
+        `${strength === 'strong' ? 'Strong' : strength === 'moderate' ? 'Moderate' : 'Weak'} ` +
+        `${direction} association (r=${coefficient.toFixed(2)}, n=${sampleSize}, ` +
+        `p=${pValue < 0.0001 ? '<0.0001' : pValue.toFixed(4)}): ` +
+        `when ${column1} is higher, ${column2} typically ${moves}. ` +
+        `This describes co-movement only - it is not evidence that one drives the other.`;
+
+      return { column1, column2, coefficient, strength, direction, pValue, sampleSize, interpretation };
+    });
+
   return results.sort((a, b) => Math.abs(b.coefficient) - Math.abs(a.coefficient));
 };
 
@@ -1191,7 +1219,12 @@ export const generateEnhancedRecommendations = (
     const nonLinear = nonLinearCorrelations.filter(r => r.isNonLinear);
     if (nonLinear.length > 0) {
       recs.push({
-        recommendation: `Non-Linear Models: ${nonLinear.length} variable pair(s) show non-linear relationships (e.g., ${nonLinear[0].column1} & ${nonLinear[0].column2}). Standard linear analysis underestimates these. Use polynomial or log-transformed models for ${Math.round((1 - Math.abs(nonLinear[0].pearsonCoefficient) / Math.abs(nonLinear[0].spearmanCoefficient)) * 100)}% better fit.`,
+        // The previous wording quoted a "% better fit" computed as
+        // 1 - |pearson| / |spearman|. That is not a fit improvement of any kind
+        // - it is an arbitrary ratio of two coefficients, and it goes negative
+        // whenever |pearson| exceeds |spearman|. Report the evidence we actually
+        // have (the two coefficients) and the action it implies.
+        recommendation: `Non-Linear Relationships: ${nonLinear.length} variable pair(s) rank together far more consistently than they track linearly (e.g., ${nonLinear[0].column1} & ${nonLinear[0].column2}: Pearson r=${nonLinear[0].pearsonCoefficient.toFixed(2)} vs Spearman rho=${nonLinear[0].spearmanCoefficient.toFixed(2)}). A straight-line model will understate these. Try a polynomial or log transform and compare R-squared before and after.`,
         category: 'strategic',
         impact: 6
       });
