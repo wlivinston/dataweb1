@@ -27,13 +27,31 @@ const VISUALIZATION_TYPE_OPTIONS: SupportedVisualizationType[] = [
   'table',
 ];
 
+// Every SupportedVisualizationType needs a label. The map previously covered
+// only the six types the picker offers, so the Record was structurally invalid
+// and any chart of another type had no display name to fall back on.
 const VISUALIZATION_TYPE_LABEL: Record<SupportedVisualizationType, string> = {
   bar: 'Bar',
   line: 'Line',
   area: 'Area',
   pie: 'Pie',
+  donut: 'Donut',
   scatter: 'Scatter',
   table: 'Table',
+  radar: 'Radar',
+  treemap: 'Treemap',
+  histogram: 'Histogram',
+  boxplot: 'Box Plot',
+  heatmap: 'Heatmap',
+  funnel: 'Funnel',
+  composed: 'Combo',
+  radialbar: 'Radial Bar',
+  waterfall: 'Waterfall',
+  stacked_bar: 'Stacked Bar',
+  pareto: 'Pareto',
+  pct_stacked_bar: '100% Stacked Bar',
+  bubble: 'Bubble',
+  dual_axis: 'Dual Axis',
 };
 
 const toDefaultType = (type: Visualization['type']): SupportedVisualizationType => {

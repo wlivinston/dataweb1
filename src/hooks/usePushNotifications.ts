@@ -2,11 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from './useAuth';
 import { getApiUrl } from '@/lib/publicConfig';
 
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
+// PushManager.subscribe wants a BufferSource backed by a real ArrayBuffer.
+// Since TypeScript 5.7 a plain `new Uint8Array(n)` is typed over
+// ArrayBufferLike, which includes SharedArrayBuffer and so is not assignable.
+// Allocating the buffer explicitly pins the type.
+function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
   const rawData = atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
+  const outputArray = new Uint8Array(new ArrayBuffer(rawData.length));
   for (let i = 0; i < rawData.length; i++) {
     outputArray[i] = rawData.charCodeAt(i);
   }

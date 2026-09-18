@@ -69,6 +69,7 @@ export interface Database {
           subscription_status?: string
           last_login?: string | null
         }
+        Relationships: []
       }
       blog_posts: {
         Row: {
@@ -125,6 +126,7 @@ export interface Database {
           view_count?: number
           like_count?: number
         }
+        Relationships: []
       }
       blog_comments: {
         Row: {
@@ -172,6 +174,7 @@ export interface Database {
           created_at?: string
           updated_at?: string
         }
+        Relationships: []
       }
       subscription_plans: {
         Row: {
@@ -204,8 +207,17 @@ export interface Database {
           is_active?: boolean
           created_at?: string
         }
+        Relationships: []
       }
     }
+    // supabase-js resolves a schema to `never` unless it structurally matches
+    // GenericSchema. With only `Tables` declared, every .insert()/.update()
+    // payload was being checked against `never`, which is why those calls did
+    // not typecheck. These members are empty but must be present.
+    Views: Record<string, never>
+    Functions: Record<string, never>
+    Enums: Record<string, never>
+    CompositeTypes: Record<string, never>
   }
 }
 
