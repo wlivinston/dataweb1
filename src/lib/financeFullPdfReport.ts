@@ -1,5 +1,5 @@
 import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import autoTable, { type RowInput } from 'jspdf-autotable';
 import {
   FinancialReport,
   FinanceChartData,
@@ -43,6 +43,7 @@ const CATEGORY_LABELS: Record<AccountCategory, string> = {
   tax: 'Tax',
   current_asset: 'Current Assets',
   non_current_asset: 'Non-Current Assets',
+  contra_asset: 'Less: Accumulated Depreciation & Allowances',
   current_liability: 'Current Liabilities',
   non_current_liability: 'Non-Current Liabilities',
   equity: 'Equity',
@@ -574,7 +575,7 @@ function renderBankReconciliation(doc: jsPDF, recon: BankReconciliation): void {
   let y = addSectionHeader(doc, 'Bank Reconciliation', `Statement Date: ${recon.statementDate}`);
 
   // Summary table
-  const summaryBody = [
+  const summaryBody: RowInput[] = [
     ['Bank Closing Balance', formatCurrency(recon.bankClosingBalance)],
     ['Book Closing Balance', formatCurrency(recon.bookClosingBalance)],
     ['Adjusted Bank Balance', formatCurrency(recon.adjustedBankBalance)],

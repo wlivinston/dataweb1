@@ -17,7 +17,10 @@ import * as XLSX from 'xlsx';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, AreaChart, Area } from 'recharts';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 // Import shared types and utilities
-import { Dataset, ColumnInfo, DataType, Relationship } from '@/lib/types';
+// Visualization and DAXCalculation were re-declared locally with a narrower
+// chart-type union than the canonical ones, so every chart type added since
+// (histogram, treemap, waterfall, ...) failed to typecheck here.
+import { Dataset, ColumnInfo, DataType, Relationship, Visualization, DAXCalculation } from '@/lib/types';
 import { analyzeColumn, updateDatasetStats, createEmptyObservation } from '@/lib/dataUtils';
 // Import new components
 import DataEntryForm from './DataEntryForm';
@@ -65,28 +68,6 @@ import {
   isFunnelCandidate, toParetoData, toCumulativeLineData, toStatsSummaryTable,
   computeLinearTrend, toBubbleData, toYoYData,
 } from '@/lib/chartRecommender';
-
-interface DAXCalculation {
-  id: string;
-  name: string;
-  formula: string;
-  description: string;
-  category: 'aggregation' | 'time' | 'statistical' | 'text' | 'logical';
-  applicable: boolean;
-  confidence: number;
-  result?: any;
-}
-
-interface Visualization {
-  id: string;
-  title: string;
-  type: 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'table' | 'gauge';
-  data: any;
-  colors: string[];
-  gradient: string;
-  daxCalculations: DAXCalculation[];
-  datasetId: string;
-}
 
 const PDF_ACCESS_CACHE_TTL_MS = 10 * 60 * 1000;
 const PAID_SUBSCRIPTION_STATUSES = new Set([
@@ -1472,20 +1453,20 @@ const FunctionalDataUpload: React.FC = () => {
     if (pieCatCol && bestNumCol) {
       const categoryCol = pieCatCol;
       const valueCol = bestNumCol;
-      const donutAgg = dataToUse.reduce((acc, row) => {
+      const donutAgg: Record<string, number> = dataToUse.reduce((acc: Record<string, number>, row) => {
         const cat = String(row[categoryCol.name] || '');
         const val = Number(row[valueCol.name]) || 0;
         acc[cat] = (acc[cat] || 0) + val;
         return acc;
       }, {} as Record<string, number>);
 
-      let donutEntries = Object.entries(donutAgg)
+      let donutEntries: [string, number][] = Object.entries(donutAgg)
         .filter(([c]) => c && c !== 'null' && c !== 'undefined' && c !== '')
         .sort((a, b) => b[1] - a[1]);
       if (donutEntries.length > 10) {
         const top = donutEntries.slice(0, 9);
         const rest = donutEntries.slice(9).reduce((s, [, v]) => s + v, 0);
-        donutEntries = [...top, ['Other', rest]];
+        donutEntries = [...top, ['Other', rest] as [string, number]];
       }
       const donutData = donutEntries.map(([category, value]) => ({ category, value }));
       if (donutData.length > 1) {
@@ -1721,13 +1702,13 @@ const FunctionalDataUpload: React.FC = () => {
 
     // Second Bar Chart - Using second-best categorical column
     if (secondCatCol && bestNumCol && secondCatCol !== pieCatCol) {
-      const secondBarAgg = dataToUse.reduce((acc, row) => {
+      const secondBarAgg: Record<string, number> = dataToUse.reduce((acc: Record<string, number>, row) => {
         const cat = String(row[secondCatCol.name] || 'Other');
         const val = Number(row[bestNumCol.name]) || 0;
         acc[cat] = (acc[cat] || 0) + val;
         return acc;
       }, {} as Record<string, number>);
-      const secondBarData = Object.entries(secondBarAgg)
+      const secondBarData: { category: string; value: number }[] = Object.entries(secondBarAgg)
         .map(([category, value]) => ({ category, value }))
         .sort((a, b) => b.value - a.value)
         .slice(0, 25);

@@ -130,6 +130,8 @@ export interface DecisionTreeNode {
 }
 
 export interface ModelResult {
+  /** Which partition this model's metrics were computed on. */
+  scoredOn?: 'validation' | 'test';
   algorithm: MLAlgorithm;
   algorithmLabel: string;
   problemType: MLProblemType;
@@ -159,11 +161,22 @@ export interface ModelResult {
   aucScore?: number;
 }
 
+/** How the winning model was chosen, and therefore how to read its score. */
+export type SelectionMethod = 'validation' | 'holdout';
+
 export interface ModelComparisonResult {
   results: ModelResult[];
   bestModel: ModelResult;
   rankingMetric: string;
   trainingComplete: boolean;
+  /**
+   * 'validation' - models were ranked on a validation slice held out of the
+   * training data, and the winner was refit and scored once on the test set.
+   * 'holdout'    - the dataset was too small to hold back a validation slice,
+   * so ranking and reporting share one hold-out and the winner's headline score
+   * is optimistically biased.
+   */
+  selectionMethod?: SelectionMethod;
 }
 
 export interface PredictionRequest {
@@ -200,6 +213,10 @@ export interface ProcessedDataset {
   scalingParams: Record<string, { mean: number; std: number; min: number; max: number }>;
   labelMappings: Record<string, Record<string, number>>;
   reverseLabelMappings: Record<string, Record<number, string>>;
+  /** Number of leading rows in `data` that form the training partition. */
+  trainCount?: number;
+  /** Whether the split was stratified by the target class. */
+  stratified?: boolean;
 }
 
 export interface MLPipelineState {
@@ -392,6 +409,12 @@ export const detectMLProblem = (dataset: Dataset): MLProblemDetection => {
 // B. Preprocessing
 // ============================================================
 
+/** Seed for the one train/test split every model is scored on. */
+const PREPROCESS_SPLIT_SEED = 20260220;
+
+/** Fallback ratio when a ProcessedDataset predates the recorded partition. */
+const DEFAULT_TRAIN_TEST_SPLIT = 0.8;
+
 export const preprocessDataset = (
   dataset: Dataset,
   targetColumn: string,
@@ -406,7 +429,8 @@ export const preprocessDataset = (
   let rows = dataset.data as Record<string, unknown>[];
   const sampledFrom = rows.length > MAX_ROWS ? rows.length : undefined;
   if (rows.length > MAX_ROWS) {
-    // Random sample
+    // Systematic (every k-th row) down-sample. Deterministic, but note it will
+    // alias with any periodicity in the data at the same stride.
     const step = Math.floor(rows.length / MAX_ROWS);
     rows = rows.filter((_, i) => i % step === 0).slice(0, MAX_ROWS);
   }
@@ -419,73 +443,36 @@ export const preprocessDataset = (
   let imputedCells = 0;
   let outlierCount = 0;
 
+  const isMissing = (v: unknown) => v === null || v === undefined || v === '';
+
   // Step 1: Count missing per column
   const missingCounts: Record<string, number> = {};
   for (const col of allCols) {
-    missingCounts[col] = rows.filter(r => r[col] === null || r[col] === undefined || r[col] === '').length;
+    missingCounts[col] = rows.filter(r => isMissing(r[col])).length;
   }
 
   // Step 2: Drop columns with >80% missing (only from features)
   const validFeatures = featureColumns.filter(col => missingCounts[col] / rows.length <= 0.8);
 
-  // Step 3: For each column, impute missing values
-  const cleanRows: Record<string, unknown>[] = rows.map(r => ({ ...r }));
-
-  for (const col of [targetColumn, ...validFeatures]) {
-    const nonMissing = rows
-      .map(r => r[col])
-      .filter(v => v !== null && v !== undefined && v !== '');
-
-    const numericVals = nonMissing.map(v => Number(v)).filter(v => !isNaN(v));
-    const isNumeric = numericVals.length >= nonMissing.length * 0.85;
-
-    const missingBefore = missingCounts[col];
-    let strategy: PreprocessingStrategy | 'none' = 'none';
-
-    if (missingBefore > 0) {
-      if (isNumeric) {
-        const fillValue = options.imputeStrategy === 'median_imputation'
-          ? median(numericVals)
-          : mean(numericVals);
-        strategy = options.imputeStrategy === 'median_imputation' ? 'median_imputation' : 'mean_imputation';
-        for (const row of cleanRows) {
-          if (row[col] === null || row[col] === undefined || row[col] === '') {
-            row[col] = fillValue;
-            imputedCells++;
-          }
-        }
-      } else {
-        const fillValue = mode(nonMissing as string[]);
-        strategy = 'mode_imputation';
-        for (const row of cleanRows) {
-          if (row[col] === null || row[col] === undefined || row[col] === '') {
-            row[col] = fillValue;
-            imputedCells++;
-          }
-        }
-      }
-    }
-
-    columnStats.push({ column: col, missingBefore, missingAfter: 0, strategy });
-  }
-
-  // Step 4: Drop rows that still have missing target value
-  const preDropLength = cleanRows.length;
-  const nonMissingTargetRows = cleanRows.filter(r => {
-    const v = r[targetColumn];
-    return v !== null && v !== undefined && v !== '';
-  });
+  // Step 3: Drop rows with a missing or unusable target value
+  const preDropLength = rows.length;
+  const nonMissingTargetRows = rows.filter(r => !isMissing(r[targetColumn]));
   const targetValues = nonMissingTargetRows.map(r => r[targetColumn]);
   const numericTargetValues = targetValues.map(v => Number(v)).filter(v => !isNaN(v));
   const targetIsNumeric = numericTargetValues.length >= targetValues.length * 0.85;
 
-  const validRows = targetIsNumeric
+  const validRows = (targetIsNumeric
     ? nonMissingTargetRows.filter(r => !isNaN(Number(r[targetColumn])))
-    : nonMissingTargetRows;
+    : nonMissingTargetRows
+  ).map(r => ({ ...r }));
 
   const droppedRows = preDropLength - validRows.length;
 
-  // If target is categorical, encode it so classification works with string labels.
+  // Step 4: Encode categorical columns.
+  //
+  // Label encodings are a vocabulary, not a fitted statistic, so they are built
+  // over all rows. Building them from the training split alone would leave test
+  // rows with unseen categories silently collapsing onto class 0.
   if (!targetIsNumeric) {
     const uniqueTargetLabels = [...new Set(validRows.map(r => String(r[targetColumn])))]
       .sort((a, b) => a.localeCompare(b));
@@ -499,11 +486,10 @@ export const preprocessDataset = (
     reverseLabelMappings[targetColumn] = targetReverseMapping;
   }
 
-  // Step 5: Label-encode categorical feature columns
   for (const col of validFeatures) {
-    const vals = validRows.map(r => r[col]);
+    const vals = validRows.map(r => r[col]).filter(v => !isMissing(v));
     const numericVals = vals.map(v => Number(v)).filter(v => !isNaN(v));
-    const isNumeric = numericVals.length >= vals.length * 0.85;
+    const isNumeric = vals.length > 0 && numericVals.length >= vals.length * 0.85;
 
     if (!isNumeric) {
       const uniqueLabels = [...new Set(vals.map(v => String(v)))].sort();
@@ -519,59 +505,124 @@ export const preprocessDataset = (
     }
   }
 
-  // Step 6: Build numeric dataset
-  const scalingParams: Record<string, { mean: number; std: number; min: number; max: number }> = {};
+  // Step 5: Split BEFORE fitting any statistic.
+  //
+  // Imputation values and scaling parameters are properties learned from data.
+  // Computing them over the full dataset let information from the held-out rows
+  // reach the model, which inflated every reported accuracy figure. They are now
+  // fit on the training partition only and merely applied to the test partition.
+  //
+  // The split is computed once here and reused by every model, so the leaderboard
+  // compares algorithms on an identical hold-out rather than on per-model splits.
+  const stratifyTarget = !targetIsNumeric;
+  const splitSource = validRows.map((r, i) => ({ __idx: i, __strat: String(r[targetColumn]) }));
+  const { train: trainKeys, test: testKeys } = splitData(
+    splitSource as unknown as Record<string, number>[],
+    options.trainTestSplit,
+    stratifyTarget
+      ? { seed: PREPROCESS_SPLIT_SEED, stratifyBy: '__strat' }
+      : { seed: PREPROCESS_SPLIT_SEED }
+  );
 
-  // Compute scaling params for all numeric cols
-  const allNumericCols = [targetColumn, ...validFeatures];
-  for (const col of allNumericCols) {
-    const vals = validRows.map(r => {
-      if (labelMappings[col]) return labelMappings[col][String(r[col])] ?? 0;
-      return Number(r[col]);
-    }).filter(v => !isNaN(v));
+  const trainKeyRows = trainKeys as unknown as { __idx: number }[];
+  const testKeyRows = testKeys as unknown as { __idx: number }[];
+  const trainIndices = new Set(trainKeyRows.map(k => k.__idx));
+  const orderedIndices = [...trainKeyRows.map(k => k.__idx), ...testKeyRows.map(k => k.__idx)];
+  const trainCount = trainKeyRows.length;
 
-    const m = mean(vals);
-    const s = stdDev(vals);
-    const minVal = Math.min(...vals);
-    const maxVal = Math.max(...vals);
-    scalingParams[col] = { mean: m, std: s || 1, min: minVal, max: maxVal === minVal ? minVal + 1 : maxVal };
+  const trainRows = validRows.filter((_, i) => trainIndices.has(i));
+  const fitRows = trainRows.length > 0 ? trainRows : validRows;
+
+  // Step 6: Fit imputation values on the training rows, then apply to all rows.
+  for (const col of [targetColumn, ...validFeatures]) {
+    const missingBefore = missingCounts[col];
+    let strategy: PreprocessingStrategy | 'none' = 'none';
+
+    if (missingBefore > 0) {
+      const fitValues = fitRows.map(r => r[col]).filter(v => !isMissing(v));
+      const fitNumeric = fitValues.map(v => Number(v)).filter(v => !isNaN(v));
+      const isNumeric = fitValues.length > 0 && fitNumeric.length >= fitValues.length * 0.85;
+
+      let fillValue: unknown;
+      if (isNumeric && fitNumeric.length > 0) {
+        fillValue = options.imputeStrategy === 'median_imputation'
+          ? median(fitNumeric)
+          : mean(fitNumeric);
+        strategy = options.imputeStrategy === 'median_imputation'
+          ? 'median_imputation'
+          : 'mean_imputation';
+      } else if (fitValues.length > 0) {
+        fillValue = mode(fitValues as string[]);
+        strategy = 'mode_imputation';
+      }
+
+      if (fillValue !== undefined) {
+        for (const row of validRows) {
+          if (isMissing(row[col])) {
+            row[col] = fillValue;
+            imputedCells++;
+          }
+        }
+      }
+    }
+
+    columnStats.push({ column: col, missingBefore, missingAfter: 0, strategy });
   }
 
-  // Detect outliers via IQR on numeric features
+  // Step 7: Fit scaling parameters on the training rows only.
+  const scalingParams: Record<string, { mean: number; std: number; min: number; max: number }> = {};
+  const allNumericCols = [targetColumn, ...validFeatures];
+
+  const numericValueOf = (row: Record<string, unknown>, col: string): number => {
+    if (labelMappings[col]) return labelMappings[col][String(row[col])] ?? 0;
+    return Number(row[col]);
+  };
+
+  for (const col of allNumericCols) {
+    const vals = fitRows.map(r => numericValueOf(r, col)).filter(v => !isNaN(v));
+    const m = vals.length > 0 ? mean(vals) : 0;
+    const s = vals.length > 0 ? stdDev(vals) : 0;
+    const minVal = vals.length > 0 ? Math.min(...vals) : 0;
+    const maxVal = vals.length > 0 ? Math.max(...vals) : 0;
+    scalingParams[col] = {
+      mean: m,
+      std: s || 1,
+      min: minVal,
+      max: maxVal === minVal ? minVal + 1 : maxVal,
+    };
+  }
+
+  // Outlier count is a report figure, not a fitted parameter, so it is measured
+  // across every retained row.
   for (const col of validFeatures) {
     if (labelMappings[col]) continue;
     const vals = validRows.map(r => Number(r[col])).filter(v => !isNaN(v)).sort((a, b) => a - b);
+    if (vals.length === 0) continue;
     const q1 = vals[Math.floor(vals.length * 0.25)];
     const q3 = vals[Math.floor(vals.length * 0.75)];
     const iqr = q3 - q1;
     outlierCount += vals.filter(v => v < q1 - 1.5 * iqr || v > q3 + 1.5 * iqr).length;
   }
 
-  // Build final numeric data rows
-  const numericData: Record<string, number>[] = validRows.map(r => {
+  // Step 8: Build the numeric matrix, training rows first then test rows, so the
+  // partition is a contiguous slice at a known offset.
+  const toNumericRow = (r: Record<string, unknown>): Record<string, number> => {
     const row: Record<string, number> = {};
     for (const col of allNumericCols) {
-      let val: number;
-      if (labelMappings[col]) {
-        val = labelMappings[col][String(r[col])] ?? 0;
-      } else {
-        val = Number(r[col]);
-        if (isNaN(val)) val = scalingParams[col].mean;
-      }
+      let val = numericValueOf(r, col);
+      if (isNaN(val)) val = scalingParams[col].mean;
 
-      // Apply scaling (to features only, not target)
+      // Scale features only, never the target.
       if (col !== targetColumn && options.scalingMethod !== 'none') {
         const { mean: m, std: s, min: mn, max: mx } = scalingParams[col];
-        if (options.scalingMethod === 'z_score') {
-          val = (val - m) / s;
-        } else {
-          val = (val - mn) / (mx - mn);
-        }
+        val = options.scalingMethod === 'z_score' ? (val - m) / s : (val - mn) / (mx - mn);
       }
       row[col] = val;
     }
     return row;
-  });
+  };
+
+  const numericData = orderedIndices.map(i => toNumericRow(validRows[i]));
 
   const processedDataset: ProcessedDataset = {
     data: numericData,
@@ -582,6 +633,8 @@ export const preprocessDataset = (
     scalingParams,
     labelMappings,
     reverseLabelMappings,
+    trainCount,
+    stratified: stratifyTarget,
   };
 
   const report: PreprocessingReport = {
@@ -597,6 +650,25 @@ export const preprocessDataset = (
   };
 
   return { processedDataset, report };
+};
+
+/**
+ * The single train/test partition every model is scored on.
+ *
+ * preprocessDataset lays the rows out as [...train, ...test] and records where
+ * the boundary falls, so each model sees an identical hold-out. Previously each
+ * trainer re-split the data with its own seed, which meant the leaderboard was
+ * comparing algorithms across different test sets.
+ */
+export const getTrainTestPartition = (
+  processedDataset: ProcessedDataset
+): { train: Record<string, number>[]; test: Record<string, number>[] } => {
+  const { data, trainCount } = processedDataset;
+  if (typeof trainCount !== 'number' || trainCount <= 0 || trainCount >= data.length) {
+    // Datasets processed before the partition was recorded, or degenerate sizes.
+    return splitData(data, DEFAULT_TRAIN_TEST_SPLIT, { seed: PREPROCESS_SPLIT_SEED });
+  }
+  return { train: data.slice(0, trainCount), test: data.slice(trainCount) };
 };
 
 // ============================================================
@@ -874,7 +946,8 @@ const trainLinearRegression = (
 ): ModelResult => {
   const start = Date.now();
   const { data, targetColumn, featureColumns } = processedDataset;
-  const { train, test } = splitData(data, trainTestSplit, { seed: 20260220 });
+  // Every model is scored on the same hold-out produced by preprocessDataset.
+  const { train, test } = getTrainTestPartition(processedDataset);
 
   const trainDS = datasetFromRows(train, processedDataset.columns, targetColumn, featureColumns);
   const regResult = multipleRegression(trainDS, targetColumn, featureColumns);
@@ -927,10 +1000,8 @@ const trainLogisticRegression = (
 ): ModelResult => {
   const start = Date.now();
   const { data, targetColumn, featureColumns } = processedDataset;
-  const { train, test } = splitData(data, trainTestSplit, {
-    seed: 20260221,
-    stratifyBy: targetColumn,
-  });
+  // Every model is scored on the same hold-out produced by preprocessDataset.
+  const { train, test } = getTrainTestPartition(processedDataset);
 
   // Get class labels
   const allTargets = data.map(r => r[targetColumn]);
@@ -1404,10 +1475,8 @@ const trainDecisionTree = (
 ): ModelResult => {
   const start = Date.now();
   const { data, targetColumn, featureColumns } = processedDataset;
-  const { train, test } = splitData(data, trainTestSplit, {
-    seed: 20260222,
-    stratifyBy: problemType === 'classification' ? targetColumn : undefined,
-  });
+  // Every model is scored on the same hold-out produced by preprocessDataset.
+  const { train, test } = getTrainTestPartition(processedDataset);
   const featureGain: Record<string, number> = {};
   featureColumns.forEach(f => { featureGain[f] = 0; });
 
@@ -1504,10 +1573,8 @@ const trainRandomForest = (
 ): ModelResult => {
   const start = Date.now();
   const { data, targetColumn, featureColumns } = processedDataset;
-  const { train, test } = splitData(data, trainTestSplit, {
-    seed: 20260223,
-    stratifyBy: problemType === 'classification' ? targetColumn : undefined,
-  });
+  // Every model is scored on the same hold-out produced by preprocessDataset.
+  const { train, test } = getTrainTestPartition(processedDataset);
   const nTrees = train.length > 8000 ? 11 : train.length > 3000 ? 15 : 21;
   const forest: DecisionTreeNode[] = [];
   const cumulativeGain: Record<string, number> = {};
@@ -1720,7 +1787,8 @@ const trainGradientBoosting = (
 ): ModelResult => {
   const t0 = performance.now();
   const { data, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
-  const { train, test } = splitData(data, trainTestSplit, { seed: 20260220 });
+  // Every model is scored on the same hold-out produced by preprocessDataset.
+  const { train, test } = getTrainTestPartition(processedDataset);
   const trainX = train;
   const trainY = train.map(r => r[targetColumn]);
   const testX = test;
@@ -1869,7 +1937,8 @@ const trainNaiveBayes = (
 ): ModelResult => {
   const t0 = performance.now();
   const { data, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
-  const { train, test } = splitData(data, trainTestSplit, { seed: 20260220 });
+  // Every model is scored on the same hold-out produced by preprocessDataset.
+  const { train, test } = getTrainTestPartition(processedDataset);
   const trainX = train;
   const trainY = train.map(r => r[targetColumn]);
   const testX = test;
@@ -1971,7 +2040,8 @@ const trainKNN = (
 ): ModelResult => {
   const t0 = performance.now();
   const { data, featureColumns, targetColumn, reverseLabelMappings } = processedDataset;
-  const { train, test } = splitData(data, trainTestSplit, { seed: 20260220 });
+  // Every model is scored on the same hold-out produced by preprocessDataset.
+  const { train, test } = getTrainTestPartition(processedDataset);
   const trainX = train;
   const trainY = train.map(r => r[targetColumn]);
   const testX = test;
@@ -2082,93 +2152,148 @@ const trainKNN = (
 // F. Train All Models
 // ============================================================
 
+/**
+ * Train one algorithm against a dataset whose recorded partition defines what
+ * counts as "held out". Used both for validation-based ranking and for the
+ * final refit of the winner.
+ */
+const trainByAlgorithm = (
+  algorithm: MLAlgorithm,
+  ds: ProcessedDataset,
+  problemType: MLProblemType,
+  trainTestSplit: number
+): ModelResult => {
+  switch (algorithm) {
+    case 'linear_regression':
+      return trainLinearRegression(ds, trainTestSplit);
+    case 'logistic_regression':
+      return trainLogisticRegression(ds, trainTestSplit);
+    case 'decision_tree':
+      return trainDecisionTree(ds, trainTestSplit, problemType);
+    case 'random_forest':
+      return trainRandomForest(ds, trainTestSplit, problemType);
+    case 'gradient_boosting':
+      return trainGradientBoosting(ds, trainTestSplit, problemType);
+    case 'knn':
+      return trainKNN(ds, trainTestSplit, problemType);
+    case 'naive_bayes':
+      return trainNaiveBayes(ds, trainTestSplit);
+    default:
+      return trainKMeansModel(ds);
+  }
+};
+
+const scoreOf = (m: ModelResult, problemType: MLProblemType): number =>
+  problemType === 'regression'
+    ? m.regressionMetrics?.rSquared ?? Number.NEGATIVE_INFINITY
+    : m.classificationMetrics?.f1 ?? Number.NEGATIVE_INFINITY;
+
+/**
+ * Carve a validation slice out of the training partition.
+ *
+ * Returns a ProcessedDataset laid out as [...trainFit, ...validation] with the
+ * boundary recorded, so every trainer transparently fits on trainFit and scores
+ * on validation without needing to know a validation set exists.
+ */
+const makeSelectionDataset = (
+  processedDataset: ProcessedDataset,
+  validationRatio = 0.25
+): ProcessedDataset | null => {
+  const { train } = getTrainTestPartition(processedDataset);
+  if (train.length < 8) return null; // too small to hold anything back meaningfully
+
+  const fitCount = Math.max(1, Math.floor(train.length * (1 - validationRatio)));
+  if (fitCount >= train.length) return null;
+
+  return { ...processedDataset, data: train, trainCount: fitCount };
+};
+
 export const trainAllModels = async (
   processedDataset: ProcessedDataset,
   problemType: MLProblemType,
   trainTestSplit: number,
   onProgress?: (progress: number, message: string) => void
 ): Promise<ModelComparisonResult> => {
-  const results: ModelResult[] = [];
-
   if (problemType === 'clustering') {
     onProgress?.(10, 'Training K-Means Clustering...');
     await yieldToBrowser();
     const km = trainKMeansModel(processedDataset);
-    results.push(km);
     onProgress?.(100, 'Clustering complete.');
 
     km.isTopModel = true;
-    return { results, bestModel: km, rankingMetric: 'Silhouette Score', trainingComplete: true };
+    return {
+      results: [km],
+      bestModel: km,
+      rankingMetric: 'Silhouette Score',
+      trainingComplete: true,
+      selectionMethod: 'holdout',
+    };
   }
 
-  const totalSteps = problemType === 'regression' ? 5 : 6;
-  let step = 0;
+  const algorithms: MLAlgorithm[] = problemType === 'regression'
+    ? ['linear_regression', 'decision_tree', 'random_forest', 'gradient_boosting', 'knn']
+    : ['logistic_regression', 'decision_tree', 'random_forest', 'gradient_boosting', 'knn', 'naive_bayes'];
 
-  // Linear Regression / Logistic Regression
-  onProgress?.(10, problemType === 'regression' ? 'Training Linear Regression...' : 'Training Logistic Regression...');
-  await yieldToBrowser();
-  const model1 = problemType === 'regression'
-    ? trainLinearRegression(processedDataset, trainTestSplit)
-    : trainLogisticRegression(processedDataset, trainTestSplit);
-  results.push(model1);
-  step++;
-  onProgress?.(Math.round((step / totalSteps) * 80 + 10), 'Training Decision Tree...');
-  await yieldToBrowser();
+  const labels: Record<string, string> = {
+    linear_regression: 'Linear Regression',
+    logistic_regression: 'Logistic Regression',
+    decision_tree: 'Decision Tree',
+    random_forest: 'Random Forest',
+    gradient_boosting: 'Gradient Boosting',
+    knn: 'KNN',
+    naive_bayes: 'Naive Bayes',
+  };
 
-  // Decision Tree
-  const dt = trainDecisionTree(processedDataset, trainTestSplit, problemType);
-  results.push(dt);
-  step++;
-  onProgress?.(Math.round((step / totalSteps) * 80 + 10), 'Training Random Forest...');
-  await yieldToBrowser();
+  // Rank on a validation slice held out of the TRAINING data, never on the test
+  // set. Picking the winner by its test score and then reporting that same score
+  // is selection bias: across N models the maximum is optimistic even when every
+  // individual estimate is unbiased.
+  const selectionDataset = makeSelectionDataset(processedDataset);
+  const rankingDataset = selectionDataset ?? processedDataset;
+  const selectionMethod: SelectionMethod = selectionDataset ? 'validation' : 'holdout';
 
-  // Random Forest
-  const rf = trainRandomForest(processedDataset, trainTestSplit, problemType);
-  results.push(rf);
-  step++;
-  onProgress?.(Math.round((step / totalSteps) * 80 + 10), 'Training Gradient Boosting...');
-  await yieldToBrowser();
-
-  // Gradient Boosting
-  const gb = trainGradientBoosting(processedDataset, trainTestSplit, problemType);
-  results.push(gb);
-  step++;
-  onProgress?.(Math.round((step / totalSteps) * 80 + 10), 'Training KNN...');
-  await yieldToBrowser();
-
-  // KNN
-  const knnModel = trainKNN(processedDataset, trainTestSplit, problemType);
-  results.push(knnModel);
-  step++;
-
-  // Naive Bayes (classification only)
-  if (problemType === 'classification') {
-    onProgress?.(Math.round((step / totalSteps) * 80 + 10), 'Training Naive Bayes...');
+  const results: ModelResult[] = [];
+  for (let i = 0; i < algorithms.length; i++) {
+    const algorithm = algorithms[i];
+    onProgress?.(
+      Math.round((i / algorithms.length) * 80 + 10),
+      `Training ${labels[algorithm] ?? algorithm}...`
+    );
     await yieldToBrowser();
-    const nb = trainNaiveBayes(processedDataset, trainTestSplit);
-    results.push(nb);
-    step++;
+    results.push(trainByAlgorithm(algorithm, rankingDataset, problemType, trainTestSplit));
   }
 
-  onProgress?.(95, 'Selecting best model...');
+  onProgress?.(92, 'Selecting best model...');
   await yieldToBrowser();
 
-  // Select best model
-  let bestModel = results[0];
-  if (problemType === 'regression') {
-    bestModel = results.reduce((best, m) =>
-      (m.regressionMetrics?.rSquared || 0) > (best.regressionMetrics?.rSquared || 0) ? m : best
-    );
-  } else {
-    bestModel = results.reduce((best, m) =>
-      (m.classificationMetrics?.f1 || 0) > (best.classificationMetrics?.f1 || 0) ? m : best
-    );
+  let bestModel = results.reduce((best, m) =>
+    scoreOf(m, problemType) > scoreOf(best, problemType) ? m : best
+  );
+
+  if (selectionDataset) {
+    // Refit the winner on the full training partition and score it once on the
+    // untouched test set. That figure is the honest generalization estimate; the
+    // other rows on the leaderboard carry validation scores, which are what the
+    // ranking was actually based on.
+    onProgress?.(96, `Refitting ${labels[bestModel.algorithm] ?? bestModel.algorithm} on full training data...`);
+    await yieldToBrowser();
+
+    const refit = trainByAlgorithm(bestModel.algorithm, processedDataset, problemType, trainTestSplit);
+    refit.scoredOn = 'test';
+    const idx = results.indexOf(bestModel);
+    if (idx >= 0) results[idx] = refit;
+    bestModel = refit;
+  }
+
+  for (const m of results) {
+    if (!m.scoredOn) m.scoredOn = selectionDataset ? 'validation' : 'test';
+    m.isTopModel = false;
   }
   bestModel.isTopModel = true;
 
   onProgress?.(100, 'Training complete!');
   const rankingMetric = problemType === 'regression' ? 'R2' : 'F1 Score';
-  return { results, bestModel, rankingMetric, trainingComplete: true };
+  return { results, bestModel, rankingMetric, trainingComplete: true, selectionMethod };
 };
 
 // ============================================================

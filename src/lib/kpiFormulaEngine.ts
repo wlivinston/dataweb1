@@ -474,9 +474,10 @@ export const calculateSamePeriodLastYear = (
   dataset: Dataset,
   valueColumn: string,
   dateColumn: string,
-  periodType: 'year' | 'quarter' | 'month' = 'year'
+  periodType: 'year' | 'quarter' | 'month' = 'year',
+  referenceDate?: Date
 ): number => {
-  const now = new Date();
+  const now = referenceDate || new Date();
   const lastYear = now.getFullYear() - 1;
   const currentMonth = now.getMonth();
   const currentQuarter = Math.ceil((currentMonth + 1) / 3);
@@ -513,9 +514,10 @@ export const calculateSamePeriodLastYear = (
 export const calculateYoYChange = (
   dataset: Dataset,
   valueColumn: string,
-  dateColumn: string
+  dateColumn: string,
+  referenceDate?: Date
 ): { absolute: number; percentage: number; currentYear: number; previousYear: number } => {
-  const now = new Date();
+  const now = referenceDate || new Date();
   const currentYear = now.getFullYear();
 
   let currentTotal = 0;

@@ -12,6 +12,7 @@ import { AccountCategory, ClassifiedTransaction, TrialBalance, TrialBalanceRow }
 const CATEGORY_ORDER: AccountCategory[] = [
   'current_asset',
   'non_current_asset',
+  'contra_asset',
   'current_liability',
   'non_current_liability',
   'equity',
@@ -30,6 +31,7 @@ const CATEGORY_ORDER: AccountCategory[] = [
 export const TRIAL_BALANCE_CATEGORY_LABELS: Record<AccountCategory, string> = {
   current_asset: 'Current Assets',
   non_current_asset: 'Non-Current Assets',
+  contra_asset: 'Less: Accumulated Depreciation & Allowances',
   current_liability: 'Current Liabilities',
   non_current_liability: 'Non-Current Liabilities',
   equity: 'Equity',

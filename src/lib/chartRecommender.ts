@@ -98,7 +98,7 @@ export function toRadarData(
 
   // Build radar data: each subject is a numeric column
   return numericCols.map(col => {
-    const entry: Record<string, any> = { subject: col };
+    const entry: { [key: string]: any; subject: string } = { subject: col };
     for (const cat of categories) {
       entry[cat] = Number(means[cat][col].toFixed(2));
     }
@@ -150,7 +150,7 @@ export function toHeatmapCorrelation(
 
   const result: { category: string; [col: string]: any }[] = [];
   for (let i = 0; i < cols.length; i++) {
-    const entry: Record<string, any> = { category: cols[i] };
+    const entry: { [col: string]: any; category: string } = { category: cols[i] };
     for (let j = 0; j < cols.length; j++) {
       if (stds[i] === 0 || stds[j] === 0) {
         entry[cols[j]] = 0;
@@ -215,7 +215,7 @@ export function toStackedBarData(
   return Object.entries(grid)
     .slice(0, 30)
     .map(([category, seriesMap]) => {
-      const entry: Record<string, any> = { category };
+      const entry: { [series: string]: any; category: string } = { category };
       for (const key of secondaryKeys) {
         entry[key] = seriesMap[key] || 0;
       }
@@ -480,7 +480,9 @@ export function toYoYData(
   return Object.entries(yearMonth)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([month, yearVals]) => {
-      const entry: Record<string, any> = { category: monthNames[parseInt(month, 10) - 1] || month };
+      const entry: { [year: string]: any; category: string } = {
+        category: monthNames[parseInt(month, 10) - 1] || month,
+      };
       for (const y of sortedYears) {
         entry[y] = yearVals[y] || 0;
       }
