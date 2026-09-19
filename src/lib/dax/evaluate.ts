@@ -3,6 +3,8 @@ import { parseDax } from './parser';
 import { DaxRuntimeError, locate } from './errors';
 import { lookupFunction, maxArity, minArity, formatSignature } from './registry';
 import {
+  andColumnFilter,
+  andRowFilter,
   cellValue,
   createVisibilityCache,
   distinctKeysOf,
@@ -32,6 +34,20 @@ import {
   type DaxTable,
   type DaxValue,
 } from './value';
+import {
+  addDays,
+  monthBounds,
+  parseInterval,
+  parseKey,
+  parseYearEnd,
+  periodBounds,
+  quarterBounds,
+  shiftDate,
+  yearBounds,
+  CALENDAR_YEAR_END,
+  type DateInterval,
+  type DateRange,
+} from './time';
 import { findColumn, findTable, findMeasure, keyOf } from '../semantic/model';
 import type { SemanticModel } from '../semantic/types';
 
@@ -621,12 +637,13 @@ const HANDLERS: Record<string, Handler> = {
   // -- filter context -----------------------------------------------------
   CALCULATE: (evaluator, node, context, scope) => {
     const transitioned = evaluator.transition(context);
-    let filter = transitioned.filter;
-
-    for (let i = 1; i < node.args.length; i += 1) {
-      filter = applyCalculateFilter(evaluator, node.args[i], filter, context, scope);
-    }
-
+    const filter = applyCalculateFilters(
+      evaluator,
+      node.args.slice(1),
+      transitioned.filter,
+      context,
+      scope
+    );
     return evaluator.evaluate(node.args[0], { filter, rowContexts: [] }, scope);
   },
 
@@ -916,6 +933,24 @@ const datePart = (
 };
 
 /**
+ * Apply a table-valued filter, replacing whatever filtered that table before.
+ *
+ * This is the DAX rule that a table filter argument overrides the filter
+ * context on ALL columns of its table. Without it,
+ * CALCULATE(..., SAMEPERIODLASTYEAR(Date[Date])) inside a slicer on 2024
+ * would intersect last year's dates with "year = 2024" and return blank -
+ * which is exactly what it did before this was fixed.
+ *
+ * It is safe for FILTER() too: FILTER evaluates its table argument in the
+ * outer context, so the rows it returns already carry those filters.
+ */
+const replaceTableFilter = (
+  filter: FilterContext,
+  table: string,
+  rows: number[]
+): FilterContext => withRowFilter(withoutTable(filter, table), table, rows);
+
+/**
  * Drop every filter on a table except those on the named columns.
  *
  * Shared by CALCULATE's filter-modifier path and the standalone ALLEXCEPT
@@ -924,7 +959,8 @@ const datePart = (
 const allExceptFilter = (
   evaluator: Evaluator,
   call: FunctionCall,
-  filter: FilterContext
+  filter: FilterContext,
+  keptFrom: FilterContext = filter
 ): FilterContext => {
   const model = evaluator.semanticModel;
   const target = call.args[0];
@@ -940,7 +976,7 @@ const allExceptFilter = (
     }
     const resolved = findColumn(model, kept.table ?? undefined, kept.column);
     if (!resolved.ok) throw evaluator.error(kept, resolved.error);
-    const existing = filter.columns
+    const existing = keptFrom.columns
       .get(resolved.value.table.toLowerCase())
       ?.get(resolved.value.name.toLowerCase());
     if (existing) {
@@ -951,57 +987,96 @@ const allExceptFilter = (
 };
 
 /**
- * Apply one CALCULATE filter argument.
+ * What one CALCULATE filter argument does to the filter context.
  *
- * Three shapes are understood, matching what DAX actually does with them:
+ * Split in two because DAX combines filter arguments differently from how it
+ * combines them with the surrounding context. Each argument OVERRIDES the
+ * outer filters on whatever it touches, but arguments within the same
+ * CALCULATE are ANDed together. Applying them one after another - so a later
+ * one replaces an earlier one - makes
+ * CALCULATE(x, Date[Year] = 1999, DATESYTD(Date[Date])) quietly return the
+ * whole of the latest year instead of nothing.
  *
- *   ALL(...)                a filter modifier; removes filters
- *   Table[Column] = value   replaces the filter on that column only
- *   a table expression      replaces the row restriction on its table
+ * So every argument is resolved against the outer context, then all the
+ * clears run, then all the applies intersect.
+ */
+interface FilterContribution {
+  clear: (filter: FilterContext) => FilterContext;
+  apply: (filter: FilterContext) => FilterContext;
+}
+
+const identity = (filter: FilterContext): FilterContext => filter;
+
+/**
+ * Resolve one CALCULATE filter argument.
+ *
+ * Three shapes are understood, matching what DAX does with them:
+ *
+ *   ALL(...) / ALLEXCEPT(...)   filter modifiers; remove filters
+ *   Table[Column] = value       overrides the filter on that column only
+ *   a table expression          overrides the filters on its whole table
  *
  * Anything else throws. A filter argument that is silently ignored is the
  * most dangerous failure this engine could have: the number still arrives,
  * and it is the unfiltered one.
  */
-const applyCalculateFilter = (
+const resolveCalculateFilter = (
   evaluator: Evaluator,
   argument: Expression,
-  filter: FilterContext,
+  outerFilter: FilterContext,
   outer: EvalContext,
   scope: Scope | null
-): FilterContext => {
+): FilterContribution => {
   const model = evaluator.semanticModel;
 
   if (argument.kind === 'call' && argument.name === 'ALL') {
-    if (argument.args.length === 0) return emptyFilterContext();
-    let next = filter;
-    for (const target of argument.args) {
-      if (target.kind === 'table') {
-        next = withoutTable(next, target.name);
-      } else if (target.kind === 'column') {
-        const resolved = findColumn(model, target.table ?? undefined, target.column);
-        if (!resolved.ok) throw evaluator.error(target, resolved.error);
-        next = withoutColumn(next, resolved.value.table, resolved.value.name);
-      } else {
-        throw evaluator.error(target, 'ALL needs a table or a column here.');
-      }
+    if (argument.args.length === 0) {
+      return { clear: () => emptyFilterContext(), apply: identity };
     }
-    return next;
+    const targets = argument.args;
+    return {
+      clear: filter => {
+        let next = filter;
+        for (const target of targets) {
+          if (target.kind === 'table') {
+            next = withoutTable(next, target.name);
+          } else if (target.kind === 'column') {
+            const resolved = findColumn(model, target.table ?? undefined, target.column);
+            if (!resolved.ok) throw evaluator.error(target, resolved.error);
+            next = withoutColumn(next, resolved.value.table, resolved.value.name);
+          } else {
+            throw evaluator.error(target, 'ALL needs a table or a column here.');
+          }
+        }
+        return next;
+      },
+      apply: identity,
+    };
   }
 
   if (argument.kind === 'call' && argument.name === 'ALLEXCEPT') {
-    return allExceptFilter(evaluator, argument, filter);
+    // The kept columns keep their OUTER filters, so those are read from the
+    // context as it was before any clearing began.
+    return {
+      clear: filter => allExceptFilter(evaluator, argument, filter, outerFilter),
+      apply: identity,
+    };
   }
 
   const simple = asColumnPredicate(evaluator, argument);
   if (simple) {
-    return withColumnFilter(filter, simple.table, simple.column, simple.allowed);
+    return {
+      clear: filter => withoutColumn(filter, simple.table, simple.column),
+      apply: filter => andColumnFilter(filter, simple.table, simple.column, simple.allowed),
+    };
   }
 
-  // A table expression: evaluate it in the outer context and use its rows.
   const value = evaluator.evaluate(argument, outer, scope);
   if (isTable(value)) {
-    return withRowFilter(filter, value.table, value.rows);
+    return {
+      clear: filter => withoutTable(filter, value.table),
+      apply: filter => andRowFilter(filter, value.table, value.rows),
+    };
   }
 
   throw evaluator.error(
@@ -1009,6 +1084,24 @@ const applyCalculateFilter = (
     'This CALCULATE filter is not supported yet. Use a comparison such as Sales[Region] = "Accra", ' +
       'a FILTER(...) expression, or ALL(...).'
   );
+};
+
+/** Resolve, clear, then intersect - the order DAX combines filters in. */
+const applyCalculateFilters = (
+  evaluator: Evaluator,
+  args: Expression[],
+  base: FilterContext,
+  outer: EvalContext,
+  scope: Scope | null
+): FilterContext => {
+  const contributions = args.map(argument =>
+    resolveCalculateFilter(evaluator, argument, base, outer, scope)
+  );
+
+  let filter = base;
+  for (const contribution of contributions) filter = contribution.clear(filter);
+  for (const contribution of contributions) filter = contribution.apply(filter);
+  return filter;
 };
 
 /**
@@ -1131,6 +1224,351 @@ export const evaluateDax = (
   };
   return evaluator.evaluate(expression, context, null);
 };
+
+// ============================================================
+// Time intelligence
+// ============================================================
+
+/**
+ * A date column and what is visible of it.
+ *
+ * Built once per call because these functions have to look OUTSIDE the
+ * current filter context - SAMEPERIODLASTYEAR returns dates that are, by
+ * definition, filtered out right now. So `rowsByDate` indexes every row of
+ * the table, while `visibleDates` holds only what the context leaves.
+ */
+interface DateColumnScope {
+  table: string;
+  column: string;
+  /** Sorted, and only what the current filter context leaves visible. */
+  visibleDates: string[];
+  /** Every row of the table, indexed by its date key. */
+  rowsByDate: Map<string, number[]>;
+}
+
+const dateScope = (
+  evaluator: Evaluator,
+  node: FunctionCall,
+  index: number,
+  context: EvalContext
+): DateColumnScope => {
+  const reference = evaluator.columnArg(node, index);
+  const model = evaluator.semanticModel;
+  const table = findTable(model, reference.table);
+  if (!table) throw evaluator.error(node.args[index], `There is no table called "${reference.table}".`);
+
+  const column = table.columns.find(
+    candidate => candidate.name.toLowerCase() === reference.column.toLowerCase()
+  );
+  if (!column || column.dataType !== 'date') {
+    throw evaluator.error(
+      node.args[index],
+      `${node.name} needs a date column. ${reference.table}[${reference.column}] holds ` +
+        `${column ? column.dataType : 'unknown'} values. Point it at the calendar, for example ` +
+        `${model.dateTableName ?? 'Date'}[Date].`
+    );
+  }
+
+  const rowsByDate = new Map<string, number[]>();
+  for (let index_ = 0; index_ < table.rowCount; index_ += 1) {
+    const value = cellValue(model, reference.table, reference.column, index_);
+    if (typeof value !== 'string') continue;
+    const existing = rowsByDate.get(value);
+    if (existing) existing.push(index_);
+    else rowsByDate.set(value, [index_]);
+  }
+
+  const visibleDates: string[] = [];
+  for (const rowIndex of evaluator.visibleRowsOf(reference.table, context)) {
+    const value = cellValue(model, reference.table, reference.column, rowIndex);
+    if (typeof value === 'string') visibleDates.push(value);
+  }
+  visibleDates.sort();
+
+  return { table: reference.table, column: reference.column, visibleDates, rowsByDate };
+};
+
+/**
+ * Turn a set of date keys back into rows of the date table.
+ *
+ * Deduplicated, because shifting can collapse two dates onto one: moving
+ * February 2024 back a year sends both the 28th and the 29th to 28 February
+ * 2023, and counting that day twice would inflate every total using it.
+ */
+const tableOfDates = (scope: DateColumnScope, dates: Iterable<string>): DaxTable => {
+  const rows = new Set<number>();
+  for (const iso of new Set(dates)) {
+    for (const rowIndex of scope.rowsByDate.get(iso) ?? []) rows.add(rowIndex);
+  }
+  return makeTable(scope.table, Array.from(rows).sort((a, b) => a - b));
+};
+
+/** Every date in the column that falls inside a range. Keys sort lexically. */
+const datesWithin = (scope: DateColumnScope, range: DateRange): string[] =>
+  Array.from(scope.rowsByDate.keys())
+    .filter(iso => iso >= range.start && iso <= range.end)
+    .sort();
+
+/**
+ * Resolve the optional year-end argument.
+ *
+ * Defaults to the calendar year, which is what DAX does even when the model
+ * has a fiscal year configured. Matching Power BI matters more here than
+ * being clever: a user who wants a fiscal year to date passes "6/30", and
+ * that same expression then means the same thing in both tools.
+ */
+const yearEndArgument = (
+  evaluator: Evaluator,
+  node: FunctionCall,
+  index: number,
+  context: EvalContext,
+  scope: Scope | null
+): { month: number; day: number } => {
+  if (node.args.length <= index) return CALENDAR_YEAR_END;
+  const raw = evaluator.textArg(node, index, context, scope);
+  const parsed = parseYearEnd(raw);
+  if (!parsed) {
+    throw evaluator.error(
+      node.args[index],
+      `"${raw}" is not a year end this can read. Use a form where the day is unambiguous, ` +
+        `such as "6/30" or "12/31".`
+    );
+  }
+  return parsed;
+};
+
+const requireInterval = (
+  evaluator: Evaluator,
+  node: FunctionCall,
+  index: number,
+  context: EvalContext,
+  scope: Scope | null
+): DateInterval => {
+  const argument = node.args[index];
+  // DAX writes the interval as a bare keyword - DATEADD(Date[Date], -1, MONTH).
+  // The parser cannot tell that from a table name, so it is unwrapped here
+  // rather than evaluated, which would fail with "no table called MONTH".
+  const raw =
+    argument.kind === 'table'
+      ? argument.name
+      : evaluator.textArg(node, index, context, scope);
+  const interval = parseInterval(raw);
+  if (!interval) {
+    throw evaluator.error(
+      node.args[index],
+      `"${raw}" is not an interval. Use DAY, MONTH, QUARTER or YEAR.`
+    );
+  }
+  return interval;
+};
+
+/** Dates from the opening of a period up to the latest date in context. */
+const toDateSet = (
+  evaluator: Evaluator,
+  node: FunctionCall,
+  context: EvalContext,
+  scope: Scope | null,
+  bounds: (last: string, yearEnd: { month: number; day: number }) => DateRange | null,
+  yearEndIndex: number
+): DaxTable => {
+  const dateColumn = dateScope(evaluator, node, 0, context);
+  if (dateColumn.visibleDates.length === 0) return makeTable(dateColumn.table, []);
+
+  const last = dateColumn.visibleDates[dateColumn.visibleDates.length - 1];
+  const yearEnd = yearEndArgument(evaluator, node, yearEndIndex, context, scope);
+  const period = bounds(last, yearEnd);
+  if (!period) return makeTable(dateColumn.table, []);
+
+  // To date, so the period opens normally but stops at the latest date shown.
+  return tableOfDates(dateColumn, datesWithin(dateColumn, { start: period.start, end: last }));
+};
+
+/** The whole period immediately before the one holding the latest date. */
+const previousPeriod = (
+  evaluator: Evaluator,
+  node: FunctionCall,
+  context: EvalContext,
+  scope: Scope | null,
+  interval: DateInterval,
+  yearEndIndex: number
+): DaxTable => {
+  const dateColumn = dateScope(evaluator, node, 0, context);
+  if (dateColumn.visibleDates.length === 0) return makeTable(dateColumn.table, []);
+
+  const last = dateColumn.visibleDates[dateColumn.visibleDates.length - 1];
+  const yearEnd = yearEndArgument(evaluator, node, yearEndIndex, context, scope);
+  const current = periodBounds(last, interval, yearEnd);
+  if (!current) return makeTable(dateColumn.table, []);
+
+  // Step back one day from the opening to land in the period before it.
+  const priorDay = addDays(current.start, -1);
+  const prior = periodBounds(priorDay, interval, yearEnd);
+  if (!prior) return makeTable(dateColumn.table, []);
+
+  return tableOfDates(dateColumn, datesWithin(dateColumn, prior));
+};
+
+/** CALCULATE(expression, <date set>, [extra filter]) - the TOTAL* family. */
+const totalOverPeriod = (
+  evaluator: Evaluator,
+  node: FunctionCall,
+  context: EvalContext,
+  scope: Scope | null,
+  bounds: (last: string, yearEnd: { month: number; day: number }) => DateRange | null
+): DaxValue => {
+  // TOTALYTD(expression, dates, [filter], [yearEnd]). A string in the third
+  // position is the year end; anything else is a filter.
+  const third = node.args[2];
+  const thirdIsYearEnd = third !== undefined && third.kind === 'string';
+  const yearEndIndex = thirdIsYearEnd ? 2 : 3;
+
+  const dates = toDateSetForTotal(evaluator, node, context, scope, bounds, yearEndIndex);
+
+  let filter = replaceTableFilter(
+    evaluator.transition(context).filter,
+    dates.table,
+    dates.rows
+  );
+
+  if (third !== undefined && !thirdIsYearEnd) {
+    filter = applyCalculateFilters(evaluator, [third], filter, context, scope);
+  }
+
+  return evaluator.evaluate(node.args[0], { filter, rowContexts: [] }, scope);
+};
+
+/** As toDateSet, but reading the date column from argument 1 rather than 0. */
+const toDateSetForTotal = (
+  evaluator: Evaluator,
+  node: FunctionCall,
+  context: EvalContext,
+  scope: Scope | null,
+  bounds: (last: string, yearEnd: { month: number; day: number }) => DateRange | null,
+  yearEndIndex: number
+): DaxTable => {
+  const dateColumn = dateScope(evaluator, node, 1, context);
+  if (dateColumn.visibleDates.length === 0) return makeTable(dateColumn.table, []);
+
+  const last = dateColumn.visibleDates[dateColumn.visibleDates.length - 1];
+  const yearEnd = yearEndArgument(evaluator, node, yearEndIndex, context, scope);
+  const period = bounds(last, yearEnd);
+  if (!period) return makeTable(dateColumn.table, []);
+
+  return tableOfDates(dateColumn, datesWithin(dateColumn, { start: period.start, end: last }));
+};
+
+const TIME_HANDLERS: Record<string, Handler> = {
+  DATESYTD: (evaluator, node, context, scope) =>
+    toDateSet(evaluator, node, context, scope, (last, yearEnd) =>
+      yearBounds(last, yearEnd.month, yearEnd.day), 1),
+
+  DATESQTD: (evaluator, node, context, scope) =>
+    toDateSet(evaluator, node, context, scope, last => quarterBounds(last), 99),
+
+  DATESMTD: (evaluator, node, context, scope) =>
+    toDateSet(evaluator, node, context, scope, last => monthBounds(last), 99),
+
+  TOTALYTD: (evaluator, node, context, scope) =>
+    totalOverPeriod(evaluator, node, context, scope, (last, yearEnd) =>
+      yearBounds(last, yearEnd.month, yearEnd.day)),
+
+  TOTALQTD: (evaluator, node, context, scope) =>
+    totalOverPeriod(evaluator, node, context, scope, last => quarterBounds(last)),
+
+  TOTALMTD: (evaluator, node, context, scope) =>
+    totalOverPeriod(evaluator, node, context, scope, last => monthBounds(last)),
+
+  SAMEPERIODLASTYEAR: (evaluator, node, context) => {
+    const dateColumn = dateScope(evaluator, node, 0, context);
+    // Every visible day, moved back a year. 29 February becomes 28 February,
+    // which is the clamping in addMonths doing its job.
+    return tableOfDates(
+      dateColumn,
+      dateColumn.visibleDates.map(iso => shiftDate(iso, -1, 'YEAR'))
+    );
+  },
+
+  DATEADD: (evaluator, node, context, scope) => {
+    const dateColumn = dateScope(evaluator, node, 0, context);
+    const count = evaluator.numberArg(node, 1, context, scope);
+    const interval = requireInterval(evaluator, node, 2, context, scope);
+    return tableOfDates(
+      dateColumn,
+      dateColumn.visibleDates.map(iso => shiftDate(iso, count, interval))
+    );
+  },
+
+  PREVIOUSYEAR: (evaluator, node, context, scope) =>
+    previousPeriod(evaluator, node, context, scope, 'YEAR', 1),
+
+  PREVIOUSQUARTER: (evaluator, node, context, scope) =>
+    previousPeriod(evaluator, node, context, scope, 'QUARTER', 99),
+
+  PREVIOUSMONTH: (evaluator, node, context, scope) =>
+    previousPeriod(evaluator, node, context, scope, 'MONTH', 99),
+
+  PARALLELPERIOD: (evaluator, node, context, scope) => {
+    const dateColumn = dateScope(evaluator, node, 0, context);
+    if (dateColumn.visibleDates.length === 0) return makeTable(dateColumn.table, []);
+
+    const count = evaluator.numberArg(node, 1, context, scope);
+    const interval = requireInterval(evaluator, node, 2, context, scope);
+
+    // Unlike DATEADD, this returns WHOLE periods: one month of context shifted
+    // back a year gives all of that month last year, not the same day count.
+    const first = shiftDate(dateColumn.visibleDates[0], count, interval);
+    const last = shiftDate(
+      dateColumn.visibleDates[dateColumn.visibleDates.length - 1],
+      count,
+      interval
+    );
+    const opening = periodBounds(first, interval, CALENDAR_YEAR_END);
+    const closing = periodBounds(last, interval, CALENDAR_YEAR_END);
+    if (!opening || !closing) return makeTable(dateColumn.table, []);
+
+    return tableOfDates(
+      dateColumn,
+      datesWithin(dateColumn, { start: opening.start, end: closing.end })
+    );
+  },
+
+  DATESINPERIOD: (evaluator, node, context, scope) => {
+    const dateColumn = dateScope(evaluator, node, 0, context);
+    const startValue = evaluator.scalarArg(node, 1, context, scope);
+    if (typeof startValue !== 'string' || !parseKey(startValue)) {
+      throw evaluator.error(
+        node.args[1],
+        `DATESINPERIOD needs a start date, for example LASTDATE(${dateColumn.table}[${dateColumn.column}]).`
+      );
+    }
+    const count = evaluator.numberArg(node, 2, context, scope);
+    const interval = requireInterval(evaluator, node, 3, context, scope);
+
+    // A negative count means the period ENDING at the start date, so the far
+    // end moves one day inside the shifted boundary.
+    const far = shiftDate(startValue, count, interval);
+    const range =
+      count >= 0
+        ? { start: startValue, end: addDays(far, -1) }
+        : { start: addDays(far, 1), end: startValue };
+
+    return tableOfDates(dateColumn, datesWithin(dateColumn, range));
+  },
+
+  FIRSTDATE: (evaluator, node, context) => {
+    const dateColumn = dateScope(evaluator, node, 0, context);
+    return dateColumn.visibleDates.length === 0 ? BLANK : dateColumn.visibleDates[0];
+  },
+
+  LASTDATE: (evaluator, node, context) => {
+    const dateColumn = dateScope(evaluator, node, 0, context);
+    return dateColumn.visibleDates.length === 0
+      ? BLANK
+      : dateColumn.visibleDates[dateColumn.visibleDates.length - 1];
+  },
+};
+
+Object.assign(HANDLERS, TIME_HANDLERS);
 
 /**
  * Every function the evaluator can actually execute.

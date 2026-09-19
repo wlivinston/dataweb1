@@ -393,7 +393,7 @@ describe('failing loudly', () => {
   });
 
   it('rejects a recognised function that is not implemented, and says so', () => {
-    expect(() => scalar('TOTALYTD(SUM(Sales[Amount]), Date[Date])')).toThrow(
+    expect(() => scalar('RANKX(ALL(Sales), SUM(Sales[Amount]))')).toThrow(
       /recognised but not implemented yet/
     );
   });

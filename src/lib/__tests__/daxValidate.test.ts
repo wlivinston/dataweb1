@@ -159,14 +159,14 @@ describe('validateDax: function names', () => {
   });
 
   it('reports unimplemented functions when asked', () => {
-    // TOTALYTD is in the catalogue so it parses and exports, but the
-    // evaluator has no handler for it yet.
-    const issues = check('TOTALYTD(SUM(Sales[Amount]), Date[Date])', {
+    // RANKX is in the catalogue so it parses and exports, but the evaluator
+    // has no handler for it yet.
+    const issues = check('RANKX(ALL(Sales), SUM(Sales[Amount]))', {
       requireImplemented: true,
     });
     expect(issues).toHaveLength(1);
     expect(issues[0].code).toBe('not_implemented');
-    expect(issues[0].message).toMatch(/TOTALYTD is recognised but cannot be calculated/);
+    expect(issues[0].message).toMatch(/RANKX is recognised but cannot be calculated/);
     expect(issues[0].severity).toBe('warning');
     // A warning, so the expression is still considered usable.
     expect(isValid(issues)).toBe(true);

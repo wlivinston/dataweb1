@@ -112,6 +112,40 @@ export const withoutColumn = (
 };
 
 /**
+ * Intersect with whatever filter is already on this column.
+ *
+ * CALCULATE's filter arguments override the OUTER context but combine with
+ * each other, so they are cleared first and then intersected in.
+ */
+export const andColumnFilter = (
+  context: FilterContext,
+  table: string,
+  column: string,
+  allowed: Set<string>
+): FilterContext => {
+  const existing = context.columns.get(lower(table))?.get(lower(column));
+  if (!existing) return withColumnFilter(context, table, column, allowed);
+  return withColumnFilter(
+    context,
+    table,
+    column,
+    new Set(Array.from(allowed).filter(key => existing.has(key)))
+  );
+};
+
+/** Intersect with whatever row restriction is already on this table. */
+export const andRowFilter = (
+  context: FilterContext,
+  table: string,
+  rows: number[]
+): FilterContext => {
+  const existing = context.rows.get(lower(table));
+  if (!existing) return withRowFilter(context, table, rows);
+  const keep = new Set(rows);
+  return withRowFilter(context, table, existing.filter(index => keep.has(index)));
+};
+
+/**
  * Pin a table to a single row.
  *
  * This is what CALCULATE's context transition does: inside SUMX, a CALCULATE
