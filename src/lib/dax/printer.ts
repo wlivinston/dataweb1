@@ -1,4 +1,5 @@
 import type { Expression, BinaryOperator } from './ast';
+import { lookupFunction } from './registry';
 
 /**
  * Render an AST back to DAX text.
@@ -35,9 +36,20 @@ const UNARY_PRECEDENCE = 6.5;
 const IN_PRECEDENCE = 3;
 const NOT_PRECEDENCE = 2.5;
 
-/** A table name needs quoting unless it is a plain identifier. */
-const formatTableName = (name: string): string =>
-  /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : `'${name.replace(/'/g, "''")}'`;
+/**
+ * A table name needs quoting unless it is a plain identifier that cannot be
+ * mistaken for something else.
+ *
+ * The "something else" is a function name. A calendar called `Date` is the
+ * commonest table in any model, and DATE is also a DAX function, so bare
+ * `Date[Date]` reads ambiguously - some tools take it, others refuse, and a
+ * refusal in exported text surfaces as a broken paste rather than an error
+ * anyone can trace. Quoting costs nothing and removes the question.
+ */
+const formatTableName = (name: string): string => {
+  const plain = /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !lookupFunction(name);
+  return plain ? name : `'${name.replace(/'/g, "''")}'`;
+};
 
 const formatBracketName = (name: string): string => `[${name.replace(/]/g, ']]')}]`;
 

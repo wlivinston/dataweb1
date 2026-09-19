@@ -1,4 +1,5 @@
 import { PARITY_CASES } from './expected';
+import type { ResolvedMeasure } from '../../../measures';
 
 /**
  * Generate a single Power BI calculated table that answers every parity case
@@ -42,6 +43,52 @@ export const buildPowerBiScript = (): string => {
     `// Generated from expected.ts - ${PARITY_CASES.length} cases.`,
     '',
     'ParityResults =',
+    'UNION(',
+    rows.join(',\n'),
+    ')',
+    '',
+  ].join('\n');
+};
+
+// ============================================================
+// The measure library, as one pasteable table
+// ============================================================
+
+/**
+ * Wrap an expression so it can sit inside ROW().
+ *
+ * Two of the measures are VAR/RETURN blocks. Those are expressions, but they
+ * need parentheses to nest inside a function call - and IFERROR cannot
+ * rescue a syntax error, it would take the whole table down with it.
+ */
+const asArgument = (dax: string): string =>
+  dax.includes('\n') ? `(\n${dax}\n    )` : dax;
+
+/**
+ * A calculated table answering every resolved measure at once.
+ *
+ * The DAX embedded here is exactly what the library emits - not a
+ * re-rendering of it. Verifying a paraphrase would prove nothing about what
+ * the product actually runs.
+ */
+export const buildMeasureScript = (measures: ResolvedMeasure[]): string => {
+  const rows = measures.map((measure, index) => {
+    const position = String(index + 1).padStart(2, '0');
+    const expression = asArgument(measure.dax);
+    return (
+      `    ROW("Measure", "${position} ${measure.template.id}", "Answer", ` +
+      `IFERROR(IF(ISBLANK(${expression}), "BLANK", FORMAT(${expression}, "${NUMBER_FORMAT}")), "ERROR"))`
+    );
+  });
+
+  return [
+    '// Paste into Power BI Desktop: Modeling > New table.',
+    '// Needs the Orders table from orders.csv, joined to Date, and a Year',
+    '// column on Date. See README.md.',
+    '//',
+    `// Generated from the measure library - ${measures.length} measures.`,
+    '',
+    'MeasureResults =',
     'UNION(',
     rows.join(',\n'),
     ')',

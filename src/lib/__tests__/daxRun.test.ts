@@ -491,3 +491,52 @@ describe('suggestCalculations', () => {
     }
   });
 });
+
+// ============================================================
+// Table names that collide with function names
+//
+// A calendar called `Date` is the commonest table in any model, and DATE is
+// also a DAX function, so bare Date[Date] reads ambiguously. Some tools
+// accept it and others refuse, and a refusal in exported text surfaces as a
+// broken paste rather than an error anyone can trace.
+// ============================================================
+
+describe('quoting a table named after a DAX function', () => {
+  it('quotes it, so the reference cannot be read as a call', () => {
+    expect(tableRef('Date')).toBe("'Date'");
+    expect(columnRef('Date', 'Date')).toBe("'Date'[Date]");
+  });
+
+  it('quotes other function-named tables too, not just Date', () => {
+    expect(tableRef('Calendar')).toBe("'Calendar'");
+    expect(tableRef('Filter')).toBe("'Filter'");
+    expect(tableRef('Union')).toBe("'Union'");
+  });
+
+  it('is case-insensitive, as DAX names are', () => {
+    expect(tableRef('date')).toBe("'date'");
+    expect(tableRef('DATE')).toBe("'DATE'");
+  });
+
+  it('leaves an ordinary table unquoted', () => {
+    expect(tableRef('Sales')).toBe('Sales');
+    expect(columnRef('Sales', 'Amount')).toBe('Sales[Amount]');
+  });
+
+  it('still round-trips through the parser', () => {
+    expect(parseDax(columnRef('Date', 'Date'))).toMatchObject({
+      kind: 'column',
+      table: 'Date',
+      column: 'Date',
+    });
+  });
+
+  it('is what the generated model actually emits', () => {
+    // The end-to-end check: the date table this engine builds is called
+    // Date, so every measure referencing it must come out quoted.
+    const built = model();
+    expect(built.dateTableName).toBe('Date');
+    const result = runDax(`COUNTROWS(${tableRef(built.dateTableName!)})`, built);
+    expect(result.ok).toBe(true);
+  });
+});

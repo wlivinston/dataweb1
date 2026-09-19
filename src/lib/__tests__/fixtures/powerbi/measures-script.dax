@@ -1,0 +1,43 @@
+// Paste into Power BI Desktop: Modeling > New table.
+// Needs the Orders table from orders.csv, joined to Date, and a Year
+// column on Date. See README.md.
+//
+// Generated from the measure library - 18 measures.
+
+MeasureResults =
+UNION(
+    ROW("Measure", "01 average-unit-price", "Answer", IFERROR(IF(ISBLANK(DIVIDE(SUM(Orders[Revenue]), SUM(Orders[Quantity]))), "BLANK", FORMAT(DIVIDE(SUM(Orders[Revenue]), SUM(Orders[Quantity])), "0.##########")), "ERROR")),
+    ROW("Measure", "02 gross-profit", "Answer", IFERROR(IF(ISBLANK(SUM(Orders[Revenue]) - SUM(Orders[Cost])), "BLANK", FORMAT(SUM(Orders[Revenue]) - SUM(Orders[Cost]), "0.##########")), "ERROR")),
+    ROW("Measure", "03 gross-margin-percent", "Answer", IFERROR(IF(ISBLANK(DIVIDE(SUM(Orders[Revenue]) - SUM(Orders[Cost]), SUM(Orders[Revenue]))), "BLANK", FORMAT(DIVIDE(SUM(Orders[Revenue]) - SUM(Orders[Cost]), SUM(Orders[Revenue])), "0.##########")), "ERROR")),
+    ROW("Measure", "04 average-order-value", "Answer", IFERROR(IF(ISBLANK(DIVIDE(SUM(Orders[Revenue]), DISTINCTCOUNT(Orders[OrderID]))), "BLANK", FORMAT(DIVIDE(SUM(Orders[Revenue]), DISTINCTCOUNT(Orders[OrderID])), "0.##########")), "ERROR")),
+    ROW("Measure", "05 revenue-per-customer", "Answer", IFERROR(IF(ISBLANK(DIVIDE(SUM(Orders[Revenue]), DISTINCTCOUNT(Orders[CustomerID]))), "BLANK", FORMAT(DIVIDE(SUM(Orders[Revenue]), DISTINCTCOUNT(Orders[CustomerID])), "0.##########")), "ERROR")),
+    ROW("Measure", "06 revenue-per-product", "Answer", IFERROR(IF(ISBLANK(DIVIDE(SUM(Orders[Revenue]), DISTINCTCOUNT(Orders[ProductID]))), "BLANK", FORMAT(DIVIDE(SUM(Orders[Revenue]), DISTINCTCOUNT(Orders[ProductID])), "0.##########")), "ERROR")),
+    ROW("Measure", "07 orders-per-customer", "Answer", IFERROR(IF(ISBLANK(DIVIDE(DISTINCTCOUNT(Orders[OrderID]), DISTINCTCOUNT(Orders[CustomerID]))), "BLANK", FORMAT(DIVIDE(DISTINCTCOUNT(Orders[OrderID]), DISTINCTCOUNT(Orders[CustomerID])), "0.##########")), "ERROR")),
+    ROW("Measure", "08 total-revenue", "Answer", IFERROR(IF(ISBLANK(SUM(Orders[Revenue])), "BLANK", FORMAT(SUM(Orders[Revenue]), "0.##########")), "ERROR")),
+    ROW("Measure", "09 units-sold", "Answer", IFERROR(IF(ISBLANK(SUM(Orders[Quantity])), "BLANK", FORMAT(SUM(Orders[Quantity]), "0.##########")), "ERROR")),
+    ROW("Measure", "10 revenue-ytd", "Answer", IFERROR(IF(ISBLANK(TOTALYTD(SUM(Orders[Revenue]), 'Date'[Date])), "BLANK", FORMAT(TOTALYTD(SUM(Orders[Revenue]), 'Date'[Date]), "0.##########")), "ERROR")),
+    ROW("Measure", "11 revenue-prior-year", "Answer", IFERROR(IF(ISBLANK((
+VAR LatestYear = YEAR(MAX('Date'[Date]))
+RETURN CALCULATE(SUM(Orders[Revenue]), 'Date'[Year] = LatestYear - 1)
+    )), "BLANK", FORMAT((
+VAR LatestYear = YEAR(MAX('Date'[Date]))
+RETURN CALCULATE(SUM(Orders[Revenue]), 'Date'[Year] = LatestYear - 1)
+    ), "0.##########")), "ERROR")),
+    ROW("Measure", "12 revenue-yoy-percent", "Answer", IFERROR(IF(ISBLANK((
+VAR LatestYear = YEAR(MAX('Date'[Date]))
+VAR ThisYear = CALCULATE(SUM(Orders[Revenue]), 'Date'[Year] = LatestYear)
+VAR PriorYear = CALCULATE(SUM(Orders[Revenue]), 'Date'[Year] = LatestYear - 1)
+RETURN DIVIDE(ThisYear - PriorYear, PriorYear)
+    )), "BLANK", FORMAT((
+VAR LatestYear = YEAR(MAX('Date'[Date]))
+VAR ThisYear = CALCULATE(SUM(Orders[Revenue]), 'Date'[Year] = LatestYear)
+VAR PriorYear = CALCULATE(SUM(Orders[Revenue]), 'Date'[Year] = LatestYear - 1)
+RETURN DIVIDE(ThisYear - PriorYear, PriorYear)
+    ), "0.##########")), "ERROR")),
+    ROW("Measure", "13 total-cost", "Answer", IFERROR(IF(ISBLANK(SUM(Orders[Cost])), "BLANK", FORMAT(SUM(Orders[Cost]), "0.##########")), "ERROR")),
+    ROW("Measure", "14 row-count", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(Orders)), "BLANK", FORMAT(COUNTROWS(Orders), "0.##########")), "ERROR")),
+    ROW("Measure", "15 completeness-percent", "Answer", IFERROR(IF(ISBLANK(DIVIDE(COUNT(Orders[Revenue]), COUNTROWS(Orders))), "BLANK", FORMAT(DIVIDE(COUNT(Orders[Revenue]), COUNTROWS(Orders)), "0.##########")), "ERROR")),
+    ROW("Measure", "16 order-count", "Answer", IFERROR(IF(ISBLANK(DISTINCTCOUNT(Orders[OrderID])), "BLANK", FORMAT(DISTINCTCOUNT(Orders[OrderID]), "0.##########")), "ERROR")),
+    ROW("Measure", "17 customer-count", "Answer", IFERROR(IF(ISBLANK(DISTINCTCOUNT(Orders[CustomerID])), "BLANK", FORMAT(DISTINCTCOUNT(Orders[CustomerID]), "0.##########")), "ERROR")),
+    ROW("Measure", "18 product-count", "Answer", IFERROR(IF(ISBLANK(DISTINCTCOUNT(Orders[ProductID])), "BLANK", FORMAT(DISTINCTCOUNT(Orders[ProductID]), "0.##########")), "ERROR"))
+)
