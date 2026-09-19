@@ -45,6 +45,24 @@ const isIdentStart = (c: string) => /[A-Za-z_]/.test(c);
 const isIdentPart = (c: string) => /[A-Za-z0-9_]/.test(c);
 
 /**
+ * Whether the dot at `dotIndex` is part of a dotted FUNCTION name.
+ *
+ * Several DAX functions carry one - STDEV.P, VAR.S, PERCENTILE.INC, RANK.EQ -
+ * so the dot cannot simply be rejected. It is absorbed only when a call
+ * follows, which a column reference never has, so `Sales.Amount` still gets
+ * the error it should.
+ */
+const dottedCallAhead = (source: string, dotIndex: number): boolean => {
+  let j = dotIndex + 1;
+  if (!isIdentStart(source[j] ?? '')) return false;
+  while (j < source.length && isIdentPart(source[j])) j += 1;
+  while (j < source.length && WHITESPACE.test(source[j])) j += 1;
+  return source[j] === '(';
+};
+
+const WHITESPACE = /\s/;
+
+/**
  * Turn a DAX expression into a token stream.
  *
  * Throws DaxSyntaxError with a source position on anything it cannot lex -
@@ -196,6 +214,14 @@ export const tokenize = (source: string): Token[] => {
     if (isIdentStart(char)) {
       const start = i;
       while (i < source.length && isIdentPart(source[i])) i++;
+
+      // Absorb a dotted function name such as PERCENTILE.INC, but only when
+      // the dotted form is actually being called.
+      while (source[i] === '.' && dottedCallAhead(source, i)) {
+        i += 1;
+        while (i < source.length && isIdentPart(source[i])) i++;
+      }
+
       const text = source.slice(start, i);
       const upper = text.toUpperCase();
       push(KEYWORDS.has(upper) ? 'keyword' : 'identifier', KEYWORDS.has(upper) ? upper : text, start, i - start);

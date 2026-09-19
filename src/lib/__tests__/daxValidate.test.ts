@@ -159,14 +159,15 @@ describe('validateDax: function names', () => {
   });
 
   it('reports unimplemented functions when asked', () => {
-    // RANKX is in the catalogue so it parses and exports, but the evaluator
-    // has no handler for it yet.
-    const issues = check('RANKX(ALL(Sales), SUM(Sales[Amount]))', {
+    // SUMMARIZE is catalogued so a real Power BI measure using it can still
+    // be stored, validated and exported; the evaluator has no handler for it
+    // because it needs table shaping that invents columns.
+    const issues = check('SUMMARIZE(Sales, Sales[CustomerID])', {
       requireImplemented: true,
     });
     expect(issues).toHaveLength(1);
     expect(issues[0].code).toBe('not_implemented');
-    expect(issues[0].message).toMatch(/RANKX is recognised but cannot be calculated/);
+    expect(issues[0].message).toMatch(/SUMMARIZE is recognised but cannot be calculated/);
     expect(issues[0].severity).toBe('warning');
     // A warning, so the expression is still considered usable.
     expect(isValid(issues)).toBe(true);

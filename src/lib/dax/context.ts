@@ -30,6 +30,15 @@ export interface FilterContext {
   columns: Map<string, Map<string, Set<string>>>;
   /** Visible row indices per table, keyed by lower-cased table name. */
   rows: Map<string, number[]>;
+  /**
+   * Relationships switched on or off for this calculation, by id.
+   *
+   * USERELATIONSHIP activates an inactive relationship, which also means
+   * deactivating whichever one was joining those two tables - otherwise a
+   * filter could reach the same row by two routes and the answer would
+   * depend on which was taken.
+   */
+  relationships: Map<string, boolean>;
 }
 
 /** One iterated row, as SUMX and friends establish. */
@@ -49,6 +58,7 @@ const lower = (value: string): string => value.toLowerCase();
 export const emptyFilterContext = (): FilterContext => ({
   columns: new Map(),
   rows: new Map(),
+  relationships: new Map(),
 });
 
 export const emptyEvalContext = (): EvalContext => ({
@@ -61,7 +71,37 @@ const cloneFilter = (context: FilterContext): FilterContext => ({
     Array.from(context.columns, ([table, columns]) => [table, new Map(columns)])
   ),
   rows: new Map(context.rows),
+  relationships: new Map(context.relationships),
 });
+
+/** Whether a relationship propagates filters, after any USERELATIONSHIP. */
+export const isRelationshipActive = (
+  context: FilterContext,
+  relationship: { id: string; isActive: boolean }
+): boolean => context.relationships.get(relationship.id) ?? relationship.isActive;
+
+/**
+ * Swap which relationship joins a pair of tables.
+ *
+ * Activates `wanted` and deactivates every other relationship between the
+ * same two tables, so exactly one path stays open.
+ */
+export const withRelationshipSwapped = (
+  context: FilterContext,
+  wanted: { id: string; from: { table: string }; to: { table: string } },
+  all: { id: string; from: { table: string }; to: { table: string } }[]
+): FilterContext => {
+  const next = cloneFilter(context);
+  const pairOf = (r: { from: { table: string }; to: { table: string } }) =>
+    [lower(r.from.table), lower(r.to.table)].sort().join('<->');
+  const pair = pairOf(wanted);
+
+  for (const relationship of all) {
+    if (pairOf(relationship) !== pair) continue;
+    next.relationships.set(relationship.id, relationship.id === wanted.id);
+  }
+  return next;
+};
 
 /** Replace any existing filter on this column, as a CALCULATE argument does. */
 export const withColumnFilter = (
@@ -157,7 +197,13 @@ export const withRowPinned = (
   context: FilterContext,
   table: string,
   rowIndex: number
-): FilterContext => withRowFilter(context, table, [rowIndex]);
+): FilterContext =>
+  // Clearing first matters as much as pinning. Context transition filters by
+  // the WHOLE row, replacing whatever filtered that table before; leaving the
+  // old column filters to intersect makes RANKX(ALL(Customers), [Measure])
+  // blank out every customer except the one already in scope, and the rank
+  // comes back as 1 for everybody.
+  withRowFilter(withoutTable(context, table), table, [rowIndex]);
 
 const requireTable = (model: SemanticModel, name: string): SemanticTable => {
   const table = findTable(model, name);
@@ -225,7 +271,7 @@ export const visibleRows = (
     }
 
     for (const relationship of model.relationships) {
-      if (!relationship.isActive) continue;
+      if (!isRelationshipActive(context, relationship)) continue;
 
       // Filters travel from the one side into the many side. A bidirectional
       // relationship also carries them back.

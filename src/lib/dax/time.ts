@@ -176,3 +176,104 @@ export const parseYearEnd = (value: string): { month: number; day: number } | nu
 };
 
 export const CALENDAR_YEAR_END = { month: 12, day: 31 };
+
+// ============================================================
+// Week numbering and date differences
+// ============================================================
+
+/** Days since the Unix epoch, which was a Thursday. */
+const epochDay = (iso: string): number | null => {
+  const parts = parseKey(iso);
+  if (!parts) return null;
+  return Math.floor(toUtc(parts).getTime() / MS_PER_DAY);
+};
+
+/** Day of week with Sunday as 0, matching the DAX WEEKNUM default. */
+const sundayIndex = (parts: Parts): number => toUtc(parts).getUTCDay();
+
+/**
+ * Week of the year.
+ *
+ * `returnType` follows DAX: 1 starts weeks on Sunday, 2 on Monday, and both
+ * put 1 January in week 1. 21 is ISO 8601, where the week belongs to whichever
+ * year holds its Thursday - so 29 December 2025 is week 1 of 2026.
+ */
+export const weekNumber = (iso: string, returnType = 1): number | null => {
+  const parts = parseKey(iso);
+  if (!parts) return null;
+
+  if (returnType === 21) {
+    const target = toUtc(parts);
+    const isoDay = target.getUTCDay() || 7;
+    target.setUTCDate(target.getUTCDate() + 4 - isoDay);
+    const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
+    return Math.ceil(((target.getTime() - yearStart.getTime()) / MS_PER_DAY + 1) / 7);
+  }
+
+  if (returnType !== 1 && returnType !== 2) return null;
+
+  const jan1 = { year: parts.year, month: 1, day: 1 };
+  const offset =
+    returnType === 1 ? sundayIndex(jan1) : (sundayIndex(jan1) + 6) % 7;
+  const dayOfYear =
+    Math.floor((toUtc(parts).getTime() - toUtc(jan1).getTime()) / MS_PER_DAY) + 1;
+
+  return Math.floor((dayOfYear - 1 + offset) / 7) + 1;
+};
+
+/**
+ * Count the interval boundaries crossed between two dates.
+ *
+ * This is DAX's definition, and it is not the same as elapsed time: 31
+ * December to 1 January is one YEAR, because one year boundary lies between
+ * them, even though only a day has passed.
+ */
+export const dateDifference = (
+  startIso: string,
+  endIso: string,
+  interval: DateInterval | 'WEEK'
+): number | null => {
+  const start = parseKey(startIso);
+  const end = parseKey(endIso);
+  if (!start || !end) return null;
+
+  switch (interval) {
+    case 'DAY': {
+      const a = epochDay(startIso);
+      const b = epochDay(endIso);
+      return a === null || b === null ? null : b - a;
+    }
+    case 'WEEK': {
+      // Weeks turn over on Sunday, so shift the epoch (a Thursday) by 4.
+      const a = epochDay(startIso);
+      const b = epochDay(endIso);
+      if (a === null || b === null) return null;
+      return Math.floor((b + 4) / 7) - Math.floor((a + 4) / 7);
+    }
+    case 'MONTH':
+      return (end.year - start.year) * 12 + (end.month - start.month);
+    case 'QUARTER':
+      return (
+        (end.year - start.year) * 4 +
+        (Math.ceil(end.month / 3) - Math.ceil(start.month / 3))
+      );
+    case 'YEAR':
+      return end.year - start.year;
+  }
+};
+
+export const parseDifferenceInterval = (
+  value: string
+): DateInterval | 'WEEK' | null => {
+  const upper = value.trim().toUpperCase();
+  if (upper === 'WEEK') return 'WEEK';
+  return parseInterval(upper);
+};
+
+/** The last day of the month `offset` months from `iso`. */
+export const endOfMonth = (iso: string, offset: number): string | null => {
+  const shifted = addMonths(iso, offset);
+  const parts = parseKey(shifted);
+  if (!parts) return null;
+  return makeKey(parts.year, parts.month, daysInMonth(parts.year, parts.month));
+};

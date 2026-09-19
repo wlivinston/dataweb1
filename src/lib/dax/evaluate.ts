@@ -7,6 +7,8 @@ import {
   andRowFilter,
   cellValue,
   createVisibilityCache,
+  isRelationshipActive,
+  withRelationshipSwapped,
   distinctKeysOf,
   emptyFilterContext,
   visibleRows,
@@ -34,9 +36,15 @@ import {
   type DaxTable,
   type DaxValue,
 } from './value';
+import { applyDaxFormat, DaxFormatError } from './format';
 import {
   addDays,
+  addMonths,
+  dateDifference,
+  endOfMonth,
   monthBounds,
+  parseDifferenceInterval,
+  weekNumber,
   parseInterval,
   parseKey,
   parseYearEnd,
@@ -88,11 +96,23 @@ class Evaluator {
   private readonly cache: VisibilityCache = createVisibilityCache();
   private readonly measureStack: string[] = [];
 
+  /**
+   * The filter context this evaluation started from.
+   *
+   * Everything a measure adds with CALCULATE sits on top of this; ALLSELECTED
+   * strips those back off and returns to what the caller asked for. That is
+   * the closest honest equivalent to Power BI's "what the user selected",
+   * which has no meaning without a report around it.
+   */
+  readonly externalFilter: FilterContext;
+
   constructor(
     private readonly model: SemanticModel,
     private readonly source: string,
     private readonly options: EvaluateOptions
-  ) {}
+  ) {
+    this.externalFilter = options.filter ?? emptyFilterContext();
+  }
 
   private fail(node: Expression, message: string): never {
     throw new DaxRuntimeError(message, this.source, node.start, node.length);
@@ -284,7 +304,12 @@ class Evaluator {
 
     // Available through a relationship from the row being iterated.
     for (let i = context.rowContexts.length - 1; i >= 0; i -= 1) {
-      const related = this.followRelationship(context.rowContexts[i], owner, resolved.value.name);
+      const related = this.followRelationship(
+        context.rowContexts[i],
+        owner,
+        resolved.value.name,
+        context.filter
+      );
       if (related !== undefined) return related;
     }
 
@@ -298,11 +323,12 @@ class Evaluator {
   private followRelationship(
     rowContext: { table: string; rowIndex: number },
     targetTable: string,
-    targetColumn: string
+    targetColumn: string,
+    filter: FilterContext
   ): DaxScalar | undefined {
     const relationship = this.model.relationships.find(
       candidate =>
-        candidate.isActive &&
+        isRelationshipActive(filter, candidate) &&
         candidate.from.table.toLowerCase() === rowContext.table.toLowerCase() &&
         candidate.to.table.toLowerCase() === targetTable.toLowerCase()
     );
@@ -1063,6 +1089,66 @@ const resolveCalculateFilter = (
     };
   }
 
+  if (argument.kind === 'call' && argument.name === 'USERELATIONSHIP') {
+    const [first, second] = argument.args;
+    const ends = [first, second].map(end => {
+      if (end === undefined || end.kind !== 'column') {
+        throw evaluator.error(argument, 'USERELATIONSHIP needs two column references.');
+      }
+      const resolved = findColumn(model, end.table ?? undefined, end.column);
+      if (!resolved.ok) throw evaluator.error(end, resolved.error);
+      return resolved.value;
+    });
+
+    const matches = (side: { table: string; column: string }, end: { table: string; name: string }) =>
+      side.table.toLowerCase() === end.table.toLowerCase() &&
+      side.column.toLowerCase() === end.name.toLowerCase();
+
+    const wanted = model.relationships.find(
+      relationship =>
+        (matches(relationship.from, ends[0]) && matches(relationship.to, ends[1])) ||
+        (matches(relationship.from, ends[1]) && matches(relationship.to, ends[0]))
+    );
+    if (!wanted) {
+      throw evaluator.error(
+        argument,
+        `There is no relationship between ${ends[0].table}[${ends[0].name}] and ` +
+          `${ends[1].table}[${ends[1].name}] to activate.`
+      );
+    }
+
+    return {
+      clear: filter => withRelationshipSwapped(filter, wanted, model.relationships),
+      apply: identity,
+    };
+  }
+
+  if (argument.kind === 'call' && argument.name === 'ALLSELECTED') {
+    const target = argument.args[0];
+    if (target === undefined || target.kind !== 'table') {
+      throw evaluator.error(argument, 'ALLSELECTED needs a table name here.');
+    }
+    const external = evaluator.externalFilter;
+    const name = target.name;
+    return {
+      // Put back exactly what the caller asked for on this table, dropping
+      // whatever the surrounding measure added.
+      clear: filter => {
+        let next = withoutTable(filter, name);
+        const columns = external.columns.get(name.toLowerCase());
+        if (columns) {
+          for (const [column, allowed] of columns) {
+            next = withColumnFilter(next, name, column, allowed);
+          }
+        }
+        const rows = external.rows.get(name.toLowerCase());
+        if (rows) next = withRowFilter(next, name, rows);
+        return next;
+      },
+      apply: identity,
+    };
+  }
+
   const simple = asColumnPredicate(evaluator, argument);
   if (simple) {
     return {
@@ -1383,7 +1469,42 @@ const toDateSet = (
   return tableOfDates(dateColumn, datesWithin(dateColumn, { start: period.start, end: last }));
 };
 
-/** The whole period immediately before the one holding the latest date. */
+/**
+ * The whole period immediately before or after the one holding the latest
+ * date in context.
+ *
+ * Stepping one day off the current period's edge and asking which period
+ * that day belongs to handles the awkward cases for free: the period before
+ * January is December of the prior year, and month lengths never enter into
+ * it.
+ */
+const adjacentPeriod = (
+  evaluator: Evaluator,
+  node: FunctionCall,
+  context: EvalContext,
+  scope: Scope | null,
+  interval: DateInterval,
+  direction: -1 | 1,
+  yearEndIndex: number
+): DaxTable => {
+  const dateColumn = dateScope(evaluator, node, 0, context);
+  if (dateColumn.visibleDates.length === 0) return makeTable(dateColumn.table, []);
+
+  const anchor =
+    direction === -1
+      ? dateColumn.visibleDates[dateColumn.visibleDates.length - 1]
+      : dateColumn.visibleDates[dateColumn.visibleDates.length - 1];
+  const yearEnd = yearEndArgument(evaluator, node, yearEndIndex, context, scope);
+  const current = periodBounds(anchor, interval, yearEnd);
+  if (!current) return makeTable(dateColumn.table, []);
+
+  const steppedDay = direction === -1 ? addDays(current.start, -1) : addDays(current.end, 1);
+  const neighbour = periodBounds(steppedDay, interval, yearEnd);
+  if (!neighbour) return makeTable(dateColumn.table, []);
+
+  return tableOfDates(dateColumn, datesWithin(dateColumn, neighbour));
+};
+
 const previousPeriod = (
   evaluator: Evaluator,
   node: FunctionCall,
@@ -1391,21 +1512,23 @@ const previousPeriod = (
   scope: Scope | null,
   interval: DateInterval,
   yearEndIndex: number
-): DaxTable => {
+): DaxTable =>
+  adjacentPeriod(evaluator, node, context, scope, interval, -1, yearEndIndex);
+
+/** The first or last date of the period holding the latest date in context. */
+const periodEdge = (
+  evaluator: Evaluator,
+  node: FunctionCall,
+  context: EvalContext,
+  scope: Scope | null,
+  interval: DateInterval,
+  edge: 'start' | 'end'
+): DaxValue => {
   const dateColumn = dateScope(evaluator, node, 0, context);
-  if (dateColumn.visibleDates.length === 0) return makeTable(dateColumn.table, []);
-
+  if (dateColumn.visibleDates.length === 0) return BLANK;
   const last = dateColumn.visibleDates[dateColumn.visibleDates.length - 1];
-  const yearEnd = yearEndArgument(evaluator, node, yearEndIndex, context, scope);
-  const current = periodBounds(last, interval, yearEnd);
-  if (!current) return makeTable(dateColumn.table, []);
-
-  // Step back one day from the opening to land in the period before it.
-  const priorDay = addDays(current.start, -1);
-  const prior = periodBounds(priorDay, interval, yearEnd);
-  if (!prior) return makeTable(dateColumn.table, []);
-
-  return tableOfDates(dateColumn, datesWithin(dateColumn, prior));
+  const bounds = periodBounds(last, interval, CALENDAR_YEAR_END);
+  return bounds ? bounds[edge] : BLANK;
 };
 
 /** CALCULATE(expression, <date set>, [extra filter]) - the TOTAL* family. */
@@ -1568,7 +1691,400 @@ const TIME_HANDLERS: Record<string, Handler> = {
   },
 };
 
-Object.assign(HANDLERS, TIME_HANDLERS);
+/**
+ * Period edges and the NEXT* family.
+ *
+ * The STARTOF and ENDOF functions return a single date rather than the
+ * one-row table DAX uses, matching FIRSTDATE and LASTDATE here; that is the
+ * form they are almost always wanted in, and it composes with DATESINPERIOD.
+ * The NEXT functions return tables, like the PREVIOUS ones, because they
+ * exist to be used as filters.
+ */
+const PERIOD_HANDLERS: Record<string, Handler> = {
+  STARTOFMONTH: (e, n, c, s) => periodEdge(e, n, c, s, 'MONTH', 'start'),
+  STARTOFQUARTER: (e, n, c, s) => periodEdge(e, n, c, s, 'QUARTER', 'start'),
+  STARTOFYEAR: (e, n, c, s) => periodEdge(e, n, c, s, 'YEAR', 'start'),
+  ENDOFMONTH: (e, n, c, s) => periodEdge(e, n, c, s, 'MONTH', 'end'),
+  ENDOFQUARTER: (e, n, c, s) => periodEdge(e, n, c, s, 'QUARTER', 'end'),
+  ENDOFYEAR: (e, n, c, s) => periodEdge(e, n, c, s, 'YEAR', 'end'),
+
+  NEXTMONTH: (e, n, c, s) => adjacentPeriod(e, n, c, s, 'MONTH', 1, 99),
+  NEXTQUARTER: (e, n, c, s) => adjacentPeriod(e, n, c, s, 'QUARTER', 1, 99),
+  NEXTYEAR: (e, n, c, s) => adjacentPeriod(e, n, c, s, 'YEAR', 1, 1),
+  NEXTDAY: (e, n, c, s) => adjacentPeriod(e, n, c, s, 'DAY', 1, 99),
+  PREVIOUSDAY: (e, n, c, s) => adjacentPeriod(e, n, c, s, 'DAY', -1, 99),
+};
+
+Object.assign(HANDLERS, TIME_HANDLERS, PERIOD_HANDLERS);
+
+// ============================================================
+// Statistics, ranking, lookup and formatting
+// ============================================================
+
+/**
+ * Read an argument that DAX writes as a bare keyword - ASC, DESC, DENSE,
+ * MONTH and so on. The parser can only see those as table references, so
+ * they are unwrapped here rather than evaluated.
+ */
+const keywordArg = (
+  evaluator: Evaluator,
+  node: FunctionCall,
+  index: number,
+  context: EvalContext,
+  scope: Scope | null
+): string => {
+  const argument = node.args[index];
+  if (argument === undefined) return '';
+  if (argument.kind === 'table') return argument.name.toUpperCase();
+  const value = evaluator.evaluate(argument, context, scope);
+  if (typeof value === 'number') return String(value);
+  return toText(value, node.name).toUpperCase();
+};
+
+const sortedNumbers = (values: DaxScalar[]): number[] =>
+  numericValues(values).sort((a, b) => a - b);
+
+/** Excel's PERCENTILE.INC: linear interpolation across (n-1) intervals. */
+const percentileInclusive = (sorted: number[], fraction: number): number => {
+  const position = fraction * (sorted.length - 1);
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] + (position - lower) * (sorted[upper] - sorted[lower]);
+};
+
+const meanOf = (numbers: number[]): number =>
+  numbers.reduce((total, value) => total + value, 0) / numbers.length;
+
+const sumSquaredDeviations = (numbers: number[]): number => {
+  const mean = meanOf(numbers);
+  return numbers.reduce((total, value) => total + (value - mean) ** 2, 0);
+};
+
+const STATISTICAL_HANDLERS: Record<string, Handler> = {
+  MEDIAN: columnAggregate(values => {
+    const sorted = sortedNumbers(values);
+    if (sorted.length === 0) return BLANK;
+    return percentileInclusive(sorted, 0.5);
+  }),
+
+  'PERCENTILE.INC': (evaluator, node, context, scope) => {
+    const reference = evaluator.columnArg(node, 0);
+    const fraction = evaluator.numberArg(node, 1, context, scope);
+    if (fraction < 0 || fraction > 1) {
+      throw evaluator.error(node.args[1], 'PERCENTILE.INC needs a value from 0 to 1.');
+    }
+    const sorted = sortedNumbers(evaluator.columnValues(reference, context));
+    return sorted.length === 0 ? BLANK : percentileInclusive(sorted, fraction);
+  },
+
+  // Population forms divide by n, sample forms by n-1. A sample of one has
+  // no spread to estimate, so it is BLANK rather than zero.
+  'VAR.P': columnAggregate(values => {
+    const numbers = numericValues(values);
+    return numbers.length === 0 ? BLANK : sumSquaredDeviations(numbers) / numbers.length;
+  }),
+
+  'VAR.S': columnAggregate(values => {
+    const numbers = numericValues(values);
+    return numbers.length < 2 ? BLANK : sumSquaredDeviations(numbers) / (numbers.length - 1);
+  }),
+
+  'STDEV.P': columnAggregate(values => {
+    const numbers = numericValues(values);
+    return numbers.length === 0
+      ? BLANK
+      : Math.sqrt(sumSquaredDeviations(numbers) / numbers.length);
+  }),
+
+  'STDEV.S': columnAggregate(values => {
+    const numbers = numericValues(values);
+    return numbers.length < 2
+      ? BLANK
+      : Math.sqrt(sumSquaredDeviations(numbers) / (numbers.length - 1));
+  }),
+
+  CONCATENATEX: (evaluator, node, context, scope) => {
+    const table = evaluator.tableArg(node, 0, context, scope);
+    const delimiter =
+      node.args.length > 2 ? evaluator.textArg(node, 2, context, scope) : '';
+    const parts = evaluator
+      .iterate(table, context, scope, node.args[1])
+      .map(value => toText(value, 'CONCATENATEX'))
+      .filter(text => text.length > 0);
+    return parts.length === 0 ? BLANK : parts.join(delimiter);
+  },
+
+  RANKX: (evaluator, node, context, scope) => {
+    const table = evaluator.tableArg(node, 0, context, scope);
+    const expression = node.args[1];
+
+    const values = evaluator
+      .iterate(table, context, scope, expression)
+      .map(value => expectScalar(value, 'RANKX'))
+      .filter((value): value is Exclude<DaxScalar, null> => value !== null);
+
+    // Without an explicit value, rank whatever the expression gives in the
+    // context we are already in - which inside an iterator is this row.
+    const subject =
+      node.args.length > 2
+        ? expectScalar(evaluator.evaluate(node.args[2], context, scope), 'RANKX')
+        : expectScalar(evaluator.evaluate(expression, context, scope), 'RANKX');
+    if (subject === null) return BLANK;
+
+    const order = keywordArg(evaluator, node, 3, context, scope);
+    // DAX defaults to descending: the largest value ranks first.
+    const ascending = order === 'ASC' || order === 'TRUE' || order === '1';
+    const dense = keywordArg(evaluator, node, 4, context, scope) === 'DENSE';
+
+    let ahead = 0;
+    const distinctAhead = new Set<string>();
+    for (const value of values) {
+      const comparison = compareScalars(value, subject);
+      const beats = ascending ? comparison < 0 : comparison > 0;
+      if (!beats) continue;
+      ahead += 1;
+      distinctAhead.add(String(value).toLowerCase());
+    }
+
+    return (dense ? distinctAhead.size : ahead) + 1;
+  },
+
+  TOPN: (evaluator, node, context, scope) => {
+    const count = evaluator.numberArg(node, 0, context, scope);
+    const table = evaluator.tableArg(node, 1, context, scope);
+    if (count <= 0) return makeTable(table.table, []);
+
+    if (node.args.length < 3) {
+      return makeTable(table.table, table.rows.slice(0, count));
+    }
+
+    const order = keywordArg(evaluator, node, 3, context, scope);
+    const ascending = order === 'ASC' || order === 'TRUE' || order === '1';
+
+    const scored = table.rows.map(rowIndex => ({
+      rowIndex,
+      value: expectScalar(
+        evaluator.evaluate(node.args[2], {
+          filter: context.filter,
+          rowContexts: [...context.rowContexts, { table: table.table, rowIndex }],
+        }, scope),
+        'TOPN'
+      ),
+    }));
+
+    scored.sort((a, b) => {
+      const comparison = compareScalars(a.value, b.value);
+      return ascending ? comparison : -comparison;
+    });
+
+    // DAX keeps every row tied with the last one included, so TOPN can
+    // return more rows than asked for rather than cutting arbitrarily.
+    const cut = Math.min(count, scored.length);
+    let end = cut;
+    while (end < scored.length && compareScalars(scored[end].value, scored[cut - 1].value) === 0) {
+      end += 1;
+    }
+
+    return makeTable(table.table, scored.slice(0, end).map(entry => entry.rowIndex));
+  },
+
+  LOOKUPVALUE: (evaluator, node, context, scope) => {
+    const result = evaluator.columnArg(node, 0);
+    const model = evaluator.semanticModel;
+    const owner = findTable(model, result.table);
+    if (!owner) throw evaluator.error(node.args[0], `There is no table called "${result.table}".`);
+
+    if ((node.args.length - 1) % 2 !== 0) {
+      throw evaluator.error(
+        node,
+        'LOOKUPVALUE needs the search columns and values in pairs, for example ' +
+          'LOOKUPVALUE(Customers[Name], Customers[CustomerID], "C1").'
+      );
+    }
+
+    const pairs: { column: string; value: DaxScalar }[] = [];
+    for (let i = 1; i + 1 < node.args.length; i += 2) {
+      const searchColumn = evaluator.columnArg(node, i);
+      if (searchColumn.table.toLowerCase() !== result.table.toLowerCase()) {
+        throw evaluator.error(
+          node.args[i],
+          `LOOKUPVALUE searches one table at a time. ${searchColumn.table}[${searchColumn.column}] ` +
+            `is not in ${result.table}.`
+        );
+      }
+      pairs.push({
+        column: searchColumn.column,
+        value: evaluator.scalarArg(node, i + 1, context, scope),
+      });
+    }
+
+    // Deliberately scans the whole table: LOOKUPVALUE is a lookup, not an
+    // aggregation, and is not meant to move with the filter context.
+    const found: DaxScalar[] = [];
+    for (let rowIndex = 0; rowIndex < owner.rowCount; rowIndex += 1) {
+      const matches = pairs.every(pair =>
+        valuesEqual(cellValue(model, result.table, pair.column, rowIndex), pair.value)
+      );
+      if (matches) found.push(cellValue(model, result.table, result.column, rowIndex));
+    }
+
+    if (found.length === 0) return BLANK;
+    const distinct = new Set(found.map(value => String(value).toLowerCase()));
+    if (distinct.size > 1) {
+      throw evaluator.error(
+        node,
+        `LOOKUPVALUE found ${distinct.size} different values for ${result.table}[${result.column}]. ` +
+          'Add another search column, or use an aggregation if more than one row is expected.'
+      );
+    }
+    return found[0];
+  },
+
+  SELECTEDVALUE: (evaluator, node, context, scope) => {
+    const reference = evaluator.columnArg(node, 0);
+    const values = evaluator.columnValues(reference, context);
+
+    const distinct = new Map<string, DaxScalar>();
+    for (const value of values) {
+      if (value === null) continue;
+      distinct.set(String(value).toLowerCase(), value);
+    }
+
+    if (distinct.size === 1) return Array.from(distinct.values())[0];
+    return node.args.length > 1 ? evaluator.evaluate(node.args[1], context, scope) : BLANK;
+  },
+
+  CALCULATETABLE: (evaluator, node, context, scope) => {
+    const transitioned = evaluator.transition(context);
+    const filter = applyCalculateFilters(
+      evaluator,
+      node.args.slice(1),
+      transitioned.filter,
+      context,
+      scope
+    );
+    const value = evaluator.evaluate(node.args[0], { filter, rowContexts: [] }, scope);
+    if (!isTable(value)) {
+      throw evaluator.error(node.args[0], 'CALCULATETABLE needs a table expression.');
+    }
+    return value;
+  },
+
+  RELATEDTABLE: (evaluator, node, context) => {
+    const target = node.args[0];
+    if (target.kind !== 'table') {
+      throw evaluator.error(target, 'RELATEDTABLE needs a table name.');
+    }
+    if (context.rowContexts.length === 0) {
+      throw evaluator.error(
+        node,
+        'RELATEDTABLE needs a row to work from. Use it inside an iterator such as SUMX.'
+      );
+    }
+    // Context transition turns the current row into a filter, which then
+    // propagates down the relationship to the rows on the many side.
+    const transitioned = evaluator.transition(context);
+    return makeTable(target.name, evaluator.visibleRowsOf(target.name, transitioned));
+  },
+
+  ALLSELECTED: (evaluator, node, context) => {
+    const target = node.args[0];
+    if (target === undefined || target.kind !== 'table') {
+      throw evaluator.error(
+        node,
+        'ALLSELECTED needs a table name here, for example ALLSELECTED(Sales).'
+      );
+    }
+    return makeTable(
+      target.name,
+      evaluator.visibleRowsOf(target.name, {
+        filter: evaluator.externalFilter,
+        rowContexts: [],
+      })
+    );
+  },
+
+  USERELATIONSHIP: (evaluator, node) => {
+    throw evaluator.error(
+      node,
+      'USERELATIONSHIP only works as a CALCULATE filter, for example ' +
+        'CALCULATE(SUM(Sales[Amount]), USERELATIONSHIP(Sales[ShipDate], Date[Date])).'
+    );
+  },
+
+  FORMAT: (evaluator, node, context, scope) => {
+    const value = evaluator.scalarArg(node, 0, context, scope);
+    if (value === null) return BLANK;
+    const pattern = evaluator.textArg(node, 1, context, scope);
+    try {
+      return applyDaxFormat(value as string | number | boolean, pattern);
+    } catch (error) {
+      if (error instanceof DaxFormatError) throw evaluator.error(node, error.message);
+      throw error;
+    }
+  },
+
+  DATEDIFF: (evaluator, node, context, scope) => {
+    const start = evaluator.scalarArg(node, 0, context, scope);
+    const end = evaluator.scalarArg(node, 1, context, scope);
+    if (start === null || end === null) return BLANK;
+
+    const raw = keywordArg(evaluator, node, 2, context, scope);
+    const interval = parseDifferenceInterval(raw);
+    if (!interval) {
+      throw evaluator.error(
+        node.args[2],
+        `"${raw}" is not an interval. Use DAY, WEEK, MONTH, QUARTER or YEAR.`
+      );
+    }
+
+    const difference = dateDifference(String(start), String(end), interval);
+    if (difference === null) {
+      throw evaluator.error(node, `DATEDIFF cannot read "${String(start)}" and "${String(end)}" as dates.`);
+    }
+    return difference;
+  },
+
+  EDATE: (evaluator, node, context, scope) => {
+    const value = evaluator.scalarArg(node, 0, context, scope);
+    if (value === null) return BLANK;
+    const months = evaluator.numberArg(node, 1, context, scope);
+    if (!parseKey(String(value))) {
+      throw evaluator.error(node.args[0], `EDATE cannot read "${String(value)}" as a date.`);
+    }
+    return addMonths(String(value), months);
+  },
+
+  EOMONTH: (evaluator, node, context, scope) => {
+    const value = evaluator.scalarArg(node, 0, context, scope);
+    if (value === null) return BLANK;
+    const months = evaluator.numberArg(node, 1, context, scope);
+    const result = endOfMonth(String(value), months);
+    if (!result) {
+      throw evaluator.error(node.args[0], `EOMONTH cannot read "${String(value)}" as a date.`);
+    }
+    return result;
+  },
+
+  WEEKNUM: (evaluator, node, context, scope) => {
+    const value = evaluator.scalarArg(node, 0, context, scope);
+    if (value === null) return BLANK;
+    const returnType =
+      node.args.length > 1 ? evaluator.numberArg(node, 1, context, scope) : 1;
+    const week = weekNumber(String(value), returnType);
+    if (week === null) {
+      throw evaluator.error(
+        node,
+        `WEEKNUM cannot compute a week for "${String(value)}" with return type ${returnType}. ` +
+          'Supported return types are 1 (weeks start Sunday), 2 (Monday) and 21 (ISO 8601).'
+      );
+    }
+    return week;
+  },
+};
+
+Object.assign(HANDLERS, STATISTICAL_HANDLERS);
 
 /**
  * Every function the evaluator can actually execute.

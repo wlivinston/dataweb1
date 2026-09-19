@@ -393,7 +393,9 @@ describe('failing loudly', () => {
   });
 
   it('rejects a recognised function that is not implemented, and says so', () => {
-    expect(() => scalar('RANKX(ALL(Sales), SUM(Sales[Amount]))')).toThrow(
+    // Catalogued on purpose: the measure can be saved and exported to Power
+    // BI, and only asking for a number fails.
+    expect(() => scalar('COUNTROWS(SUMMARIZE(Sales, Sales[CustomerID]))')).toThrow(
       /recognised but not implemented yet/
     );
   });
