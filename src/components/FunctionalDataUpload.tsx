@@ -29,6 +29,7 @@ import DataExplorer from './DataExplorer';
 import AnalyticsDashboard from './AnalyticsDashboard';
 import RelationshipBuilder from './RelationshipBuilder';
 import CustomDAXCalculator from './CustomDAXCalculator';
+import MeasureLibraryPanel from './MeasureLibraryPanel';
 import AnalysisInterpretation from './AnalysisInterpretation';
 import DataCleaning from './DataCleaning';
 import ZoomableVisualization from './ZoomableVisualization';
@@ -3192,6 +3193,9 @@ const FunctionalDataUpload: React.FC = () => {
               interpretation={interpretation}
               onSave={setInterpretation}
             />
+
+            {/* Measure Library */}
+            <MeasureLibraryPanel model={semanticModel} />
 
             {/* Custom DAX Calculator */}
             <CustomDAXCalculator
