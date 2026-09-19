@@ -79,6 +79,37 @@ const isUniqueKey = (rows: Record<string, unknown>[], column: string): boolean =
 
 const MAX_DETECTION_ROWS = 5000;
 
+/**
+ * Data-file extensions stripped from a table name.
+ *
+ * Deliberately a fixed list rather than "any trailing dot-suffix": a table
+ * legitimately called `Q1.2024` must keep its year.
+ */
+const FILE_EXTENSIONS = /\.(csv|tsv|txt|json|xlsx|xlsm|xlsb|xls|parquet)(?=$|\s)/gi;
+
+/**
+ * The name of the table, which is not the same thing as the name of the file
+ * it arrived in.
+ *
+ * Power BI names a table after the file's stem: load orders.csv and the
+ * table is `orders`. Carrying the extension through meant every exported
+ * measure said 'orders.csv'[Revenue] against a model where the table is
+ * called orders - mismatched by construction, for every CSV anyone exports.
+ * The dot also forced quoting that the bare stem does not need.
+ *
+ * The dataset keeps its own name for display. "Dataset orders.csv contains 6
+ * rows" is true and worth saying; what was wrong was one string serving as
+ * both the label a person reads and the identifier DAX resolves.
+ */
+const tableNameFor = (datasetName: string | undefined, fallback: string): string => {
+  const trimmed = datasetName?.trim();
+  if (!trimmed) return fallback;
+  // An Excel sheet arrives as `book.xlsx - Sheet1`, so the extension is not
+  // always at the end of the string.
+  const stripped = trimmed.replace(FILE_EXTENSIONS, '').trim();
+  return stripped || trimmed;
+};
+
 const uniqueTableName = (desired: string, taken: Set<string>): string => {
   const lower = desired.toLowerCase();
   if (!taken.has(lower)) return desired;
@@ -404,14 +435,16 @@ export const buildSemanticModel = (
   const prepared: PreparedTable[] = [];
 
   for (const dataset of datasets) {
-    const desired = dataset.name?.trim() || `Table ${prepared.length + 1}`;
+    const desired = tableNameFor(dataset.name, `Table ${prepared.length + 1}`);
     const name = uniqueTableName(desired, takenNames);
     if (name !== desired) {
       warnings.push({
         code: 'duplicate_table_name',
         severity: 'info',
         table: name,
-        message: `Two datasets are called "${desired}". This one is referred to as "${name}".`,
+        // Not "two datasets are called X" any more: orders.csv and
+        // orders.xlsx are different names that become the same table.
+        message: `Two tables would be called "${desired}". This one is referred to as "${name}".`,
       });
     }
     takenNames.add(name.toLowerCase());

@@ -7,6 +7,7 @@ import {
   relationshipsFrom,
 } from '../semantic/model';
 import type { Dataset } from '../types';
+import { columnRef, tableRef } from '../dax/printer';
 
 /** Customers: one row per customer, so CustomerID is a genuine key. */
 const customers = (): Dataset =>
@@ -375,5 +376,68 @@ describe('relationshipsFrom', () => {
     const model = buildSemanticModel([sales(), customers()]);
     const outgoing = relationshipsFrom(model, 'Sales');
     expect(outgoing.some(r => r.to.table === 'Customers')).toBe(false);
+  });
+});
+
+// ============================================================
+// Table names are identifiers, not filenames
+// ============================================================
+
+describe('buildSemanticModel: naming a table after its file', () => {
+  const named = (name: string): Dataset =>
+    makeDataset([{ Amount: 1 }], [{ name: 'Amount', type: 'number' }], {
+      id: `ds-${name}`,
+      name,
+    });
+
+  const tableNames = (...names: string[]): string[] =>
+    buildSemanticModel(names.map(named)).tables.map(table => table.name);
+
+  it('drops the extension, as Power BI does on import', () => {
+    // Load orders.csv into Power BI and the table is called orders. Exporting
+    // 'orders.csv'[Amount] against that model never resolved.
+    expect(tableNames('orders.csv')).toContain('orders');
+  });
+
+  it('drops it from an Excel sheet name too, where it sits mid-string', () => {
+    expect(tableNames('sales.xlsx - Q1')).toContain('sales - Q1');
+  });
+
+  it('handles the other formats the uploader accepts', () => {
+    expect(tableNames('a.json')).toContain('a');
+    expect(tableNames('b.tsv')).toContain('b');
+    expect(tableNames('c.XLSX')).toContain('c');
+  });
+
+  it('leaves a dot that is not a file extension alone', () => {
+    // A quarter, not a filename. Stripping any trailing dot-suffix would
+    // silently rename this table to Q1.
+    expect(tableNames('Q1.2024')).toContain('Q1.2024');
+  });
+
+  it('leaves a name with no extension alone', () => {
+    expect(tableNames('Sales')).toContain('Sales');
+  });
+
+  it('does not strip its way to an empty name', () => {
+    expect(tableNames('.csv')).toContain('.csv');
+  });
+
+  it('still separates two files whose stems now collide', () => {
+    // orders.csv and orders.xlsx are different filenames that become the
+    // same table name. The collision is new, created by the stripping.
+    const model = buildSemanticModel([named('orders.csv'), named('orders.xlsx')]);
+    expect(model.tables.map(table => table.name)).toEqual(['orders', 'orders 2']);
+    const warning = model.warnings.find(w => w.code === 'duplicate_table_name');
+    expect(warning?.message).toContain('Two tables would be called "orders"');
+  });
+
+  it('emits a bare reference for a stripped name, with no quoting', () => {
+    // The point of the exercise: the dot was the only reason this needed
+    // quotes, and quoting is what made the exported text unpasteable.
+    const model = buildSemanticModel([named('orders.csv')]);
+    const table = model.tables.find(t => t.name === 'orders')!;
+    expect(tableRef(table.name)).toBe('orders');
+    expect(columnRef(table.name, 'Amount')).toBe('orders[Amount]');
   });
 });
