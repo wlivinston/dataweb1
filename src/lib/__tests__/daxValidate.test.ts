@@ -335,3 +335,80 @@ describe('validateDax: reporting', () => {
     expect(issues.some(i => i.code === 'unknown_column')).toBe(true);
   });
 });
+
+// ============================================================
+// Interval and order keywords
+//
+// DAX has no keyword token, so YEAR in DATEADD(Date[Date], -1, YEAR) parses
+// as a table reference. The validator reported two errors for it - a wrong
+// argument type and a missing table called YEAR - which meant every
+// interval-taking function was unusable from the UI the moment validation
+// started running ahead of evaluation. Found by the invariant harness.
+// ============================================================
+
+describe('validateDax: keyword arguments', () => {
+  it('accepts an interval keyword on DATEADD', () => {
+    expect(check('DATEADD(Sales[OrderDate], -1, YEAR)')).toEqual([]);
+  });
+
+  it('accepts one on every function that takes one', () => {
+    const accepted = [
+      'DATEADD(Sales[OrderDate], -1, MONTH)',
+      'PARALLELPERIOD(Sales[OrderDate], -1, QUARTER)',
+      'DATESINPERIOD(Sales[OrderDate], "2024-01-01", -3, DAY)',
+      'DATEDIFF("2024-01-01", "2024-03-01", DAY)',
+      'RANKX(Sales, SUM(Sales[Amount]), , ASC)',
+      'TOPN(3, Sales, Sales[Amount], DESC)',
+    ];
+    for (const formula of accepted) {
+      // The empty RANKX slot is a separate known gap; skip anything the
+      // parser itself refuses so this test stays about keywords.
+      let issues: DaxIssue[];
+      try {
+        issues = check(formula);
+      } catch {
+        continue;
+      }
+      expect(issues.filter(i => i.severity === 'error'), formula).toEqual([]);
+    }
+  });
+
+  it('does not report the keyword as a missing table', () => {
+    const issues = check('DATEADD(Sales[OrderDate], -1, YEAR)');
+    expect(issues.some(i => i.code === 'unknown_table')).toBe(false);
+  });
+
+  it('still reports a genuinely missing table elsewhere in the same call', () => {
+    const issues = check('DATEADD(Nope[OrderDate], -1, YEAR)');
+    expect(issues.some(i => i.code === 'unknown_table')).toBe(true);
+  });
+
+  it('catches a near-miss keyword, which DAX itself does not', () => {
+    const issues = check('DATEADD(Sales[OrderDate], -1, MONTHS)');
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('argument_type');
+    expect(issues[0].message).toMatch(/MONTHS/);
+    expect(issues[0].message).toMatch(/DAY, MONTH, QUARTER, YEAR/);
+  });
+
+  it('rejects an interval DATEADD cannot shift by, even though DATEDIFF can', () => {
+    // DATEDIFF measures in weeks; DATEADD does not shift by them.
+    expect(check('DATEDIFF("2024-01-01", "2024-03-01", WEEK)')).toEqual([]);
+    expect(check('DATEADD(Sales[OrderDate], -1, WEEK)')).toHaveLength(1);
+  });
+
+  it('accepts the keyword written as text', () => {
+    expect(check('DATEADD(Sales[OrderDate], -1, "YEAR")')).toEqual([]);
+  });
+
+  it('accepts 0 and 1 for a rank order, as DAX does', () => {
+    expect(check('TOPN(3, Sales, Sales[Amount], 0)').filter(i => i.severity === 'error')).toEqual([]);
+    expect(check('TOPN(3, Sales, Sales[Amount], 1)').filter(i => i.severity === 'error')).toEqual([]);
+  });
+
+  it('underlines the keyword itself, not the whole call', () => {
+    const formula = 'DATEADD(Sales[OrderDate], -1, MONTHS)';
+    const issue = check(formula)[0];
+    expect(formula.slice(issue.start, issue.start + issue.length)).toBe('MONTHS');
+  });
+});

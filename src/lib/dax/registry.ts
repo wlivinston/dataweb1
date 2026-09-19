@@ -28,6 +28,16 @@ export interface DaxParameter {
   name: string;
   type: DaxType;
   optional?: boolean;
+  /**
+   * Bare words accepted in this position, such as YEAR in
+   * DATEADD(Date[Date], -1, YEAR) or ASC in RANKX(..., ASC).
+   *
+   * DAX has no keyword token, so the parser sees these as table references
+   * and the validator would otherwise report both a type error and a missing
+   * table. Listing them here also buys a check DAX itself does not make:
+   * MONTHS instead of MONTH is caught before the measure is saved.
+   */
+  keywords?: string[];
 }
 
 export interface DaxFunctionSignature {
@@ -52,6 +62,16 @@ export interface DaxFunctionSignature {
     | 'info';
   description: string;
 }
+
+/** Units DATEADD, PARALLELPERIOD and DATESINPERIOD shift by. */
+const DATE_INTERVALS = ['DAY', 'MONTH', 'QUARTER', 'YEAR'];
+/** DATEDIFF measures in finer units than the date shifters move by. */
+const DIFFERENCE_INTERVALS = [
+  'SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK', 'MONTH', 'QUARTER', 'YEAR',
+];
+/** DAX accepts the words and the 0/1 forms interchangeably. */
+const RANK_ORDERS = ['ASC', 'DESC', 'TRUE', 'FALSE', '0', '1'];
+const RANK_TIES = ['SKIP', 'DENSE'];
 
 const fn = (
   name: string,
@@ -87,6 +107,13 @@ const scalar = (name: string, optional = false): DaxParameter => ({
   type: 'scalar',
   optional,
 });
+/** A parameter taking one of a fixed set of bare words. */
+const keyword = (name: string, keywords: string[], optional = false): DaxParameter => ({
+  name,
+  type: 'scalar',
+  optional,
+  keywords,
+});
 const any = (name: string, optional = false): DaxParameter => ({
   name,
   type: 'any',
@@ -112,7 +139,7 @@ const SIGNATURES: DaxFunctionSignature[] = [
   fn('MAXX', 'iterator', [table('table'), scalar('expression')], 'scalar', 'The largest result of an expression across rows.', { implemented: true }),
   fn('COUNTX', 'iterator', [table('table'), scalar('expression')], 'scalar', 'Counts non-blank results of an expression across rows.', { implemented: true }),
   fn('CONCATENATEX', 'iterator', [table('table'), scalar('expression'), scalar('delimiter', true)], 'scalar', 'Joins an expression evaluated across rows into one string.', { implemented: true }),
-  fn('RANKX', 'ranking', [table('table'), scalar('expression'), scalar('value', true), scalar('order', true), scalar('ties', true)], 'scalar', 'Ranks each row by an expression.', { implemented: true }),
+  fn('RANKX', 'ranking', [table('table'), scalar('expression'), scalar('value', true), keyword('order', RANK_ORDERS, true), keyword('ties', RANK_TIES, true)], 'scalar', 'Ranks each row by an expression.', { implemented: true }),
 
   // Filter context.
   fn('CALCULATE', 'filter', [scalar('expression'), any('filter', true)], 'scalar', 'Evaluates an expression with the filter context modified.', { variadic: true, implemented: true }),
@@ -127,7 +154,7 @@ const SIGNATURES: DaxFunctionSignature[] = [
   fn('RELATEDTABLE', 'filter', [table('table')], 'table', 'Fetches the related rows from the many side of a relationship.', { implemented: true }),
   fn('LOOKUPVALUE', 'filter', [column('resultColumn'), column('searchColumn'), scalar('searchValue')], 'scalar', 'Looks a value up by matching one or more columns.', { variadic: true, implemented: true }),
   fn('USERELATIONSHIP', 'filter', [column('column1'), column('column2')], 'scalar', 'Activates an inactive relationship for this calculation only.', { implemented: true }),
-  fn('TOPN', 'filter', [scalar('n'), table('table'), scalar('orderBy', true), scalar('order', true)], 'table', 'The first N rows of a table by some ordering.', { variadic: true, implemented: true }),
+  fn('TOPN', 'filter', [scalar('n'), table('table'), scalar('orderBy', true), keyword('order', RANK_ORDERS, true)], 'table', 'The first N rows of a table by some ordering.', { variadic: true, implemented: true }),
   fn('SELECTEDVALUE', 'filter', [column('column'), scalar('alternate', true)], 'scalar', 'The single value in scope, or an alternative when there is more than one.', { implemented: true }),
 
   // Logic.
@@ -186,7 +213,7 @@ const SIGNATURES: DaxFunctionSignature[] = [
   fn('DATE', 'date', [scalar('year'), scalar('month'), scalar('day')], 'scalar', 'Builds a date from its parts.', { implemented: true }),
   fn('EDATE', 'date', [scalar('date'), scalar('months')], 'scalar', 'A date a number of months away.', { implemented: true }),
   fn('EOMONTH', 'date', [scalar('date'), scalar('months')], 'scalar', 'The last day of a month, offset from a date.', { implemented: true }),
-  fn('DATEDIFF', 'date', [scalar('start'), scalar('end'), scalar('interval')], 'scalar', 'The distance between two dates in a chosen unit.', { implemented: true }),
+  fn('DATEDIFF', 'date', [scalar('start'), scalar('end'), keyword('interval', DIFFERENCE_INTERVALS)], 'scalar', 'The distance between two dates in a chosen unit.', { implemented: true }),
 
   // Time intelligence.
   fn('TOTALYTD', 'timeIntelligence', [scalar('expression'), column('dates'), any('filter', true), scalar('yearEnd', true)], 'scalar', 'A running total from the start of the year.', { variadic: true, implemented: true }),
@@ -199,9 +226,9 @@ const SIGNATURES: DaxFunctionSignature[] = [
   fn('PREVIOUSYEAR', 'timeIntelligence', [column('dates'), scalar('yearEnd', true)], 'table', 'All dates in the previous year.', { implemented: true }),
   fn('PREVIOUSQUARTER', 'timeIntelligence', [column('dates')], 'table', 'All dates in the previous quarter.', { implemented: true }),
   fn('PREVIOUSMONTH', 'timeIntelligence', [column('dates')], 'table', 'All dates in the previous month.', { implemented: true }),
-  fn('DATEADD', 'timeIntelligence', [column('dates'), scalar('intervals'), scalar('interval')], 'table', 'Shifts a set of dates forwards or backwards.', { implemented: true }),
-  fn('DATESINPERIOD', 'timeIntelligence', [column('dates'), scalar('startDate'), scalar('intervals'), scalar('interval')], 'table', 'A span of dates from a starting point.', { implemented: true }),
-  fn('PARALLELPERIOD', 'timeIntelligence', [column('dates'), scalar('intervals'), scalar('interval')], 'table', 'A whole period shifted forwards or backwards.', { implemented: true }),
+  fn('DATEADD', 'timeIntelligence', [column('dates'), scalar('intervals'), keyword('interval', DATE_INTERVALS)], 'table', 'Shifts a set of dates forwards or backwards.', { implemented: true }),
+  fn('DATESINPERIOD', 'timeIntelligence', [column('dates'), scalar('startDate'), scalar('intervals'), keyword('interval', DATE_INTERVALS)], 'table', 'A span of dates from a starting point.', { implemented: true }),
+  fn('PARALLELPERIOD', 'timeIntelligence', [column('dates'), scalar('intervals'), keyword('interval', DATE_INTERVALS)], 'table', 'A whole period shifted forwards or backwards.', { implemented: true }),
   fn('FIRSTDATE', 'timeIntelligence', [column('dates')], 'scalar', 'The earliest date in scope.', { implemented: true }),
   fn('LASTDATE', 'timeIntelligence', [column('dates')], 'scalar', 'The latest date in scope.', { implemented: true }),
   fn('STARTOFMONTH', 'timeIntelligence', [column('dates')], 'scalar', 'The first day of the month in scope.', { implemented: true }),

@@ -102,6 +102,26 @@ const describeArityProblem = (
   return null;
 };
 
+/**
+ * Whether this argument sits in a slot that takes a bare word.
+ *
+ * DAX has no keyword token, so YEAR in DATEADD(Date[Date], -1, YEAR) parses
+ * as a table reference. Without this the validator reported two errors for
+ * a perfectly ordinary expression: the wrong argument type, and a missing
+ * table called YEAR.
+ */
+const keywordsFor = (
+  signature: DaxFunctionSignature,
+  index: number
+): string[] | null => signature.parameters[index]?.keywords ?? null;
+
+/** Keywords may also be written as text, as in DATEADD(d, -1, "YEAR"). */
+const keywordTextOf = (argument: Expression): string | null => {
+  if (argument.kind === 'table') return argument.name;
+  if (argument.kind === 'string') return argument.value;
+  return null;
+};
+
 const checkArgumentType = (
   signature: DaxFunctionSignature,
   index: number,
@@ -112,6 +132,26 @@ const checkArgumentType = (
   // Beyond the declared list the function is variadic, so there is no
   // per-position expectation to check against.
   if (!parameter) return;
+
+  const keywords = keywordsFor(signature, index);
+  if (keywords) {
+    const written = keywordTextOf(argument);
+    // Anything else - a number, a column, a nested call - is checked by the
+    // ordinary rules below, because DAX does accept 0 and 1 for an order.
+    if (written !== null) {
+      if (!keywords.some(word => word.toLowerCase() === written.toLowerCase())) {
+        issues.push({
+          code: 'argument_type',
+          severity: 'error',
+          message: `${signature.name} does not understand "${written}" for "${parameter.name}". Expected one of ${keywords.join(', ')}.`,
+          start: argument.start,
+          length: argument.length,
+        });
+      }
+      return;
+    }
+  }
+
   if (parameter.type === 'any') return;
 
   const actual = typeOf(argument);
@@ -160,6 +200,22 @@ export const validateDax = (
   options: ValidateOptions = {}
 ): DaxIssue[] => {
   const issues: DaxIssue[] = [];
+
+  // Collect keyword arguments first, in a pass of their own. The main walk
+  // reaches a bare YEAR through the generic `table` branch, which would
+  // report it as a missing table; a separate pass means that cannot depend
+  // on whether the walk happens to reach parents before children.
+  const keywordNodes = new Set<Expression>();
+  visit(expression, node => {
+    if (node.kind !== 'call') return;
+    const signature = lookupFunction(node.name);
+    if (!signature) return;
+    node.args.forEach((argument, index) => {
+      if (argument.kind === 'table' && signature.parameters[index]?.keywords) {
+        keywordNodes.add(argument);
+      }
+    });
+  });
 
   visit(expression, node => {
     switch (node.kind) {
@@ -253,6 +309,8 @@ export const validateDax = (
       }
 
       case 'table': {
+        // A bare word in a keyword slot is not a table reference at all.
+        if (keywordNodes.has(node)) return;
         if (!findTable(model, node.name)) {
           const names = model.tables.map(t => t.name).join(', ');
           issues.push({
