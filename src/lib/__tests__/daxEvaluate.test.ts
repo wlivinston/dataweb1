@@ -519,27 +519,29 @@ describe('CALCULATE filters with a computed right-hand side', () => {
     ).toThrow();
   });
 
-  it('keeps refusing inside an iterator, where a row context does exist', () => {
-    // UNVERIFIED against Power BI, and on the parity sheet as
-    // `filter-rhs-row-context`.
+  it('resolves the right side against the iterated row, as Power BI does', () => {
+    // VERIFIED against Power BI 2026-09-19, parity case
+    // `filter-rhs-row-context`. Power BI returns the grand total, which is
+    // only possible if the right-hand side sees the iterated row.
     //
-    // The right-hand side is `Sales[Amount] * 1` rather than a bare column
-    // on purpose: a bare column is rejected up front, so it could never
-    // distinguish reading the value with the row context from reading it
-    // without. Only a computed expression reaches the evaluation and shows
-    // the difference.
-    //
-    // Inside SUMX there IS a row context. This engine deliberately does not
-    // use it here - the right side is read once, outside the scan. DAX may
-    // well resolve it against the iterated row instead, in which case Power
-    // BI returns a number where this refuses. Refusing is the safe
-    // direction, and pinning it means the reading can only change
-    // deliberately.
-    expect(() =>
+    // This engine refused the expression until then, reading the right side
+    // with no row context. The refusal was safe - loud rather than wrong -
+    // but it was wrong about DAX, and it would have rejected perfectly
+    // ordinary measures.
+    const total = evaluateDax('SUM(Sales[Amount])', model());
+    expect(
       evaluateDax(
         'SUMX(Sales, CALCULATE(SUM(Sales[Amount]), Sales[Amount] = Sales[Amount] * 1))',
         model()
       )
+    ).toBe(total);
+  });
+
+  it('still has no row to read from at the top level', () => {
+    // The row context only exists inside an iterator. Outside one, a bare
+    // column on the right must still fail rather than pick a row.
+    expect(() =>
+      evaluateDax('CALCULATE(SUM(Sales[Amount]), Sales[Note] = Sales[CustomerID])', model())
     ).toThrow();
   });
 
@@ -558,5 +560,67 @@ describe('CALCULATE filters with a computed right-hand side', () => {
 
   it('still refuses a filter it genuinely cannot express', () => {
     expect(() => evaluateDax('CALCULATE(SUM(Sales[Amount]), 1 + 1)', model())).toThrow();
+  });
+});
+
+// ============================================================
+// Blanks inside a column filter
+//
+// Filters are held as sets of lower-cased key strings, and a blank has no
+// key - so a blank cell could never SATISFY a filter, whatever the filter
+// said. CALCULATE(..., Sales[Region] <> "North") silently dropped every row
+// with no region, because BLANK <> "North" is TRUE in DAX but the row had
+// nothing to match on. Power BI answers 4000 on the parity fixture; this
+// engine answered 3800 until 2026-09-19.
+// ============================================================
+
+describe('blanks in a column filter', () => {
+  const withBlanks = () =>
+    buildSemanticModel([
+      makeDataset(
+        [
+          { OrderID: 'A', Region: 'North', Amount: 100 },
+          { OrderID: 'B', Region: 'South', Amount: 200 },
+          { OrderID: 'C', Region: null, Amount: 400 },
+          // A region whose text is literally the sentinel's wording. If the
+          // sentinel could collide with a real value, this row and row C
+          // would become indistinguishable.
+          { OrderID: 'D', Region: '(blank)', Amount: 800 },
+        ],
+        [
+          { name: 'OrderID', type: 'string' },
+          { name: 'Region', type: 'string' },
+          { name: 'Amount', type: 'number' },
+        ],
+        { id: 'ds-blanks', name: 'Sales' }
+      ),
+    ]);
+
+  const at = (formula: string) => evaluateDax(formula, withBlanks());
+
+  it('includes a blank in <>, because BLANK is not the compared text', () => {
+    // 200 + 400 + 800: everything that is not North, blanks included.
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[Region] <> "North")')).toBe(1400);
+  });
+
+  it('excludes a blank from an equality against text', () => {
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[Region] = "North")')).toBe(100);
+  });
+
+  it('matches a blank against the empty string, as DAX does', () => {
+    // BLANK = "" is TRUE, which is the same rule that makes BLANK() = 0 true.
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[Region] = "")')).toBe(400);
+  });
+
+  it('does not confuse a genuine blank with a cell reading "(blank)"', () => {
+    // The sentinel standing for a blank carries surrounding spaces that keyOf
+    // trims away, so no real value can produce it. Without that, these two
+    // rows would be the same value and both of these would return 1200.
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[Region] = "(blank)")')).toBe(800);
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[Region] = "")')).toBe(400);
+  });
+
+  it('keeps blanks out of a filter that names other values', () => {
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[Region] IN {"North", "South"})')).toBe(300);
   });
 });

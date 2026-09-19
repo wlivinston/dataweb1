@@ -232,6 +232,22 @@ const allRowIndices = (table: SemanticTable): number[] =>
  * filter on a region dimension reaches the fact table through the customer
  * dimension between them.
  */
+/**
+ * Stands for a blank value inside a column filter's allowed set.
+ *
+ * Filters are held as sets of `keyOf` strings, and keyOf returns null for a
+ * blank - so before this existed, a blank cell could never satisfy a filter
+ * no matter what the filter said. CALCULATE(..., Sales[Region] <> "North")
+ * quietly dropped every row with no region, because BLANK <> "North" is TRUE
+ * in DAX but the row had no key to match on. Power BI returns 4000 for the
+ * parity fixture; this engine returned 3800.
+ *
+ * The surrounding spaces are what make it safe: keyOf trims, so no real
+ * value can ever produce a key with leading or trailing whitespace, and the
+ * sentinel cannot collide with a cell that literally reads "(blank)".
+ */
+export const BLANK_KEY = ' (blank) ';
+
 export const visibleRows = (
   model: SemanticModel,
   tableName: string,
@@ -265,7 +281,9 @@ export const visibleRows = (
         if (!actual) continue;
         rows = rows.filter(index => {
           const cellKey = keyOf(table.rows[index][actual.name]);
-          return cellKey !== null && allowed.has(cellKey);
+          // A blank is a value a filter can legitimately admit, so it is
+          // matched through the sentinel rather than discarded.
+          return allowed.has(cellKey === null ? BLANK_KEY : cellKey);
         });
       }
     }

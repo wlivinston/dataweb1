@@ -5,6 +5,7 @@ import { lookupFunction, maxArity, minArity, formatSignature } from './registry'
 import {
   andColumnFilter,
   andRowFilter,
+  BLANK_KEY,
   cellValue,
   createVisibilityCache,
   isRelationshipActive,
@@ -1233,19 +1234,19 @@ const asColumnPredicate = (
   const constantOf = (node: Expression): DaxScalar | undefined => {
     if (node.kind === 'number' || node.kind === 'string') return node.value;
     if (node.kind === 'boolean') return node.value;
-    // A bare column has no row to read from here, by design. A measure does
-    // not need one, and comparing against one - Sales[Amount] > [Average
-    // Order] - is ordinary DAX, so it is allowed through to be evaluated.
-    //
-    // Redundant while the evaluation below runs without a row context: a
-    // bare column would throw there and be caught anyway. It stays because
-    // it states the intent, and because it becomes load-bearing the moment
-    // anyone passes `outer` through instead. No test can distinguish it
-    // today, so this note is the only record of that.
-    if (node.kind === 'column') return undefined;
-
     try {
-      const value = evaluator.evaluate(node, { filter: outer.filter, rowContexts: [] }, scope);
+      // Evaluated in the context SURROUNDING the CALCULATE, row context and
+      // all. Power BI answers
+      //   SUMX(Sales, CALCULATE(SUM(Sales[Amount]), Sales[Amount] = Sales[Amount] * 1))
+      // with the grand total, which is only possible if the right-hand side
+      // resolves against the iterated row. This engine read it with no row
+      // context until 2026-09-19 and refused the expression outright; the
+      // refusal was safe but wrong, and Power BI settled it.
+      //
+      // At the top level there is no row context, so a bare column still
+      // throws here and is caught below - it cannot silently resolve against
+      // an arbitrary row.
+      const value = evaluator.evaluate(node, outer, scope);
       return isTable(value) ? undefined : value;
     } catch {
       return undefined;
@@ -1263,7 +1264,9 @@ const asColumnPredicate = (
       const value = cellValue(model, table, column, index);
       if (!keep(value)) continue;
       const key = keyOf(owner.rows[index][column]);
-      if (key !== null) allowed.add(key);
+      // Blanks pass predicates like <> "North" - BLANK compares as the empty
+      // string - so they have to be admissible, not silently dropped.
+      allowed.add(key === null ? BLANK_KEY : key);
     }
     return allowed;
   };

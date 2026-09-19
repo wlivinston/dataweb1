@@ -84,6 +84,15 @@ const engineAnswer = (entry: ParityCase): string => {
   return outcome.value === null ? 'BLANK' : formatDaxValue(outcome.value);
 };
 
+/**
+ * How an infinity was spelled, which is a rendering choice rather than a
+ * disagreement. Power BI's FORMAT wrote "inf"; this engine writes the symbol.
+ */
+const INFINITIES = new Set(['∞', 'INF', 'INFINITY', '+∞']);
+
+const isInfinity = (text: string): boolean =>
+  INFINITIES.has(text.trim().toUpperCase());
+
 /** Compare loosely enough that 447.06 and 447.0588 agree. */
 const agrees = (engine: string, expected: number | string): boolean => {
   if (typeof expected === 'number') {
@@ -92,6 +101,7 @@ const agrees = (engine: string, expected: number | string): boolean => {
     const tolerance = Math.max(Math.abs(expected) * 1e-6, 1e-6);
     return Math.abs(parsed - expected) <= tolerance;
   }
+  if (isInfinity(expected) && isInfinity(engine)) return true;
   return engine.trim().toUpperCase().startsWith(expected.trim().toUpperCase());
 };
 
