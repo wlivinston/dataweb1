@@ -52,7 +52,6 @@ import { detectSchema, detectDateTables } from '@/lib/smartDataConnector';
 import { SchemaDetectionResult, TimeSeriesResult, DateTableInfo } from '@/lib/types';
 import { autoDetectTimeSeries, detectDateColumns } from '@/lib/timeSeriesEngine';
 import { autoAdvancedAnalysis } from '@/lib/advancedStatistics';
-import { generateEnhancedKPIs } from '@/lib/kpiFormulaEngine';
 import { assertExcelBufferIsSafe, assertWorkbookHasNoMacros } from '@/lib/excelSecurity';
 import {
   isDatasetTooLarge,

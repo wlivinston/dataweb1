@@ -611,7 +611,25 @@ export const executeQuery = (query: string, dataset: Dataset): QueryResult => {
     
     // ============================================================
     // Phase B7: Time Intelligence Queries
+    //
+    // Each of these returns null when the date column cannot be read with
+    // confidence - ambiguous day/month ordering, or mixed formats. Saying so
+    // is the whole point: a figure that is a month out looks entirely
+    // plausible, so there is nothing to notice and nothing to correct.
     // ============================================================
+
+    const unreadableDates = (interpretation: string, column: string): QueryResult => ({
+      success: false,
+      query: originalQuery,
+      interpretation,
+      result: null,
+      resultType: 'text',
+      explanation:
+        `I can't answer that reliably: the dates in "${column}" can be read more than one ` +
+        `way (for example 03/04 as 3 April or 4 March), so any period total could be a ` +
+        `month out. Set an explicit date format for that column and ask again.`,
+      confidence: 0,
+    });
 
     // Year-to-Date query
     match = query.match(QUERY_PATTERNS.ytd);
@@ -620,6 +638,9 @@ export const executeQuery = (query: string, dataset: Dataset): QueryResult => {
       const dateCol = dataset.columns.find(c => c.type === 'date');
       if (column && column.type === 'number' && dateCol) {
         const ytdValue = calculateTotalYTD(dataset, column.name, dateCol.name);
+        if (ytdValue === null) {
+          return unreadableDates(`Year-to-date total of ${column.name}`, dateCol.name);
+        }
         return {
           success: true,
           query: originalQuery,
@@ -640,6 +661,9 @@ export const executeQuery = (query: string, dataset: Dataset): QueryResult => {
       const dateCol = dataset.columns.find(c => c.type === 'date');
       if (column && column.type === 'number' && dateCol) {
         const yoyResult = calculateYoYChange(dataset, column.name, dateCol.name);
+        if (yoyResult === null) {
+          return unreadableDates(`Year-over-year change in ${column.name}`, dateCol.name);
+        }
         const direction = yoyResult.percentage >= 0 ? 'increase' : 'decrease';
         return {
           success: true,
@@ -660,6 +684,9 @@ export const executeQuery = (query: string, dataset: Dataset): QueryResult => {
       const dateCol = dataset.columns.find(c => c.type === 'date');
       if (column && column.type === 'number' && dateCol) {
         const qoqResult = calculateQoQChange(dataset, column.name, dateCol.name);
+        if (qoqResult === null) {
+          return unreadableDates(`Quarter-over-quarter change in ${column.name}`, dateCol.name);
+        }
         const direction = qoqResult.percentage >= 0 ? 'increase' : 'decrease';
         return {
           success: true,
@@ -680,6 +707,9 @@ export const executeQuery = (query: string, dataset: Dataset): QueryResult => {
       const dateCol = dataset.columns.find(c => c.type === 'date');
       if (column && column.type === 'number' && dateCol) {
         const momResult = calculateMoMChange(dataset, column.name, dateCol.name);
+        if (momResult === null) {
+          return unreadableDates(`Month-over-month change in ${column.name}`, dateCol.name);
+        }
         const direction = momResult.percentage >= 0 ? 'increase' : 'decrease';
         return {
           success: true,
