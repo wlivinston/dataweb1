@@ -25,6 +25,8 @@ import type { SemanticModel } from '../semantic/types';
  */
 
 export type DaxIssueCode =
+  /** The expression could not be parsed at all. */
+  | 'syntax'
   | 'unknown_function'
   | 'arity'
   | 'argument_type'

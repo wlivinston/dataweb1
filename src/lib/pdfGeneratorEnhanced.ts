@@ -6,6 +6,9 @@ import autoTable from 'jspdf-autotable';
 import html2canvas from 'html2canvas';
 import { Visualization, Dataset, AIInsightSummary } from './types';
 import { RENDERING_LIMITS } from './dataOptimization';
+import type { DaxScalar } from './dax/value';
+import { describeCalculationOutcome } from './dax/run';
+
 
 export interface EnhancedPDFExportData {
   datasets: Array<{
@@ -23,7 +26,11 @@ export interface EnhancedPDFExportData {
   daxCalculations: Array<{
     name: string;
     formula: string;
-    result?: any;
+    result?: DaxScalar;
+    /** Why the calculation produced no value. */
+    error?: string;
+    /** True once evaluation was attempted, whatever the outcome. */
+    evaluated?: boolean;
   }>;
   relationships?: Array<{
     from: string;
@@ -896,9 +903,7 @@ export const generateEnhancedPDF = async (
     const calcData = data.daxCalculations.map(calc => [
       calc.name,
       calc.formula,
-      calc.result !== undefined && calc.result !== null 
-        ? String(calc.result) 
-        : 'Not executed'
+      describeCalculationOutcome(calc)
     ]);
 
     autoTable(doc, {

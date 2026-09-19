@@ -146,3 +146,17 @@ export const printDax = (node: Expression): string => {
     }
   }
 };
+
+/**
+ * Build a column reference that is guaranteed to parse back.
+ *
+ * Anything assembling DAX text has to quote table names and escape brackets
+ * exactly as the printer does, so the rules live in one place. A column
+ * called `Margin [%]` or a table called `Q1'24` breaks naive concatenation,
+ * and the UI generates references from user data where both are possible.
+ */
+export const columnRef = (table: string, column: string): string =>
+  `${formatTableName(table)}${formatBracketName(column)}`;
+
+/** Build a table reference that is guaranteed to parse back. */
+export const tableRef = (table: string): string => formatTableName(table);

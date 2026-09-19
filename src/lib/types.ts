@@ -1,6 +1,8 @@
 // Shared types for the analytics platform
 // This file centralizes all data-related types to avoid duplication
 
+import type { DaxScalar } from './dax/value';
+
 export type DataType = 'string' | 'number' | 'date' | 'boolean';
 
 export interface ColumnInfo {
@@ -55,7 +57,17 @@ export interface DAXCalculation {
   category: 'aggregation' | 'time' | 'statistical' | 'text' | 'logical';
   applicable: boolean;
   confidence: number;
-  result?: any;
+  /**
+   * The value, once evaluated. `null` is a genuine DAX BLANK, which is why
+   * `evaluated` exists separately: "not run yet" and "ran and came back
+   * empty" are different answers and the UI must not merge them.
+   */
+  result?: DaxScalar;
+  /** Why evaluation failed. Mutually exclusive with a usable `result`. */
+  error?: string;
+  /** Caret-underlined rendering of `error`, when a position is known. */
+  errorDetail?: string | null;
+  evaluated?: boolean;
 }
 
 export interface Visualization {
