@@ -3,6 +3,7 @@ import { evaluateDax, evaluateScalar } from '../dax/evaluate';
 import { buildSemanticModel } from '../semantic/model';
 import { makeDataset } from './fixtures';
 import { isTable, type DaxValue } from '../dax/value';
+import { DaxError } from '../dax/errors';
 import type { SemanticMeasure, SemanticModel } from '../semantic/types';
 import type { Dataset } from '../types';
 
@@ -448,5 +449,114 @@ describe('table values', () => {
   it('returns every row from ALL, ignoring filters', () => {
     const value = evaluate('CALCULATE(COUNTROWS(ALL(Sales)), Sales[Amount] > 300)');
     expect(value).toBe(4);
+  });
+});
+
+// ============================================================
+// Computed values on the right of a CALCULATE filter
+//
+// The predicate reader accepted only a literal on the right, so
+// CALCULATE(x, Date[Year] = YEAR(TODAY())) was disqualified as a filter and
+// fell through to being evaluated as a scalar - where a bare column has no
+// row to read from, and failed with an error about wrapping it in SUM.
+// Every year-on-year measure is written that way. Found while building the
+// Power BI parity sheet, because seven of its cases could not be run.
+// ============================================================
+
+describe('CALCULATE filters with a computed right-hand side', () => {
+  // Deliberately the file's shared model, not a fresh one - it is the model
+  // that carries the measures these tests compare against.
+  const at = (formula: string, today?: Date) =>
+    evaluateDax(formula, model(), today ? { today } : {});
+
+  it('accepts an arithmetic expression', () => {
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[Amount] > 50 * 2)')).toBe(
+      evaluateDax('CALCULATE(SUM(Sales[Amount]), Sales[Amount] > 100)', model())
+    );
+  });
+
+  it('accepts a function call, such as DATE', () => {
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[OrderDate] = DATE(2024, 1, 15))')).toBe(
+      evaluateDax('CALCULATE(SUM(Sales[Amount]), Sales[OrderDate] = "2024-01-15")', model())
+    );
+  });
+
+  it('accepts TODAY, evaluated once against the fixed clock', () => {
+    const fixed = new Date(Date.UTC(2024, 0, 15));
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[OrderDate] = TODAY())', fixed)).toBe(
+      evaluateDax('CALCULATE(SUM(Sales[Amount]), Sales[OrderDate] = "2024-01-15")', model())
+    );
+  });
+
+  it('accepts an aggregation over the outer context', () => {
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[Amount] = MAX(Sales[Amount]))')).toBe(
+      evaluateDax('MAX(Sales[Amount])', model())
+    );
+  });
+
+  it('accepts computed values in an IN list', () => {
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[Amount] IN {50 * 2, 250})')).toBe(
+      evaluateDax('CALCULATE(SUM(Sales[Amount]), Sales[Amount] IN {100, 250})', model())
+    );
+  });
+
+  it('accepts a measure on the right', () => {
+    // A measure needs no row context, and comparing against one is ordinary
+    // DAX. Only a bare column is excluded.
+    const average = evaluateDax('[Average Order]', model()) as number;
+    expect(at('CALCULATE(SUM(Sales[Amount]), Sales[Amount] > [Average Order])')).toBe(
+      evaluateDax(`CALCULATE(SUM(Sales[Amount]), Sales[Amount] > ${average})`, model())
+    );
+  });
+
+  it('evaluates the right side with no row context, so a bare column still fails', () => {
+    // Sales[CustomerID] on the right has no row to read from, so this errors
+    // rather than silently resolving to some arbitrary row's value. Both
+    // columns exist - an earlier version of this test named one that did
+    // not, so it passed on a missing-column error and pinned nothing.
+    expect(() =>
+      evaluateDax('CALCULATE(SUM(Sales[Amount]), Sales[Note] = Sales[CustomerID])', model())
+    ).toThrow();
+  });
+
+  it('keeps refusing inside an iterator, where a row context does exist', () => {
+    // UNVERIFIED against Power BI, and on the parity sheet as
+    // `filter-rhs-row-context`.
+    //
+    // The right-hand side is `Sales[Amount] * 1` rather than a bare column
+    // on purpose: a bare column is rejected up front, so it could never
+    // distinguish reading the value with the row context from reading it
+    // without. Only a computed expression reaches the evaluation and shows
+    // the difference.
+    //
+    // Inside SUMX there IS a row context. This engine deliberately does not
+    // use it here - the right side is read once, outside the scan. DAX may
+    // well resolve it against the iterated row instead, in which case Power
+    // BI returns a number where this refuses. Refusing is the safe
+    // direction, and pinning it means the reading can only change
+    // deliberately.
+    expect(() =>
+      evaluateDax(
+        'SUMX(Sales, CALCULATE(SUM(Sales[Amount]), Sales[Amount] = Sales[Amount] * 1))',
+        model()
+      )
+    ).toThrow();
+  });
+
+  it('reports a table on the right as a DAX error, not a raw crash', () => {
+    // Without the table check the value flows into the key scan and blows up
+    // inside a string helper, surfacing as "value.trim is not a function" -
+    // an engine defect leaking through where a DAX message belongs.
+    let caught: unknown;
+    try {
+      evaluateDax('CALCULATE(SUM(Sales[Amount]), Sales[Note] = ALL(Sales))', model());
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(DaxError);
+  });
+
+  it('still refuses a filter it genuinely cannot express', () => {
+    expect(() => evaluateDax('CALCULATE(SUM(Sales[Amount]), 1 + 1)', model())).toThrow();
   });
 });

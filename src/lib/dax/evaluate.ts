@@ -1149,7 +1149,7 @@ const resolveCalculateFilter = (
     };
   }
 
-  const simple = asColumnPredicate(evaluator, argument);
+  const simple = asColumnPredicate(evaluator, argument, outer, scope);
   if (simple) {
     return {
       clear: filter => withoutColumn(filter, simple.table, simple.column),
@@ -1200,7 +1200,9 @@ const applyCalculateFilters = (
  */
 const asColumnPredicate = (
   evaluator: Evaluator,
-  argument: Expression
+  argument: Expression,
+  outer: EvalContext,
+  scope: Scope | null
 ): { table: string; column: string; allowed: Set<string> } | null => {
   const model = evaluator.semanticModel;
 
@@ -1210,10 +1212,44 @@ const asColumnPredicate = (
     return resolved.ok ? resolved.value : null;
   };
 
-  const literalOf = (node: Expression): DaxScalar | undefined => {
+  /**
+   * The value on the right of a comparison, evaluated once.
+   *
+   * It used to accept only a literal, which quietly disqualified the whole
+   * predicate and sent CALCULATE(x, Date[Year] = YEAR(TODAY())) down the
+   * path that treats the comparison as a scalar - where a bare column has
+   * no row to read from, so it failed with a misleading error. Every
+   * year-on-year measure is written that way.
+   *
+   * DAX evaluates this side once, outside the row-by-row scan, in the
+   * context surrounding the CALCULATE. So that is what happens here: no row
+   * context, so a bare column reference still fails rather than silently
+   * picking a row.
+   *
+   * Returning undefined means "not a constant I can use", and the caller
+   * falls back to evaluating the whole argument - which raises the real
+   * error rather than a filter that was quietly dropped.
+   */
+  const constantOf = (node: Expression): DaxScalar | undefined => {
     if (node.kind === 'number' || node.kind === 'string') return node.value;
     if (node.kind === 'boolean') return node.value;
-    return undefined;
+    // A bare column has no row to read from here, by design. A measure does
+    // not need one, and comparing against one - Sales[Amount] > [Average
+    // Order] - is ordinary DAX, so it is allowed through to be evaluated.
+    //
+    // Redundant while the evaluation below runs without a row context: a
+    // bare column would throw there and be caught anyway. It stays because
+    // it states the intent, and because it becomes load-bearing the moment
+    // anyone passes `outer` through instead. No test can distinguish it
+    // today, so this note is the only record of that.
+    if (node.kind === 'column') return undefined;
+
+    try {
+      const value = evaluator.evaluate(node, { filter: outer.filter, rowContexts: [] }, scope);
+      return isTable(value) ? undefined : value;
+    } catch {
+      return undefined;
+    }
   };
 
   const allKeysWhere = (
@@ -1236,8 +1272,8 @@ const asColumnPredicate = (
     const operator = argument.operator;
 
     if (operator === '&&') {
-      const left = asColumnPredicate(evaluator, argument.left);
-      const right = asColumnPredicate(evaluator, argument.right);
+      const left = asColumnPredicate(evaluator, argument.left, outer, scope);
+      const right = asColumnPredicate(evaluator, argument.right, outer, scope);
       if (
         left &&
         right &&
@@ -1251,7 +1287,7 @@ const asColumnPredicate = (
     }
 
     const column = resolveColumn(argument.left);
-    const literal = literalOf(argument.right);
+    const literal = constantOf(argument.right);
     if (!column || literal === undefined) return null;
 
     const comparators: Record<string, (order: number) => boolean> = {
@@ -1277,7 +1313,7 @@ const asColumnPredicate = (
   if (argument.kind === 'in' && !argument.negated) {
     const column = resolveColumn(argument.value);
     if (!column) return null;
-    const literals = argument.candidates.map(literalOf);
+    const literals = argument.candidates.map(constantOf);
     if (literals.some(value => value === undefined)) return null;
     return {
       table: column.table,
