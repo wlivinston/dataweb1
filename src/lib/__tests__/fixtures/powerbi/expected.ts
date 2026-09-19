@@ -38,6 +38,11 @@ export interface ParityCase {
    * tested, not a gap in the sheet.
    */
   engineRefuses?: true;
+  /**
+   * The expression yields text rather than a number, so the generated Power
+   * BI script must not push it through FORMAT.
+   */
+  returnsText?: true;
   /** Anything worth recording about how it behaved. */
   note?: string;
 }
@@ -104,6 +109,7 @@ export const PARITY_CASES: ParityCase[] = [
     id: 'blank-equals-zero',
     probes: 'BLANK() = 0 is TRUE in DAX, which surprises everyone. Confirming I kept it.',
     dax: 'IF(BLANK() = 0, "YES", "NO")',
+    returnsText: true,
     expected: null,
   },
   {

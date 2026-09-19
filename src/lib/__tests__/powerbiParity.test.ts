@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { buildSemanticModel } from '../semantic/model';
 import { runDax, formatDaxValue } from '../dax/run';
 import { PARITY_CASES, pendingCount, type ParityCase } from './fixtures/powerbi/expected';
+import { buildPowerBiScript } from './fixtures/powerbi/script';
 import type { ColumnInfo, Dataset } from '../types';
 
 /**
@@ -111,6 +112,25 @@ describe('parity fixture', () => {
     const sales = model.tables.find(t => t.name === 'Sales')!;
     expect(sales.rows.some(row => row.Region === null)).toBe(true);
     expect(sales.rows.some(row => row.Amount === null)).toBe(true);
+  });
+
+  it('keeps the generated Power BI script in step with the cases', () => {
+    // The .dax file is what someone pastes into Power BI. If it drifts from
+    // the expressions the comparison below runs, the answers come back
+    // against different questions and the whole sheet is quietly worthless.
+    const committed = readFileSync(join(FIXTURE_DIR, 'powerbi-script.dax'), 'utf8');
+    const normalised = committed.split('\r\n').join('\n');
+    expect(normalised).toBe(buildPowerBiScript());
+  });
+
+  it('pushes only numeric cases through FORMAT in that script', () => {
+    // FORMAT on text errors, which IFERROR would turn into "ERROR" - an
+    // answer that looks like a Power BI refusal but is really a bug here.
+    const script = buildPowerBiScript();
+    for (const entry of PARITY_CASES.filter(c => c.returnsText)) {
+      const line = script.split('\n').find(l => l.includes(entry.id))!;
+      expect(line, entry.id).not.toContain('FORMAT(');
+    }
   });
 
   it('gives every case a unique id and a non-empty expression', () => {
