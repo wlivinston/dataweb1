@@ -1,10 +1,9 @@
+MeasureResults =
 // Paste into Power BI Desktop: Modeling > New table.
 // Needs the Orders table from orders.csv, joined to Date, and a Year
 // column on Date. See README.md.
 //
 // Generated from the measure library - 18 measures.
-
-MeasureResults =
 UNION(
     ROW("Measure", "01 average-unit-price", "Answer", IFERROR(IF(ISBLANK(DIVIDE(SUM(Orders[Revenue]), SUM(Orders[Quantity]))), "BLANK", FORMAT(DIVIDE(SUM(Orders[Revenue]), SUM(Orders[Quantity])), "0.##########")), "ERROR")),
     ROW("Measure", "02 gross-profit", "Answer", IFERROR(IF(ISBLANK(SUM(Orders[Revenue]) - SUM(Orders[Cost])), "BLANK", FORMAT(SUM(Orders[Revenue]) - SUM(Orders[Cost]), "0.##########")), "ERROR")),

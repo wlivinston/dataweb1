@@ -68,6 +68,15 @@ describe('measure parity fixture', () => {
     expect(broken).toEqual([]);
   });
 
+  it('names the table on the first line, before any comment', () => {
+    // Power BI's New Table box reads everything up to the first `=` as the
+    // table name, so a comment header above the assignment silently becomes
+    // part of the name. This models that reading rather than trusting DAX's,
+    // because DAX accepts both and only Power BI cares.
+    const script = buildMeasureScript(measures);
+    expect(script.slice(0, script.indexOf('=')).trim()).toBe('MeasureResults');
+  });
+
   it('keeps the generated script in step with the measures it claims to run', () => {
     const committed = readFileSync(join(FIXTURE_DIR, 'measures-script.dax'), 'utf8');
     expect(committed.split('\r\n').join('\n')).toBe(buildMeasureScript(measures));

@@ -1,10 +1,8 @@
+ParityResults =
 // Paste this into Power BI Desktop: Modeling > New table.
-// It creates a table called ParityResults with one row per case.
 // Put Case and Answer into a Table visual and send the result back.
 //
 // Generated from expected.ts - 25 cases.
-
-ParityResults =
 UNION(
     ROW("Case", "01 setup-total", "Answer", IFERROR(IF(ISBLANK(SUM(Sales[Amount])), "BLANK", FORMAT(SUM(Sales[Amount]), "0.##########")), "ERROR")),
     ROW("Case", "02 setup-rows", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(Sales)), "BLANK", FORMAT(COUNTROWS(Sales), "0.##########")), "ERROR")),

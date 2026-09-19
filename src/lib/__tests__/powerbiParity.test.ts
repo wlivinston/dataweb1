@@ -124,6 +124,14 @@ describe('parity fixture', () => {
     expect(sales.rows.some(row => row.Amount === null)).toBe(true);
   });
 
+  it('names the table on the first line, before any comment', () => {
+    // See the note in script.ts: a comment above the assignment becomes part
+    // of the table name in Power BI. This model already grew a table called
+    // `// Paste this into Power BI Desktop: ...` before anyone noticed.
+    const script = buildPowerBiScript();
+    expect(script.slice(0, script.indexOf('=')).trim()).toBe('ParityResults');
+  });
+
   it('keeps the generated Power BI script in step with the cases', () => {
     // The .dax file is what someone pastes into Power BI. If it drifts from
     // the expressions the comparison below runs, the answers come back

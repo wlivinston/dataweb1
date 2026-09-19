@@ -22,6 +22,21 @@ import type { ResolvedMeasure } from '../../../measures';
 /** Full precision, no thousands separators, so nothing is lost to rounding. */
 const NUMBER_FORMAT = '0.##########';
 
+/**
+ * The table name has to be the FIRST line, before any comment.
+ *
+ * Power BI's New Table box reads everything up to the first `=` as the name.
+ * A comment header above the assignment is therefore not a header at all -
+ * it becomes part of the table name, and the model ends up with a table
+ * called `// Paste this into Power BI Desktop: ...`. Found by pasting, not by
+ * any test here; DAX itself is perfectly happy either way.
+ *
+ * Comments after the `=` are fine, so the guidance survives - it just has to
+ * sit below the name rather than above it.
+ */
+const assignTo = (tableName: string, comments: string[], body: string[]): string =>
+  [`${tableName} =`, ...comments.map(line => `// ${line}`.trimEnd()), ...body, ''].join('\n');
+
 const answerExpression = (dax: string, returnsText: boolean): string =>
   returnsText
     ? `IFERROR(${dax}, "ERROR")`
@@ -35,19 +50,16 @@ export const buildPowerBiScript = (): string => {
     return `    ROW("Case", "${position} ${entry.id}", "Answer", ${answer})`;
   });
 
-  return [
-    '// Paste this into Power BI Desktop: Modeling > New table.',
-    '// It creates a table called ParityResults with one row per case.',
-    '// Put Case and Answer into a Table visual and send the result back.',
-    '//',
-    `// Generated from expected.ts - ${PARITY_CASES.length} cases.`,
-    '',
-    'ParityResults =',
-    'UNION(',
-    rows.join(',\n'),
-    ')',
-    '',
-  ].join('\n');
+  return assignTo(
+    'ParityResults',
+    [
+      'Paste this into Power BI Desktop: Modeling > New table.',
+      'Put Case and Answer into a Table visual and send the result back.',
+      '',
+      `Generated from expected.ts - ${PARITY_CASES.length} cases.`,
+    ],
+    ['UNION(', rows.join(',\n'), ')']
+  );
 };
 
 // ============================================================
@@ -81,17 +93,15 @@ export const buildMeasureScript = (measures: ResolvedMeasure[]): string => {
     );
   });
 
-  return [
-    '// Paste into Power BI Desktop: Modeling > New table.',
-    '// Needs the Orders table from orders.csv, joined to Date, and a Year',
-    '// column on Date. See README.md.',
-    '//',
-    `// Generated from the measure library - ${measures.length} measures.`,
-    '',
-    'MeasureResults =',
-    'UNION(',
-    rows.join(',\n'),
-    ')',
-    '',
-  ].join('\n');
+  return assignTo(
+    'MeasureResults',
+    [
+      'Paste into Power BI Desktop: Modeling > New table.',
+      'Needs the Orders table from orders.csv, joined to Date, and a Year',
+      'column on Date. See README.md.',
+      '',
+      `Generated from the measure library - ${measures.length} measures.`,
+    ],
+    ['UNION(', rows.join(',\n'), ')']
+  );
 };
