@@ -1,4 +1,5 @@
 import { PARITY_CASES } from './expected';
+import { GROUPING_CASES } from './grouping-expected';
 import type { ResolvedMeasure } from '../../../measures';
 
 /**
@@ -101,6 +102,39 @@ export const buildMeasureScript = (measures: ResolvedMeasure[]): string => {
       'column on Date. See README.md.',
       '',
       `Generated from the measure library - ${measures.length} measures.`,
+    ],
+    ['UNION(', rows.join(',\n'), ')']
+  );
+};
+
+// ============================================================
+// Grouping, as one pasteable table
+// ============================================================
+
+/**
+ * The grouping cases, against sales.csv from the first parity round.
+ *
+ * Deliberately all scalar. Comparing whole tables needs a harness that does
+ * not exist, and the risky part is the semantics rather than the shape - a
+ * single number settles whether context transition through data lineage is
+ * right, and settling it before anything is built on top is the cheap order
+ * to do it in.
+ */
+export const buildGroupingScript = (): string => {
+  const rows = GROUPING_CASES.map((entry, index) => {
+    const position = String(index + 1).padStart(2, '0');
+    const answer = answerExpression(entry.dax, entry.returnsText === true);
+    return `    ROW("Case", "${position} ${entry.id}", "Answer", ${answer})`;
+  });
+
+  return assignTo(
+    'GroupingResults',
+    [
+      'Paste into Power BI Desktop: Modeling > New table.',
+      'Runs against the Sales table from sales.csv - already loaded.',
+      'Put Case and Answer into a Table visual and send the result back.',
+      '',
+      `Generated from grouping-expected.ts - ${GROUPING_CASES.length} cases.`,
     ],
     ['UNION(', rows.join(',\n'), ')']
   );
