@@ -121,7 +121,12 @@ export const buildMeasureScript = (measures: ResolvedMeasure[]): string => {
  * to do it in.
  */
 export const buildGroupingScript = (): string => {
-  const rows = GROUPING_CASES.map((entry, index) => {
+  // A case Power BI rejects at compile time cannot ride along: IFERROR only
+  // contains runtime errors, so one binding error takes the whole table
+  // down and none of the others produce an answer. Learned by doing it.
+  const cases = GROUPING_CASES.filter(entry => entry.compileError !== true);
+
+  const rows = cases.map((entry, index) => {
     const position = String(index + 1).padStart(2, '0');
     const answer = answerExpression(entry.dax, entry.returnsText === true);
     return `    ROW("Case", "${position} ${entry.id}", "Answer", ${answer})`;
@@ -134,7 +139,8 @@ export const buildGroupingScript = (): string => {
       'Runs against the Sales table from sales.csv - already loaded.',
       'Put Case and Answer into a Table visual and send the result back.',
       '',
-      `Generated from grouping-expected.ts - ${GROUPING_CASES.length} cases.`,
+      `Generated from grouping-expected.ts - ${cases.length} cases` +
+        `${GROUPING_CASES.length > cases.length ? `, ${GROUPING_CASES.length - cases.length} answered separately` : ''}.`,
     ],
     ['UNION(', rows.join(',\n'), ')']
   );

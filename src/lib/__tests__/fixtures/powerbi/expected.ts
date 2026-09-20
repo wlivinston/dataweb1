@@ -43,6 +43,18 @@ export interface ParityCase {
    * BI script must not push it through FORMAT.
    */
   returnsText?: true;
+  /**
+   * Power BI rejects this when the formula is compiled, not while it runs.
+   *
+   * IFERROR only catches runtime errors, so a case like this cannot travel
+   * inside a UNION with the others - it takes the whole calculated table
+   * down rather than yielding "ERROR" in its own row. Found the hard way:
+   * SUMX(VALUES(Sales[Region]), Sales[Amount]) is a binding error, and
+   * including it meant none of the other fourteen cases produced an answer.
+   *
+   * These are excluded from the generated script and answered on their own.
+   */
+  compileError?: true;
   /** Anything worth recording about how it behaved. */
   note?: string;
 }

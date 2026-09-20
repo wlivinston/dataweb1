@@ -3,7 +3,7 @@ GroupingResults =
 // Runs against the Sales table from sales.csv - already loaded.
 // Put Case and Answer into a Table visual and send the result back.
 //
-// Generated from grouping-expected.ts - 15 cases.
+// Generated from grouping-expected.ts - 14 cases, 1 answered separately.
 UNION(
     ROW("Case", "01 values-counts-blank-as-a-group", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(VALUES(Sales[Region]))), "BLANK", FORMAT(COUNTROWS(VALUES(Sales[Region])), "0.##########")), "ERROR")),
     ROW("Case", "02 distinct-agrees-with-values", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(DISTINCT(Sales[Region]))), "BLANK", FORMAT(COUNTROWS(DISTINCT(Sales[Region])), "0.##########")), "ERROR")),
@@ -18,6 +18,5 @@ UNION(
     ROW("Case", "11 grouping-inside-grouping", "Answer", IFERROR(IF(ISBLANK(SUMX(VALUES(Sales[Region]), CALCULATE(MAXX(VALUES(Sales[Product]), CALCULATE(SUM(Sales[Amount])))))), "BLANK", FORMAT(SUMX(VALUES(Sales[Region]), CALCULATE(MAXX(VALUES(Sales[Product]), CALCULATE(SUM(Sales[Amount]))))), "0.##########")), "ERROR")),
     ROW("Case", "12 outer-filter-limits-the-groups", "Answer", IFERROR(IF(ISBLANK(CALCULATE(COUNTROWS(VALUES(Sales[Region])), Sales[Product] = "Gadget")), "BLANK", FORMAT(CALCULATE(COUNTROWS(VALUES(Sales[Region])), Sales[Product] = "Gadget"), "0.##########")), "ERROR")),
     ROW("Case", "13 outer-filter-reaches-inside-each-group", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUMX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount]))), Sales[Product] = "Gadget")), "BLANK", FORMAT(CALCULATE(SUMX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount]))), Sales[Product] = "Gadget"), "0.##########")), "ERROR")),
-    ROW("Case", "14 distinct-values-of-a-number", "Answer", IFERROR(IF(ISBLANK(SUMX(VALUES(Sales[Amount]), Sales[Amount])), "BLANK", FORMAT(SUMX(VALUES(Sales[Amount]), Sales[Amount]), "0.##########")), "ERROR")),
-    ROW("Case", "15 column-outside-the-grouping-is-unavailable", "Answer", IFERROR(IF(ISBLANK(SUMX(VALUES(Sales[Region]), Sales[Amount])), "BLANK", FORMAT(SUMX(VALUES(Sales[Region]), Sales[Amount]), "0.##########")), "ERROR"))
+    ROW("Case", "14 distinct-values-of-a-number", "Answer", IFERROR(IF(ISBLANK(SUMX(VALUES(Sales[Amount]), Sales[Amount])), "BLANK", FORMAT(SUMX(VALUES(Sales[Amount]), Sales[Amount]), "0.##########")), "ERROR"))
 )

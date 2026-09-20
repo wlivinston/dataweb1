@@ -67,10 +67,24 @@ describe('grouping parity fixture', () => {
     expect(committed.split('\r\n').join('\n')).toBe(buildGroupingScript());
   });
 
-  it('embeds each case exactly as the comparison runs it', () => {
+  it('embeds each scriptable case exactly as the comparison runs it', () => {
     const script = buildGroupingScript();
-    for (const entry of GROUPING_CASES) {
+    for (const entry of GROUPING_CASES.filter(c => c.compileError !== true)) {
       expect(script, entry.id).toContain(entry.dax);
+    }
+  });
+
+  it('keeps a compile-time refusal out of the script entirely', () => {
+    // IFERROR only contains runtime errors. One binding error inside the
+    // UNION stops the table being created at all, so the other fourteen
+    // cases come back with nothing - which is exactly what happened.
+    const script = buildGroupingScript();
+    const excluded = GROUPING_CASES.filter(entry => entry.compileError === true);
+    expect(excluded.length).toBeGreaterThan(0);
+    for (const entry of excluded) {
+      expect(script, entry.id).not.toContain(entry.dax);
+      // Excluded, but still answered - the refusal is the finding.
+      expect(entry.expected, entry.id).not.toBeNull();
     }
   });
 });

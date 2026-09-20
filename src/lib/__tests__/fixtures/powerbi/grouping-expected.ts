@@ -155,11 +155,26 @@ export const GROUPING_CASES: ParityCase[] = [
     id: 'column-outside-the-grouping-is-unavailable',
     probes:
       'Grouped by Region, so Amount has no single value on a row. Power BI ' +
-      'should refuse this. If it instead returns a number, a derived row context ' +
-      'makes more visible than I think it does, and the whole design needs ' +
-      'revisiting.',
+      'should refuse this. If it instead returned a number, a derived row ' +
+      'context would make more visible than the design assumes, and the ' +
+      'representation would need revisiting rather than extending.',
     dax: 'SUMX(VALUES(Sales[Region]), Sales[Amount])',
-    expected: null,
+    // Answered 2026-09-20. Power BI: "A single value for column 'Amount' in
+    // table 'Sales' cannot be determined. This can happen when a measure or
+    // function formula refers to a column that contains many values without
+    // specifying an aggregation such as min, max, count, or sum."
+    //
+    // This engine refuses it too - "Sales[Amount] needs a row to read from.
+    // Wrap it in an aggregation such as SUM, or use an iterator like SUMX."
+    // The derived row context exposes only the columns of the derived table,
+    // which is what Power BI does.
+    expected: 'ERROR',
+    engineRefuses: true,
+    compileError: true,
+    note:
+      'Rejected when the formula is compiled rather than while it runs, so ' +
+      'IFERROR cannot contain it and the whole UNION failed with it inside. ' +
+      'Excluded from the script and answered on its own.',
   },
 ];
 
