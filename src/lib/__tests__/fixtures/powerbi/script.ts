@@ -1,5 +1,6 @@
 import { PARITY_CASES } from './expected';
 import { GROUPING_CASES } from './grouping-expected';
+import { TABLE_CASES } from './table-expected';
 import type { ResolvedMeasure } from '../../../measures';
 
 /**
@@ -141,6 +142,38 @@ export const buildGroupingScript = (): string => {
       '',
       `Generated from grouping-expected.ts - ${cases.length} cases` +
         `${GROUPING_CASES.length > cases.length ? `, ${GROUPING_CASES.length - cases.length} answered separately` : ''}.`,
+    ],
+    ['UNION(', rows.join(',\n'), ')']
+  );
+};
+
+// ============================================================
+// Table results, flattened to strings
+// ============================================================
+
+/**
+ * Each case flattens a whole table into one string with CONCATENATEX, so a
+ * table comparison fits the same one-scalar-per-row script as everything
+ * else. The string carries which rows are present, in what order, with what
+ * values - everything a table comparison would check.
+ */
+export const buildTableScript = (): string => {
+  const cases = TABLE_CASES.filter(entry => entry.compileError !== true);
+
+  const rows = cases.map((entry, index) => {
+    const position = String(index + 1).padStart(2, '0');
+    const answer = answerExpression(entry.dax, entry.returnsText === true);
+    return `    ROW("Case", "${position} ${entry.id}", "Answer", ${answer})`;
+  });
+
+  return assignTo(
+    'TableResults',
+    [
+      'Paste into Power BI Desktop: Modeling > New table.',
+      'Runs against the Sales table from sales.csv.',
+      'Put Case and Answer into a Table visual and send the result back.',
+      '',
+      `Generated from table-expected.ts - ${cases.length} cases.`,
     ],
     ['UNION(', rows.join(',\n'), ')']
   );
