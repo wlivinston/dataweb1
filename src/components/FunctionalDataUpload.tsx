@@ -2886,13 +2886,10 @@ const FunctionalDataUpload: React.FC = () => {
 
           {/* Ask Your Data Tab - Natural Language Query - NEW */}
           <TabsContent value="ask-data" className="space-y-6">
-            <NaturalLanguageQuery
-              dataset={datasets.find(d => d.id === activeDataset) || datasets[0] || null}
-              onVisualizationRequest={(viz) => {
-                // Could add the visualization to the dashboard
-                console.log('Visualization requested:', viz);
-              }}
-            />
+            {/* The whole model, not one dataset: a question names its own
+                columns, and an answer that has to cross a relationship
+                cannot be computed from a single table. */}
+            <NaturalLanguageQuery model={semanticModel} />
           </TabsContent>
 
           {/* Smart Connections Tab - NEW */}

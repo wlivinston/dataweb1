@@ -114,6 +114,30 @@ export const answerQuestion = (
     };
   }
 
+  // Shapes this slice cannot compile, caught before the column resolver sees
+  // them. "average Revenue by Region" would otherwise match Revenue and
+  // Region equally and be reported as an ambiguous column, which is a true
+  // statement about the wrong problem.
+  const text = normalise(question);
+
+  if (/\b(by|per|breakdown|grouped|split)\b|\bfor each\b/.test(text)) {
+    return refuse(
+      model,
+      question,
+      'I cannot break a figure down by another column yet - only whole-table ' +
+        'answers. Ask for the overall number and I can give you that.'
+    );
+  }
+
+  if (/\b(top|bottom|best|worst|rank|ranked|ranking)\b/.test(text)) {
+    return refuse(
+      model,
+      question,
+      'I cannot produce ranked lists yet. I can give you a single largest or ' +
+        'smallest value - "highest Revenue" - or an overall total.'
+    );
+  }
+
   const parsed = parse(question);
   if (!parsed) {
     return refuse(
