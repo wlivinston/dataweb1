@@ -52,6 +52,16 @@ describe('grouping parity fixture', () => {
     expect(sales.rows.some(row => row.Amount === null)).toBe(true);
   });
 
+  it('leads with a canary that fails loudly if the table is empty', () => {
+    // An empty source table answers BLANK to everything, which reads as
+    // fourteen answers and is fourteen non-answers. The canary has to be
+    // first so it is the first thing anyone looks at.
+    const first = GROUPING_CASES[0];
+    expect(first.id).toContain('canary');
+    expect(first.dax).toBe('COUNTROWS(Sales)');
+    expect(answerFor(first.dax)).toBe('18');
+  });
+
   it('has no duplicate case ids', () => {
     const ids = GROUPING_CASES.map(entry => entry.id);
     expect(new Set(ids).size).toBe(ids.length);

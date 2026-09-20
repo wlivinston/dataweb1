@@ -21,6 +21,18 @@ import type { ParityCase } from './expected';
  */
 export const GROUPING_CASES: ParityCase[] = [
   {
+    id: 'canary-the-table-actually-has-rows',
+    probes:
+      'Not a semantic question - a check that the sheet is worth reading. An ' +
+      'empty Sales table makes COUNTROWS and every aggregation return BLANK, ' +
+      'so all fourteen cases come back BLANK for one reason that has nothing ' +
+      'to do with grouping. That happened on the first attempt, and fourteen ' +
+      'blanks look like fourteen answers until you check. If this is not 18, ' +
+      'the rest of the sheet means nothing.',
+    dax: 'COUNTROWS(Sales)',
+    expected: null,
+  },
+  {
     id: 'values-counts-blank-as-a-group',
     probes:
       'Region is blank on one row. If Power BI treats blank as a group there are 3, ' +
