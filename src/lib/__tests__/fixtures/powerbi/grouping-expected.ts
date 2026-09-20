@@ -39,7 +39,7 @@ export const GROUPING_CASES: ParityCase[] = [
       'if it drops the row there are 2. DISTINCTCOUNT already counts blank as a ' +
       'value, so 2 here would mean grouping and counting disagree about the same data.',
     dax: 'COUNTROWS(VALUES(Sales[Region]))',
-    expected: null,
+    expected: 3,
   },
   {
     id: 'distinct-agrees-with-values',
@@ -48,7 +48,7 @@ export const GROUPING_CASES: ParityCase[] = [
       'relationship adds. On one table with a genuinely blank value they should ' +
       'agree, and this engine implements DISTINCT as VALUES outright.',
     dax: 'COUNTROWS(DISTINCT(Sales[Region]))',
-    expected: null,
+    expected: 3,
   },
   {
     id: 'groups-cover-the-whole',
@@ -57,7 +57,7 @@ export const GROUPING_CASES: ParityCase[] = [
       'group was dropped - almost certainly the blank one. More means context ' +
       'transition failed and groups saw the grand total instead of their own.',
     dax: 'SUMX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount])))',
-    expected: null,
+    expected: 7600,
   },
   {
     id: 'largest-group-total',
@@ -65,7 +65,7 @@ export const GROUPING_CASES: ParityCase[] = [
       'North is 3600, South 3800, the blank region 200. Picks up an error in any ' +
       'single group without depending on the others cancelling out.',
     dax: 'MAXX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount])))',
-    expected: null,
+    expected: 3800,
   },
   {
     id: 'smallest-group-total',
@@ -74,7 +74,7 @@ export const GROUPING_CASES: ParityCase[] = [
       'returns 3600 instead - the same disagreement as the first case, reached ' +
       'from the other end.',
     dax: 'MINX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount])))',
-    expected: null,
+    expected: 200,
   },
   {
     id: 'blank-amount-inside-a-group',
@@ -85,7 +85,7 @@ export const GROUPING_CASES: ParityCase[] = [
       'useless here: South wins at 475 either way, so the case would have ' +
       'passed without ever probing the blank.',
     dax: 'SUMX(VALUES(Sales[Region]), CALCULATE(AVERAGE(Sales[Amount])))',
-    expected: null,
+    expected: 1125,
   },
   {
     id: 'row-count-per-group',
@@ -94,7 +94,7 @@ export const GROUPING_CASES: ParityCase[] = [
       'group boundary that is wrong shows up even where the amounts happen to ' +
       'balance.',
     dax: 'MAXX(VALUES(Sales[Region]), CALCULATE(COUNTROWS(Sales)))',
-    expected: null,
+    expected: 9,
   },
   {
     id: 'addcolumns-read-back-by-name',
@@ -102,14 +102,14 @@ export const GROUPING_CASES: ParityCase[] = [
       'The added column read back as [T] inside the iterator. Should equal the ' +
       'grand total, and equal the same expression without ADDCOLUMNS.',
     dax: 'SUMX(ADDCOLUMNS(VALUES(Sales[Region]), "T", CALCULATE(SUM(Sales[Amount]))), [T])',
-    expected: null,
+    expected: 7600,
   },
   {
     id: 'addcolumns-keeps-one-row-per-group',
     probes:
       'ADDCOLUMNS must not change how many rows there are. 3 if blank is a group.',
     dax: 'COUNTROWS(ADDCOLUMNS(VALUES(Sales[Region]), "T", 1))',
-    expected: null,
+    expected: 3,
   },
   {
     id: 'computed-column-has-no-lineage',
@@ -119,7 +119,7 @@ export const GROUPING_CASES: ParityCase[] = [
       'is 3800 - half the grand total.',
     dax:
       'SUMX(ADDCOLUMNS(VALUES(Sales[Region]), "Half", CALCULATE(SUM(Sales[Amount])) / 2), [Half])',
-    expected: null,
+    expected: 3800,
   },
   {
     id: 'grouping-inside-grouping',
@@ -131,7 +131,7 @@ export const GROUPING_CASES: ParityCase[] = [
     dax:
       'SUMX(VALUES(Sales[Region]), CALCULATE(MAXX(VALUES(Sales[Product]), ' +
       'CALCULATE(SUM(Sales[Amount])))))',
-    expected: null,
+    expected: 5800,
   },
   {
     id: 'outer-filter-limits-the-groups',
@@ -141,7 +141,7 @@ export const GROUPING_CASES: ParityCase[] = [
       'been the wrong choice - it covers all three regions, so the case would ' +
       'have read 3 whether the filter reached VALUES or not.',
     dax: 'CALCULATE(COUNTROWS(VALUES(Sales[Region])), Sales[Product] = "Gadget")',
-    expected: null,
+    expected: 2,
   },
   {
     id: 'outer-filter-reaches-inside-each-group',
@@ -152,7 +152,7 @@ export const GROUPING_CASES: ParityCase[] = [
     dax:
       'CALCULATE(SUMX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount]))), ' +
       'Sales[Product] = "Gadget")',
-    expected: null,
+    expected: 4000,
   },
   {
     id: 'distinct-values-of-a-number',
@@ -161,7 +161,7 @@ export const GROUPING_CASES: ParityCase[] = [
       'blank, so the distinct values sum to 6800. Checks that deduplication ' +
       'treats numbers the way a filter does.',
     dax: 'SUMX(VALUES(Sales[Amount]), Sales[Amount])',
-    expected: null,
+    expected: 6800,
   },
   {
     id: 'column-outside-the-grouping-is-unavailable',
