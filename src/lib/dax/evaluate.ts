@@ -27,12 +27,15 @@ import {
   compareScalars,
   expectScalar,
   isBlank,
+  isDerived,
   isTable,
+  makeDerivedTable,
   makeTable,
   toBoolean,
   toNumber,
   toText,
   valuesEqual,
+  type DaxRowSet,
   type DaxScalar,
   type DaxTable,
   type DaxValue,
@@ -455,7 +458,33 @@ class Evaluator {
     return { table: resolved.value.table, column: resolved.value.name };
   }
 
-  tableArg(node: FunctionCall, index: number, context: EvalContext, scope: Scope | null): DaxTable {
+  /**
+   * A table argument of model rows.
+   *
+   * Refuses a computed table, because everything reached through here
+   * addresses rows by position - an iterator reads the row's other columns,
+   * a filter narrows an existing set. Functions that can take a computed
+   * table use `anyTableArg` instead.
+   */
+  tableArg(node: FunctionCall, index: number, context: EvalContext, scope: Scope | null): DaxRowSet {
+    const value = this.anyTableArg(node, index, context, scope);
+    if (isDerived(value)) {
+      this.fail(
+        node.args[index],
+        `${node.name} needs a table of rows from the model. A computed table - one built ` +
+          `by ADDCOLUMNS, or VALUES of a single column - cannot be used here yet.`
+      );
+    }
+    return value;
+  }
+
+  /** A table argument of either kind. */
+  anyTableArg(
+    node: FunctionCall,
+    index: number,
+    context: EvalContext,
+    scope: Scope | null
+  ): DaxTable {
     const value = this.evaluate(node.args[index], context, scope);
     if (!isTable(value)) {
       this.fail(node.args[index], `${node.name} needs a table here, not a single value.`);
@@ -473,7 +502,7 @@ class Evaluator {
   }
 
   iterate(
-    table: DaxTable,
+    table: DaxRowSet,
     context: EvalContext,
     scope: Scope | null,
     body: Expression
@@ -1160,6 +1189,17 @@ const resolveCalculateFilter = (
 
   const value = evaluator.evaluate(argument, outer, scope);
   if (isTable(value)) {
+    if (isDerived(value)) {
+      // Filtering by a computed table needs data lineage: each column has
+      // to remember which model column it came from, or the filter has
+      // nothing to narrow. The lineage is recorded on DerivedColumn but is
+      // not yet honoured here, and guessing would silently filter nothing.
+      throw evaluator.error(
+        argument,
+        'A computed table - one built by ADDCOLUMNS, or VALUES of a single column - ' +
+          'cannot be used as a filter yet.'
+      );
+    }
     return {
       clear: filter => withoutTable(filter, value.table),
       apply: filter => andRowFilter(filter, value.table, value.rows),
@@ -1420,7 +1460,7 @@ const dateScope = (
  * February 2024 back a year sends both the 28th and the 29th to 28 February
  * 2023, and counting that day twice would inflate every total using it.
  */
-const tableOfDates = (scope: DateColumnScope, dates: Iterable<string>): DaxTable => {
+const tableOfDates = (scope: DateColumnScope, dates: Iterable<string>): DaxRowSet => {
   const rows = new Set<number>();
   for (const iso of new Set(dates)) {
     for (const rowIndex of scope.rowsByDate.get(iso) ?? []) rows.add(rowIndex);
@@ -1495,7 +1535,7 @@ const toDateSet = (
   scope: Scope | null,
   bounds: (last: string, yearEnd: { month: number; day: number }) => DateRange | null,
   yearEndIndex: number
-): DaxTable => {
+): DaxRowSet => {
   const dateColumn = dateScope(evaluator, node, 0, context);
   if (dateColumn.visibleDates.length === 0) return makeTable(dateColumn.table, []);
 
@@ -1525,7 +1565,7 @@ const adjacentPeriod = (
   interval: DateInterval,
   direction: -1 | 1,
   yearEndIndex: number
-): DaxTable => {
+): DaxRowSet => {
   const dateColumn = dateScope(evaluator, node, 0, context);
   if (dateColumn.visibleDates.length === 0) return makeTable(dateColumn.table, []);
 
@@ -1551,7 +1591,7 @@ const previousPeriod = (
   scope: Scope | null,
   interval: DateInterval,
   yearEndIndex: number
-): DaxTable =>
+): DaxRowSet =>
   adjacentPeriod(evaluator, node, context, scope, interval, -1, yearEndIndex);
 
 /** The first or last date of the period holding the latest date in context. */
@@ -1607,7 +1647,7 @@ const toDateSetForTotal = (
   scope: Scope | null,
   bounds: (last: string, yearEnd: { month: number; day: number }) => DateRange | null,
   yearEndIndex: number
-): DaxTable => {
+): DaxRowSet => {
   const dateColumn = dateScope(evaluator, node, 1, context);
   if (dateColumn.visibleDates.length === 0) return makeTable(dateColumn.table, []);
 

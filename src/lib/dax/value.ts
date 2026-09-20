@@ -16,14 +16,59 @@ import { DaxRuntimeError } from './errors';
 /** BLANK is represented as null. undefined never appears in a DaxValue. */
 export type DaxScalar = number | string | boolean | null;
 
-/** A set of rows of one model table, held as indices into that table. */
-export interface DaxTable {
+/**
+ * A set of rows of one model table, held as indices into that table.
+ *
+ * Cheap, and it is what filtering wants: a filter is a narrowing of rows
+ * that already exist. Every table function that only ever selects - FILTER,
+ * ALL, CALCULATETABLE, TOPN - produces one of these.
+ */
+export interface DaxRowSet {
   kind: 'table';
+  source: 'rows';
   table: string;
   rows: number[];
 }
 
+/**
+ * One column of a derived table.
+ *
+ * `origin` records the model column a value came from. DAX calls this data
+ * lineage, and it is what makes a derived table usable as a CALCULATE
+ * filter: a column that still knows it came from Sales[Region] filters
+ * Sales[Region], while a computed column filters nothing. Recorded from the
+ * start even though filtering by derived tables is refused for now, because
+ * a lineage that was never captured cannot be recovered later.
+ */
+export interface DerivedColumn {
+  name: string;
+  origin?: { table: string; column: string };
+}
+
+/**
+ * A table whose columns are computed rather than selected.
+ *
+ * ADDCOLUMNS, SUMMARIZE and VALUES(column) all produce columns that exist in
+ * no model table, so they cannot be expressed as row indices. That is the
+ * single reason every table-shaping function in the registry was catalogued
+ * but unimplemented.
+ */
+export interface DaxDerivedTable {
+  kind: 'table';
+  source: 'derived';
+  columns: DerivedColumn[];
+  /** Row-major, each row the same length as `columns`. */
+  rows: DaxScalar[][];
+}
+
+export type DaxTable = DaxRowSet | DaxDerivedTable;
+
 export type DaxValue = DaxScalar | DaxTable;
+
+export const isRowSet = (value: DaxTable): value is DaxRowSet => value.source === 'rows';
+
+export const isDerived = (value: DaxTable): value is DaxDerivedTable =>
+  value.source === 'derived';
 
 export const BLANK: null = null;
 
@@ -34,14 +79,29 @@ export const isTable = (value: DaxValue): value is DaxTable =>
 
 export const isScalar = (value: DaxValue): value is DaxScalar => !isTable(value);
 
-export const makeTable = (table: string, rows: number[]): DaxTable => ({
+export const makeTable = (table: string, rows: number[]): DaxRowSet => ({
   kind: 'table',
+  source: 'rows',
   table,
   rows,
 });
 
+export const makeDerivedTable = (
+  columns: DerivedColumn[],
+  rows: DaxScalar[][]
+): DaxDerivedTable => ({
+  kind: 'table',
+  source: 'derived',
+  columns,
+  rows,
+});
+
 const describe = (value: DaxValue): string => {
-  if (isTable(value)) return `a table (${value.table})`;
+  if (isTable(value)) {
+    return isRowSet(value)
+      ? `a table (${value.table})`
+      : `a table of ${value.columns.length} computed ${value.columns.length === 1 ? 'column' : 'columns'}`;
+  }
   if (value === null) return 'a blank';
   return `${typeof value} "${value}"`;
 };
@@ -58,6 +118,30 @@ export const expectTable = (value: DaxValue, what: string): DaxTable => {
     throw new DaxRuntimeError(`${what} needs a table but received ${describe(value)}.`);
   }
   return value;
+};
+
+/**
+ * A table of model rows, refusing a computed one.
+ *
+ * Most things that take a table need rows that exist: an iterator has to
+ * read the other columns of the row it is on, and a filter has to narrow
+ * something. A derived table has neither - its rows are values, not
+ * positions - so those callers refuse it rather than quietly reading
+ * whatever is at index 0.
+ *
+ * The refusal is the honest half-step. Making iterators work over derived
+ * tables needs row context to address values as well as positions, which is
+ * a change worth making on its own rather than smuggling in here.
+ */
+export const expectRowSet = (value: DaxValue, what: string): DaxRowSet => {
+  const table = expectTable(value, what);
+  if (isDerived(table)) {
+    throw new DaxRuntimeError(
+      `${what} needs a table of rows from the model. A computed table - one built by ` +
+        `ADDCOLUMNS, or VALUES of a single column - cannot be used here yet.`
+    );
+  }
+  return table;
 };
 
 /**

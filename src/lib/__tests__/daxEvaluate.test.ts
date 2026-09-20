@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { evaluateDax, evaluateScalar } from '../dax/evaluate';
 import { buildSemanticModel } from '../semantic/model';
 import { makeDataset } from './fixtures';
-import { isTable, type DaxValue } from '../dax/value';
+import { isRowSet, isTable, type DaxValue } from '../dax/value';
 import { DaxError } from '../dax/errors';
 import type { SemanticMeasure, SemanticModel } from '../semantic/types';
 import type { Dataset } from '../types';
@@ -440,9 +440,12 @@ describe('table values', () => {
   it('returns the visible rows of a table', () => {
     const value = evaluate('Sales');
     expect(isTable(value)).toBe(true);
-    if (isTable(value)) {
+    // A bare table reference is a set of model rows, not a computed table.
+    if (isTable(value) && isRowSet(value)) {
       expect(value.table).toBe('Sales');
       expect(value.rows).toHaveLength(4);
+    } else {
+      throw new Error('expected a row set');
     }
   });
 
