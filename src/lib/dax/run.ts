@@ -3,7 +3,9 @@ import { printDax } from './printer';
 import { evaluateDax } from './evaluate';
 import { validateDax, type DaxIssue } from './validate';
 import { DaxError } from './errors';
-import { isTable, type DaxScalar, type DaxValue } from './value';
+import { isDerived, isTable, type DaxScalar, type DaxTable, type DaxValue } from './value';
+import { findTable } from '../semantic/model';
+import { cellValue } from './context';
 import type { SemanticModel } from '../semantic/types';
 
 /**
@@ -71,11 +73,19 @@ const underline = (source: string, start: number, length: number, message: strin
   return `${source}\n${' '.repeat(safeStart)}${'^'.repeat(safeLength)} ${message}`;
 };
 
-export const runDax = (
+/** Everything both entry points share: parse, validate, evaluate. */
+interface Evaluated {
+  ok: true;
+  value: DaxValue;
+  normalised: string;
+  issues: DaxIssue[];
+}
+
+const evaluateOnce = (
   formula: string,
   model: SemanticModel,
   options: RunDaxOptions = {}
-): DaxRunResult => {
+): Evaluated | DaxRunFailure => {
   const source = formula.trim();
 
   if (source.length === 0) {
@@ -165,22 +175,41 @@ export const runDax = (
     };
   }
 
-  if (isTable(value)) {
+  return { ok: true, value, normalised: printDax(expression), issues };
+};
+
+/**
+ * Run an expression that must produce a single value.
+ *
+ * A table is refused here rather than rendered, because a calculation tile
+ * showing three columns where a number was asked for is a worse answer than
+ * a refusal. `runDaxTable` is the entry point for expressions that are
+ * meant to return a table.
+ */
+export const runDax = (
+  formula: string,
+  model: SemanticModel,
+  options: RunDaxOptions = {}
+): DaxRunResult => {
+  const outcome = evaluateOnce(formula, model, options);
+  if (!outcome.ok) return outcome;
+
+  if (isTable(outcome.value)) {
     return {
       ok: false,
       message:
         'This expression returns a table. A calculation has to produce a single ' +
         'value - wrap it in an aggregation such as COUNTROWS or SUMX.',
       detail: null,
-      issues,
+      issues: outcome.issues,
     };
   }
 
   return {
     ok: true,
-    value,
-    normalised: printDax(expression),
-    warnings: warningsOf(issues),
+    value: outcome.value,
+    normalised: outcome.normalised,
+    warnings: warningsOf(outcome.issues),
   };
 };
 
@@ -251,4 +280,132 @@ export const formatDaxValue = (value: DaxScalar): string => {
       : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
   }
   return value;
+};
+
+// ============================================================
+// Expressions that return a table
+// ============================================================
+
+/**
+ * A column of a table result.
+ *
+ * `origin` survives from the engine's data lineage, so a caller can tell a
+ * grouping column apart from a figure computed over it - which is what a
+ * renderer needs in order to right-align one and not the other, and what an
+ * export needs in order to say where a value came from.
+ */
+export interface DaxResultColumn {
+  name: string;
+  origin?: { table: string; column: string };
+}
+
+export interface DaxTableSuccess {
+  ok: true;
+  columns: DaxResultColumn[];
+  /** Row-major, each row the same length as `columns`. */
+  rows: DaxScalar[][];
+  /** How many rows the expression produced, before any cap. */
+  totalRows: number;
+  /** True when `rows` holds fewer than `totalRows`. */
+  truncated: boolean;
+  normalised: string;
+  warnings: DaxIssue[];
+}
+
+export type DaxTableRunResult = DaxTableSuccess | DaxRunFailure;
+
+/**
+ * How many rows come back unless a caller says otherwise.
+ *
+ * A grouping over a high-cardinality column can produce as many rows as the
+ * table has, and handing a hundred thousand of them to a React render is a
+ * hang rather than an answer. The cap is reported rather than hidden, so a
+ * caller can say "showing 500 of 40,000" instead of quietly lying about how
+ * much there was.
+ */
+export const DEFAULT_ROW_LIMIT = 500;
+
+export interface RunDaxTableOptions extends RunDaxOptions {
+  limit?: number;
+}
+
+/**
+ * Run an expression that must produce a table.
+ *
+ * The mirror of `runDax`: a scalar is refused here for the same reason a
+ * table is refused there. Both return the same failure shape, so a caller
+ * that does not know which it will get can report either the same way.
+ */
+export const runDaxTable = (
+  formula: string,
+  model: SemanticModel,
+  options: RunDaxTableOptions = {}
+): DaxTableRunResult => {
+  const outcome = evaluateOnce(formula, model, options);
+  if (!outcome.ok) return outcome;
+
+  if (!isTable(outcome.value)) {
+    return {
+      ok: false,
+      message:
+        'This expression returns a single value rather than a table. Use it as a ' +
+        'calculation, or group it with VALUES to get one row per value.',
+      detail: null,
+      issues: outcome.issues,
+    };
+  }
+
+  const limit = Math.max(0, options.limit ?? DEFAULT_ROW_LIMIT);
+  const materialised = materialise(outcome.value, model, limit);
+
+  return {
+    ok: true,
+    columns: materialised.columns,
+    rows: materialised.rows,
+    totalRows: materialised.totalRows,
+    truncated: materialised.truncated,
+    normalised: outcome.normalised,
+    warnings: warningsOf(outcome.issues),
+  };
+};
+
+/**
+ * Turn an engine table into plain columns and values.
+ *
+ * A row set holds indices into a model table and a derived table holds its
+ * own values, so this is where that distinction stops mattering: callers
+ * outside the engine see one shape either way.
+ */
+const materialise = (
+  table: DaxTable,
+  model: SemanticModel,
+  limit: number
+): { columns: DaxResultColumn[]; rows: DaxScalar[][]; totalRows: number; truncated: boolean } => {
+  const totalRows = table.rows.length;
+  const truncated = totalRows > limit;
+
+  if (isDerived(table)) {
+    return {
+      columns: table.columns.map(column => ({ name: column.name, origin: column.origin })),
+      rows: table.rows.slice(0, limit),
+      totalRows,
+      truncated,
+    };
+  }
+
+  const owner = findTable(model, table.table);
+  if (!owner) return { columns: [], rows: [], totalRows: 0, truncated: false };
+
+  const columns: DaxResultColumn[] = owner.columns.map(column => ({
+    name: column.name,
+    origin: { table: owner.name, column: column.name },
+  }));
+
+  const rows = table.rows
+    .slice(0, limit)
+    .map(rowIndex =>
+      owner.columns.map(column => cellValue(model, owner.name, column.name, rowIndex))
+    );
+
+  return { columns, rows, totalRows, truncated };
 };

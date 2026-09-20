@@ -585,6 +585,26 @@ class Evaluator {
     }));
   }
 
+  /**
+   * A table of the same kind holding only the rows at these positions.
+   *
+   * Positions within the table, not model row indices - a derived table's
+   * rows are values and have no index into anything. This is what lets TOPN
+   * narrow either kind without caring which it has.
+   */
+  takePositions(table: DaxTable, positions: number[]): DaxTable {
+    if (isDerived(table)) {
+      return makeDerivedTable(
+        table.columns,
+        positions.map(position => table.rows[position])
+      );
+    }
+    return makeTable(
+      table.table,
+      positions.map(position => table.rows[position])
+    );
+  }
+
   /** The values already in a row, before anything is added to it. */
   valuesOf(table: DaxTable, rowContext: RowContext): DaxScalar[] {
     if (rowContext.kind === 'derived') {
@@ -2099,22 +2119,27 @@ const STATISTICAL_HANDLERS: Record<string, Handler> = {
 
   TOPN: (evaluator, node, context, scope) => {
     const count = evaluator.numberArg(node, 0, context, scope);
-    const table = evaluator.tableArg(node, 1, context, scope);
-    if (count <= 0) return makeTable(table.table, []);
+    // Either kind: ranking a grouped table is the whole point of "top 5 by
+    // revenue", and a grouped table is always a computed one.
+    const table = evaluator.anyTableArg(node, 1, context, scope);
+    if (count <= 0) return evaluator.takePositions(table, []);
+
+    const positions = table.rows.map((_, position) => position);
 
     if (node.args.length < 3) {
-      return makeTable(table.table, table.rows.slice(0, count));
+      return evaluator.takePositions(table, positions.slice(0, count));
     }
 
     const order = keywordArg(evaluator, node, 3, context, scope);
     const ascending = order === 'ASC' || order === 'TRUE' || order === '1';
 
-    const scored = table.rows.map(rowIndex => ({
-      rowIndex,
+    const rowContexts = evaluator.rowContextsOf(table);
+    const scored = positions.map(position => ({
+      position,
       value: expectScalar(
         evaluator.evaluate(node.args[2], {
           filter: context.filter,
-          rowContexts: [...context.rowContexts, { kind: 'row' as const, table: table.table, rowIndex }],
+          rowContexts: [...context.rowContexts, rowContexts[position]],
         }, scope),
         'TOPN'
       ),
@@ -2133,7 +2158,7 @@ const STATISTICAL_HANDLERS: Record<string, Handler> = {
       end += 1;
     }
 
-    return makeTable(table.table, scored.slice(0, end).map(entry => entry.rowIndex));
+    return evaluator.takePositions(table, scored.slice(0, end).map(entry => entry.position));
   },
 
   LOOKUPVALUE: (evaluator, node, context, scope) => {
