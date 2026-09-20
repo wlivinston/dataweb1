@@ -32,11 +32,12 @@ const LABEL = 'IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region])';
 
 /** The one disagreement this sheet found, shared by five cases. */
 const BLANK_LABEL_NOTE =
-  'Power BI reads Sales[Region] on the blank row as NOT blank, so the ' +
-  'IF(ISBLANK(...)) label falls through to the value itself and renders ' +
-  'empty. This engine reads it as BLANK. Whether Power BI imported the empty ' +
-  'CSV cell as an empty string, or something else is happening, is the open ' +
-  'question - COUNTBLANK settles it and is being asked.';
+  "EXPLAINED 2026-09-20. Power BI's Text/CSV connector stores an empty text " +
+  'field as an empty string, not BLANK, so IF(ISBLANK(...)) falls through to ' +
+  'the value and renders empty. This engine converts it to BLANK on purpose, ' +
+  'so that missingness stays visible to completeness and null counts. The ' +
+  'divergence is narrow and fully characterised: ISBLANK and COUNTA on a text ' +
+  'column with empty cells, and nothing else. See blank-expected.ts.';
 
 export const TABLE_CASES: ParityCase[] = [
   {

@@ -229,8 +229,26 @@ export const valuesEqual = (left: DaxScalar, right: DaxScalar): boolean =>
 /**
  * Normalise a raw cell from the model into a DaxScalar.
  *
- * Empty strings become BLANK, matching how Power BI treats an empty cell on
- * import: otherwise COUNT and AVERAGE would include cells that look empty.
+ * An empty string becomes BLANK. This is a DELIBERATE DIVERGENCE from Power
+ * BI's Text/CSV connector, which stores an empty text field as "" - verified
+ * 2026-09-20 on the same file: COUNTA(Sales[Region]) is 18 there and 17
+ * here, ISBLANK is FALSE there and TRUE here, and LOOKUPVALUE at the empty
+ * row answers NOT-BLANK there. The comment that used to sit here claimed the
+ * opposite, and was never checked.
+ *
+ * Kept anyway, because an empty cell in a CSV means "missing", and this
+ * product reports missingness: null counts, completeness, and the "N blank
+ * rows are left out" note in an answer. Treating "" as a value makes
+ * completeness report 100% on data with empty cells, which is a worse and
+ * quieter failure than a disagreement about ISBLANK. Power BI users
+ * routinely add a "Replace empty with null" step for the same reason, so
+ * what "agreeing with Power BI" means here depends on the import path.
+ *
+ * The divergence is narrow and fully characterised: it changes ISBLANK and
+ * COUNTA on a TEXT column containing empty cells, and nothing else. Filters
+ * agree because BLANK = "" is TRUE in DAX, DISTINCTCOUNT and grouping agree
+ * because either way it is one distinct value, and numeric columns are BLANK
+ * in both. See blank-expected.ts for the evidence.
  */
 export const fromCell = (value: unknown): DaxScalar => {
   if (value === null || value === undefined) return null;
