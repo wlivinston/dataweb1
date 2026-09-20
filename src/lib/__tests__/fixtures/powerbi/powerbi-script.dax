@@ -1,0 +1,32 @@
+ParityResults =
+// Paste this into Power BI Desktop: Modeling > New table.
+// Put Case and Answer into a Table visual and send the result back.
+//
+// Generated from expected.ts - 25 cases.
+UNION(
+    ROW("Case", "01 setup-total", "Answer", IFERROR(IF(ISBLANK(SUM(Sales[Amount])), "BLANK", FORMAT(SUM(Sales[Amount]), "0.##########")), "ERROR")),
+    ROW("Case", "02 setup-rows", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(Sales)), "BLANK", FORMAT(COUNTROWS(Sales), "0.##########")), "ERROR")),
+    ROW("Case", "03 setup-count", "Answer", IFERROR(IF(ISBLANK(COUNT(Sales[Amount])), "BLANK", FORMAT(COUNT(Sales[Amount]), "0.##########")), "ERROR")),
+    ROW("Case", "04 blank-distinctcount", "Answer", IFERROR(IF(ISBLANK(DISTINCTCOUNT(Sales[Region])), "BLANK", FORMAT(DISTINCTCOUNT(Sales[Region]), "0.##########")), "ERROR")),
+    ROW("Case", "05 blank-not-equal", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUM(Sales[Amount]), Sales[Region] <> "North")), "BLANK", FORMAT(CALCULATE(SUM(Sales[Amount]), Sales[Region] <> "North"), "0.##########")), "ERROR")),
+    ROW("Case", "06 blank-average-denominator", "Answer", IFERROR(IF(ISBLANK(AVERAGE(Sales[Amount])), "BLANK", FORMAT(AVERAGE(Sales[Amount]), "0.##########")), "ERROR")),
+    ROW("Case", "07 blank-divide-by-zero", "Answer", IFERROR(IF(ISBLANK(DIVIDE(1, 0)), "BLANK", FORMAT(DIVIDE(1, 0), "0.##########")), "ERROR")),
+    ROW("Case", "08 blank-slash-by-zero", "Answer", IFERROR(IF(ISBLANK(1 / 0), "BLANK", FORMAT(1 / 0, "0.##########")), "ERROR")),
+    ROW("Case", "09 blank-equals-zero", "Answer", IFERROR(IF(BLANK() = 0, "YES", "NO"), "ERROR")),
+    ROW("Case", "10 blank-empty-aggregation", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUM(Sales[Amount]), Sales[Region] = "Nowhere")), "BLANK", FORMAT(CALCULATE(SUM(Sales[Amount]), Sales[Region] = "Nowhere"), "0.##########")), "ERROR")),
+    ROW("Case", "11 time-totalytd-calendar", "Answer", IFERROR(IF(ISBLANK(CALCULATE(TOTALYTD(SUM(Sales[Amount]), 'Date'[Date]), 'Date'[Date] = DATE(2024, 6, 30))), "BLANK", FORMAT(CALCULATE(TOTALYTD(SUM(Sales[Amount]), 'Date'[Date]), 'Date'[Date] = DATE(2024, 6, 30)), "0.##########")), "ERROR")),
+    ROW("Case", "12 time-sameperiodlastyear-leap-day", "Answer", IFERROR(IF(ISBLANK(CALCULATE(CALCULATE(SUM(Sales[Amount]), SAMEPERIODLASTYEAR('Date'[Date])), 'Date'[Date] = DATE(2024, 2, 29))), "BLANK", FORMAT(CALCULATE(CALCULATE(SUM(Sales[Amount]), SAMEPERIODLASTYEAR('Date'[Date])), 'Date'[Date] = DATE(2024, 2, 29)), "0.##########")), "ERROR")),
+    ROW("Case", "13 time-dateadd-month-end", "Answer", IFERROR(IF(ISBLANK(CALCULATE(CALCULATE(SUM(Sales[Amount]), DATEADD('Date'[Date], -1, MONTH)), 'Date'[Date] = DATE(2024, 3, 31))), "BLANK", FORMAT(CALCULATE(CALCULATE(SUM(Sales[Amount]), DATEADD('Date'[Date], -1, MONTH)), 'Date'[Date] = DATE(2024, 3, 31)), "0.##########")), "ERROR")),
+    ROW("Case", "14 time-previousmonth", "Answer", IFERROR(IF(ISBLANK(CALCULATE(CALCULATE(SUM(Sales[Amount]), PREVIOUSMONTH('Date'[Date])), 'Date'[Date] = DATE(2024, 3, 15))), "BLANK", FORMAT(CALCULATE(CALCULATE(SUM(Sales[Amount]), PREVIOUSMONTH('Date'[Date])), 'Date'[Date] = DATE(2024, 3, 15)), "0.##########")), "ERROR")),
+    ROW("Case", "15 time-previousyear", "Answer", IFERROR(IF(ISBLANK(CALCULATE(CALCULATE(SUM(Sales[Amount]), PREVIOUSYEAR('Date'[Date])), 'Date'[Date] = DATE(2024, 3, 15))), "BLANK", FORMAT(CALCULATE(CALCULATE(SUM(Sales[Amount]), PREVIOUSYEAR('Date'[Date])), 'Date'[Date] = DATE(2024, 3, 15)), "0.##########")), "ERROR")),
+    ROW("Case", "16 time-datesinperiod-boundary", "Answer", IFERROR(IF(ISBLANK(CALCULATE(CALCULATE(SUM(Sales[Amount]), DATESINPERIOD('Date'[Date], DATE(2024, 3, 31), -3, MONTH)), ALL(Sales))), "BLANK", FORMAT(CALCULATE(CALCULATE(SUM(Sales[Amount]), DATESINPERIOD('Date'[Date], DATE(2024, 3, 31), -3, MONTH)), ALL(Sales)), "0.##########")), "ERROR")),
+    ROW("Case", "17 fiscal-datesytd-june-end", "Answer", IFERROR(IF(ISBLANK(CALCULATE(CALCULATE(SUM(Sales[Amount]), DATESYTD('Date'[Date], "6/30")), 'Date'[Date] = DATE(2024, 9, 30))), "BLANK", FORMAT(CALCULATE(CALCULATE(SUM(Sales[Amount]), DATESYTD('Date'[Date], "6/30")), 'Date'[Date] = DATE(2024, 9, 30)), "0.##########")), "ERROR")),
+    ROW("Case", "18 fiscal-totalytd-june-end", "Answer", IFERROR(IF(ISBLANK(CALCULATE(TOTALYTD(SUM(Sales[Amount]), 'Date'[Date], "6/30"), 'Date'[Date] = DATE(2024, 12, 31))), "BLANK", FORMAT(CALCULATE(TOTALYTD(SUM(Sales[Amount]), 'Date'[Date], "6/30"), 'Date'[Date] = DATE(2024, 12, 31)), "0.##########")), "ERROR")),
+    ROW("Case", "19 filter-rhs-measure", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUM(Sales[Amount]), Sales[Amount] > AVERAGE(Sales[Amount]))), "BLANK", FORMAT(CALCULATE(SUM(Sales[Amount]), Sales[Amount] > AVERAGE(Sales[Amount])), "0.##########")), "ERROR")),
+    ROW("Case", "20 filter-rhs-row-context", "Answer", IFERROR(IF(ISBLANK(SUMX(Sales, CALCULATE(SUM(Sales[Amount]), Sales[Amount] = Sales[Amount] * 1))), "BLANK", FORMAT(SUMX(Sales, CALCULATE(SUM(Sales[Amount]), Sales[Amount] = Sales[Amount] * 1)), "0.##########")), "ERROR")),
+    ROW("Case", "21 topn-includes-ties", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(TOPN(5, ALL(Sales), Sales[Amount], DESC))), "BLANK", FORMAT(COUNTROWS(TOPN(5, ALL(Sales), Sales[Amount], DESC)), "0.##########")), "ERROR")),
+    ROW("Case", "22 stats-median", "Answer", IFERROR(IF(ISBLANK(MEDIAN(Sales[Amount])), "BLANK", FORMAT(MEDIAN(Sales[Amount]), "0.##########")), "ERROR")),
+    ROW("Case", "23 stats-percentile-interpolation", "Answer", IFERROR(IF(ISBLANK(PERCENTILE.INC(Sales[Amount], 0.9)), "BLANK", FORMAT(PERCENTILE.INC(Sales[Amount], 0.9), "0.##########")), "ERROR")),
+    ROW("Case", "24 week-iso-jan-1-monday", "Answer", IFERROR(IF(ISBLANK(WEEKNUM(DATE(2024, 1, 1), 21)), "BLANK", FORMAT(WEEKNUM(DATE(2024, 1, 1), 21), "0.##########")), "ERROR")),
+    ROW("Case", "25 week-iso-jan-1-sunday", "Answer", IFERROR(IF(ISBLANK(WEEKNUM(DATE(2023, 1, 1), 21)), "BLANK", FORMAT(WEEKNUM(DATE(2023, 1, 1), 21), "0.##########")), "ERROR"))
+)

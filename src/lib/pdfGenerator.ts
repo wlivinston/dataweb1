@@ -1,6 +1,9 @@
 // PDF Generation Utility for Analyzed Data
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import type { DaxScalar } from './dax/value';
+import { describeCalculationOutcome } from './dax/run';
+
 
 export interface PDFExportData {
   datasets: Array<{
@@ -21,7 +24,11 @@ export interface PDFExportData {
   daxCalculations: Array<{
     name: string;
     formula: string;
-    result?: any;
+    result?: DaxScalar;
+    /** Why the calculation produced no value. */
+    error?: string;
+    /** True once evaluation was attempted, whatever the outcome. */
+    evaluated?: boolean;
   }>;
   relationships?: Array<{
     from: string;
@@ -119,9 +126,7 @@ export const generatePDF = (data: PDFExportData, title: string = 'Data Analysis 
     const calcData = data.daxCalculations.map(calc => [
       calc.name,
       calc.formula,
-      calc.result !== undefined && calc.result !== null 
-        ? String(calc.result) 
-        : 'Not executed'
+      describeCalculationOutcome(calc)
     ]);
 
     autoTable(doc, {

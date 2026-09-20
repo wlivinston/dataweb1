@@ -1,0 +1,19 @@
+TableResults =
+// Paste into Power BI Desktop: Modeling > New table.
+// Runs against the Sales table from sales.csv.
+// Put Case and Answer into a Table visual and send the result back.
+//
+// Generated from table-expected.ts - 11 cases.
+UNION(
+    ROW("Case", "01 canary-the-table-actually-has-rows", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(Sales)), "BLANK", FORMAT(COUNTROWS(Sales), "0.##########")), "ERROR")),
+    ROW("Case", "02 ranked-rows-in-order", "Answer", IFERROR(CONCATENATEX(TOPN(3, ADDCOLUMNS(VALUES(Sales[Region]), "T", CALCULATE(SUM(Sales[Amount]))), [T], DESC), IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region]), ">"), "ERROR")),
+    ROW("Case", "03 ranked-rows-with-their-figures", "Answer", IFERROR(CONCATENATEX(TOPN(3, ADDCOLUMNS(VALUES(Sales[Region]), "T", CALCULATE(SUM(Sales[Amount]))), [T], DESC), IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region]) & "=" & [T], ">"), "ERROR")),
+    ROW("Case", "04 ranked-the-other-way", "Answer", IFERROR(CONCATENATEX(TOPN(3, ADDCOLUMNS(VALUES(Sales[Region]), "T", CALCULATE(SUM(Sales[Amount]))), [T], ASC), IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region]) & "=" & [T], ">"), "ERROR")),
+    ROW("Case", "05 top-one-group", "Answer", IFERROR(CONCATENATEX(TOPN(1, ADDCOLUMNS(VALUES(Sales[Region]), "T", CALCULATE(SUM(Sales[Amount]))), [T], DESC), IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region]), ">"), "ERROR")),
+    ROW("Case", "06 bottom-one-group-is-the-blank-one", "Answer", IFERROR(CONCATENATEX(TOPN(1, ADDCOLUMNS(VALUES(Sales[Region]), "T", CALCULATE(SUM(Sales[Amount]))), [T], ASC), IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region]), ">"), "ERROR")),
+    ROW("Case", "07 asking-for-more-groups-than-exist", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(TOPN(10, ADDCOLUMNS(VALUES(Sales[Region]), "T", CALCULATE(SUM(Sales[Amount]))), [T], DESC))), "BLANK", FORMAT(COUNTROWS(TOPN(10, ADDCOLUMNS(VALUES(Sales[Region]), "T", CALCULATE(SUM(Sales[Amount]))), [T], DESC)), "0.##########")), "ERROR")),
+    ROW("Case", "08 a-tie-keeps-both-rows", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(TOPN(1, ADDCOLUMNS(VALUES(Sales[Amount]), "C", CALCULATE(COUNTROWS(Sales))), [C], DESC))), "BLANK", FORMAT(COUNTROWS(TOPN(1, ADDCOLUMNS(VALUES(Sales[Amount]), "C", CALCULATE(COUNTROWS(Sales))), [C], DESC)), "0.##########")), "ERROR")),
+    ROW("Case", "09 ordering-by-text-puts-blank-where", "Answer", IFERROR(CONCATENATEX(TOPN(3, VALUES(Sales[Region]), Sales[Region], ASC), IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region]), ">"), "ERROR")),
+    ROW("Case", "10 grouping-by-a-different-column", "Answer", IFERROR(CONCATENATEX(TOPN(2, ADDCOLUMNS(VALUES(Sales[Product]), "T", CALCULATE(SUM(Sales[Amount]))), [T], DESC), Sales[Product] & "=" & [T], ">"), "ERROR")),
+    ROW("Case", "11 blank-inside-concatenatex", "Answer", IFERROR(IF(ISBLANK(LEN(CONCATENATEX(VALUES(Sales[Region]), Sales[Region], "|"))), "BLANK", FORMAT(LEN(CONCATENATEX(VALUES(Sales[Region]), Sales[Region], "|")), "0.##########")), "ERROR"))
+)

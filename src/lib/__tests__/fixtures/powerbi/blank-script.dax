@@ -1,0 +1,16 @@
+BlankResults =
+// Paste into Power BI Desktop: Modeling > New table.
+// Runs against the Sales table from sales.csv.
+// Put Case and Answer into a Table visual and send the result back.
+//
+// Generated from blank-expected.ts - 8 cases.
+UNION(
+    ROW("Case", "01 canary-the-table-actually-has-rows", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(Sales)), "BLANK", FORMAT(COUNTROWS(Sales), "0.##########")), "ERROR")),
+    ROW("Case", "02 countblank-on-the-text-column", "Answer", IFERROR(IF(ISBLANK(COUNTBLANK(Sales[Region])), "BLANK", FORMAT(COUNTBLANK(Sales[Region]), "0.##########")), "ERROR")),
+    ROW("Case", "03 countblank-on-the-numeric-column", "Answer", IFERROR(IF(ISBLANK(COUNTBLANK(Sales[Amount])), "BLANK", FORMAT(COUNTBLANK(Sales[Amount]), "0.##########")), "ERROR")),
+    ROW("Case", "04 rows-where-the-region-is-blank", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(FILTER(Sales, ISBLANK(Sales[Region])))), "BLANK", FORMAT(COUNTROWS(FILTER(Sales, ISBLANK(Sales[Region]))), "0.##########")), "ERROR")),
+    ROW("Case", "05 rows-where-the-region-equals-empty-text", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(FILTER(Sales, Sales[Region] = ""))), "BLANK", FORMAT(COUNTROWS(FILTER(Sales, Sales[Region] = "")), "0.##########")), "ERROR")),
+    ROW("Case", "06 the-blank-row-looked-up-directly", "Answer", IFERROR(IF(ISBLANK(LOOKUPVALUE(Sales[Region], Sales[OrderID], "O15")), "BLANK", "NOT-BLANK"), "ERROR")),
+    ROW("Case", "07 non-blank-count-of-the-text-column", "Answer", IFERROR(IF(ISBLANK(COUNTA(Sales[Region])), "BLANK", FORMAT(COUNTA(Sales[Region]), "0.##########")), "ERROR")),
+    ROW("Case", "08 distinct-values-including-the-empty-one", "Answer", IFERROR(IF(ISBLANK(DISTINCTCOUNT(Sales[Region])), "BLANK", FORMAT(DISTINCTCOUNT(Sales[Region]), "0.##########")), "ERROR"))
+)

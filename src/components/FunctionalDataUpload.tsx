@@ -29,6 +29,7 @@ import DataExplorer from './DataExplorer';
 import AnalyticsDashboard from './AnalyticsDashboard';
 import RelationshipBuilder from './RelationshipBuilder';
 import CustomDAXCalculator from './CustomDAXCalculator';
+import MeasureLibraryPanel from './MeasureLibraryPanel';
 import AnalysisInterpretation from './AnalysisInterpretation';
 import DataCleaning from './DataCleaning';
 import ZoomableVisualization from './ZoomableVisualization';
@@ -52,7 +53,6 @@ import { detectSchema, detectDateTables } from '@/lib/smartDataConnector';
 import { SchemaDetectionResult, TimeSeriesResult, DateTableInfo } from '@/lib/types';
 import { autoDetectTimeSeries, detectDateColumns } from '@/lib/timeSeriesEngine';
 import { autoAdvancedAnalysis } from '@/lib/advancedStatistics';
-import { generateEnhancedKPIs } from '@/lib/kpiFormulaEngine';
 import { assertExcelBufferIsSafe, assertWorkbookHasNoMacros } from '@/lib/excelSecurity';
 import {
   isDatasetTooLarge,
@@ -62,6 +62,16 @@ import {
   RENDERING_LIMITS
 } from '@/lib/dataOptimization';
 import { CHART_COLOR_SCHEMES, SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATIVE_CHART_COLOR } from '@/lib/chartColors';
+// The DAX engine. This replaced executeDAXCalculation, which matched
+// substrings against the formula text: SUM( anywhere in the string summed a
+// column, COUNTROWS anywhere returned the full row count no matter what
+// filtered it, and anything unrecognised returned null - indistinguishable
+// from a genuine BLANK. Every number shown below now comes from a parsed,
+// validated, evaluated expression, or is replaced by the reason it could not.
+import { buildSemanticModel } from '@/lib/semantic/model';
+import type { SemanticModel } from '@/lib/semantic/types';
+import { runDax, formatDaxValue } from '@/lib/dax/run';
+import { suggestCalculations } from '@/lib/dax/suggest';
 import {
   toHistogramData, toBoxPlotData, toRadarData, toTreemapData,
   toHeatmapCorrelation, toFunnelData, toStackedBarData, toTopBottomData,
@@ -80,6 +90,17 @@ const PAID_SUBSCRIPTION_STATUSES = new Set([
   'monthly',
   'annual',
 ]);
+
+/**
+ * Identifies the data a semantic model was built from.
+ *
+ * Row count catches inserts and deletes; updatedAt catches an edit in place,
+ * which leaves the count unchanged. Cheap enough to compute on every check.
+ */
+const signatureOf = (datasets: Dataset[]): string =>
+  datasets
+    .map(d => `${d.id}:${d.rowCount}:${d.columns.length}:${d.updatedAt?.getTime() ?? 0}`)
+    .join('|');
 
 const FunctionalDataUpload: React.FC = () => {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -122,6 +143,12 @@ const FunctionalDataUpload: React.FC = () => {
   // Auto schema detection state
   const [autoDetectedSchema, setAutoDetectedSchema] = useState<SchemaDetectionResult | null>(null);
   const prevDatasetCount = useRef(0);
+  // The semantic model every DAX expression resolves against. Built from all
+  // datasets at once, because a measure names its own table and may reach
+  // across a relationship to another one.
+  const [semanticModel, setSemanticModel] = useState<SemanticModel | null>(null);
+  /** What `semanticModel` was built from, to detect that it has gone stale. */
+  const modelSignature = useRef<string>('');
 
   const colorSchemes = CHART_COLOR_SCHEMES;
 
@@ -997,134 +1024,92 @@ const FunctionalDataUpload: React.FC = () => {
     }
   };
 
-  // Generate DAX Calculations
-  const generateDAXCalculations = (dataset: Dataset): DAXCalculation[] => {
-    const calculations: DAXCalculation[] = [];
-    const numericColumns = dataset.columns.filter(col => col.type === 'number');
-    const dateColumns = dataset.columns.filter(col => col.type === 'date');
-    const textColumns = dataset.columns.filter(col => col.type === 'string');
-
-    // Aggregation calculations
-    if (numericColumns.length > 0) {
-      numericColumns.forEach(col => {
-        calculations.push({
-          id: `sum-${col.name}`,
-          name: `Sum of ${col.name}`,
-          formula: `SUM(${col.name})`,
-          description: `Total sum of ${col.name}`,
-          category: 'aggregation',
-          applicable: true,
-          confidence: 0.9
-        });
-
-        calculations.push({
-          id: `avg-${col.name}`,
-          name: `Average of ${col.name}`,
-          formula: `AVERAGE(${col.name})`,
-          description: `Average value of ${col.name}`,
-          category: 'aggregation',
-          applicable: true,
-          confidence: 0.9
-        });
-
-        calculations.push({
-          id: `max-${col.name}`,
-          name: `Maximum ${col.name}`,
-          formula: `MAX(${col.name})`,
-          description: `Maximum value of ${col.name}`,
-          category: 'aggregation',
-          applicable: true,
-          confidence: 0.9
-        });
-      });
+  /**
+   * Build the semantic model every DAX expression resolves against.
+   *
+   * All datasets go in at once: a measure names its own table and may reach
+   * across a relationship into another, so a model built per-dataset could
+   * not express the joins that make the numbers right.
+   *
+   * Kept out of render deliberately. Relationship orientation is measured
+   * from the data rather than guessed from column names, which costs a pass
+   * over the rows, so callers run this inside the analysis pipeline between
+   * yields rather than on every keystroke.
+   */
+  const rebuildSemanticModel = (source: Dataset[]): SemanticModel | null => {
+    if (source.length === 0) {
+      modelSignature.current = '';
+      setSemanticModel(null);
+      return null;
     }
+    const model = buildSemanticModel(source);
+    modelSignature.current = signatureOf(source);
+    setSemanticModel(model);
+    return model;
+  };
 
-    // Count calculations
-    calculations.push({
-      id: 'total-rows',
-      name: 'Total Rows',
-      formula: 'COUNTROWS(Table)',
-      description: 'Total number of rows in the dataset',
-      category: 'aggregation',
-      applicable: true,
-      confidence: 1.0
+  /**
+   * The model for the data as it stands right now, building one if the
+   * datasets have changed since the last build.
+   *
+   * Rows can be edited and deleted without the analysis pipeline running, so
+   * a model held in state can describe data that no longer exists. Serving a
+   * number from a stale model is the same class of failure as serving one
+   * from a substring match: it looks right and is not.
+   */
+  const ensureSemanticModel = (): SemanticModel | null => {
+    if (datasets.length === 0) return null;
+    if (semanticModel && modelSignature.current === signatureOf(datasets)) {
+      return semanticModel;
+    }
+    return rebuildSemanticModel(datasets);
+  };
+
+  /**
+   * Anything about the model that changes what a number means.
+   *
+   * These are not logged and forgotten. A column read day-first when it was
+   * written month-first turns March into April in every monthly total, and
+   * the person reading the total is the one who has to be told.
+   */
+  const reportModelWarnings = (model: SemanticModel): void => {
+    for (const warning of model.warnings) {
+      if (warning.severity === 'error') toast.error(warning.message);
+      else if (warning.severity === 'warning') toast.warning(warning.message);
+    }
+  };
+
+  /**
+   * Run each calculation, recording either a value or the reason there is
+   * not one.
+   *
+   * `result` and `error` are mutually exclusive by construction, and
+   * `evaluated` separates "ran and came back blank" from "never ran" - a
+   * distinction the old `result: any` could not carry, because both were
+   * null and the UI showed neither.
+   */
+  const evaluateCalculations = (
+    calculations: DAXCalculation[],
+    model: SemanticModel
+  ): DAXCalculation[] =>
+    calculations.map(calculation => {
+      const outcome = runDax(calculation.formula, model);
+      return outcome.ok
+        ? {
+            ...calculation,
+            result: outcome.value,
+            error: undefined,
+            errorDetail: null,
+            evaluated: true,
+          }
+        : {
+            ...calculation,
+            result: undefined,
+            error: outcome.message,
+            errorDetail: outcome.detail,
+            evaluated: true,
+          };
     });
-
-    // Time-based calculations
-    if (dateColumns.length > 0) {
-      dateColumns.forEach(col => {
-        calculations.push({
-          id: `year-${col.name}`,
-          name: `Year from ${col.name}`,
-          formula: `YEAR(${col.name})`,
-          description: `Extract year from ${col.name}`,
-          category: 'time',
-          applicable: true,
-          confidence: 0.8
-        });
-      });
-    }
-
-    return calculations;
-  };
-
-  // Execute DAX Calculation
-  const executeDAXCalculation = (calculation: DAXCalculation, dataset: Dataset): any => {
-    const { formula, name } = calculation;
-    
-    try {
-      if (formula.includes('SUM(')) {
-        const columnName = formula.match(/SUM\(([^)]+)\)/)?.[1];
-        if (columnName && dataset.dataTypes[columnName] === 'number') {
-          const values = dataset.data.map(row => Number(row[columnName])).filter(v => !isNaN(v));
-          return values.reduce((a, b) => a + b, 0);
-        }
-      }
-      
-      if (formula.includes('AVERAGE(')) {
-        const columnName = formula.match(/AVERAGE\(([^)]+)\)/)?.[1];
-        if (columnName && dataset.dataTypes[columnName] === 'number') {
-          const values = dataset.data.map(row => Number(row[columnName])).filter(v => !isNaN(v));
-          return values.reduce((a, b) => a + b, 0) / values.length;
-        }
-      }
-      
-      if (formula.includes('MAX(')) {
-        const columnName = formula.match(/MAX\(([^)]+)\)/)?.[1];
-        if (columnName && dataset.dataTypes[columnName] === 'number') {
-          const values = dataset.data.map(row => Number(row[columnName])).filter(v => !isNaN(v));
-          if (values.length === 0) return null;
-          return values.reduce((max, val) => val > max ? val : max, values[0]);
-        }
-      }
-      
-      if (formula.includes('MIN(')) {
-        const columnName = formula.match(/MIN\(([^)]+)\)/)?.[1];
-        if (columnName && dataset.dataTypes[columnName] === 'number') {
-          const values = dataset.data.map(row => Number(row[columnName])).filter(v => !isNaN(v));
-          if (values.length === 0) return null;
-          return values.reduce((min, val) => val < min ? val : min, values[0]);
-        }
-      }
-      
-      if (formula.includes('COUNTROWS')) {
-        return dataset.rowCount;
-      }
-      
-      if (formula.includes('YEAR(')) {
-        const columnName = formula.match(/YEAR\(([^)]+)\)/)?.[1];
-        if (columnName && dataset.dataTypes[columnName] === 'date') {
-          const years = dataset.data.map(row => new Date(row[columnName]).getFullYear()).filter(y => !isNaN(y));
-          return [...new Set(years)].sort();
-        }
-      }
-      
-      return null;
-    } catch (error) {
-      console.error('Error executing DAX calculation:', error);
-      return null;
-    }
-  };
 
   // Generate Visualizations with optimization for large datasets
   const generateVisualizations = (dataset: Dataset): Visualization[] => {
@@ -2031,16 +2016,13 @@ const FunctionalDataUpload: React.FC = () => {
       setUploadMessage('Generating DAX calculations...');
       await yieldToBrowser();
 
-      const allCalculations: DAXCalculation[] = [];
-      for (const dataset of allDatasets) {
-        const calculations = generateDAXCalculations(dataset);
-        const executedCalculations = calculations.map(calc => ({
-          ...calc,
-          result: executeDAXCalculation(calc, dataset)
-        }));
-        allCalculations.push(...executedCalculations);
-      }
-      setDaxCalculations(allCalculations);
+      const uploadModel = rebuildSemanticModel(allDatasets);
+      setDaxCalculations(
+        uploadModel
+          ? evaluateCalculations(suggestCalculations(uploadModel), uploadModel)
+          : []
+      );
+      if (uploadModel) reportModelWarnings(uploadModel);
       await yieldToBrowser();
 
       // Step 3: Generate smart visualizations
@@ -2188,64 +2170,40 @@ const FunctionalDataUpload: React.FC = () => {
       setUploadProgress(10);
       setUploadMessage('Generating DAX calculations...');
       
-      const allCalculations: DAXCalculation[] = [];
       const totalDatasets = datasets.length;
-      
-      for (let i = 0; i < datasets.length; i++) {
-        const dataset = datasets[i];
-        setUploadProgress(10 + (i / totalDatasets) * 30);
-        setUploadMessage(`Processing dataset ${i + 1}/${totalDatasets}: ${dataset.name}...`);
-        await yieldToBrowser();
-        
-        // If relationships exist, join data
-        const datasetRelationships = relationships.filter(r => 
-          r.fromDataset === dataset.id || r.toDataset === dataset.id
-        );
-        
-        let workingData = dataset.data;
-        if (datasetRelationships.length > 0 && schemaType !== 'none') {
-          workingData = joinDatasets(dataset, datasetRelationships.filter(r => r.fromDataset === dataset.id));
-        }
-        
-        const workingDataset = { ...dataset, data: workingData };
-        const calculations = generateDAXCalculations(workingDataset);
-        const executedCalculations = calculations.map(calc => ({
-          ...calc,
-          result: executeDAXCalculation(calc, workingDataset)
-        }));
-        allCalculations.push(...executedCalculations);
-      }
-      
-      setDaxCalculations(allCalculations);
+
+      setUploadMessage('Building the semantic model...');
+      await yieldToBrowser();
+
+      // No pre-joining any more. The loop this replaces flattened each
+      // dataset against its related tables and ran the calculations over the
+      // result, which repeats a dimension row once per matching fact and so
+      // multiplies anything summed from it. The model keeps the tables apart
+      // and propagates filters along the relationships instead.
+      const analysisModel = rebuildSemanticModel(datasets);
+      await yieldToBrowser();
+
+      setUploadProgress(30);
+      setUploadMessage('Evaluating DAX calculations...');
+      setDaxCalculations(
+        analysisModel
+          ? evaluateCalculations(suggestCalculations(analysisModel), analysisModel)
+          : []
+      );
+      if (analysisModel) reportModelWarnings(analysisModel);
       await yieldToBrowser();
 
       // Stage 2: Execute custom DAX calculations
       setUploadProgress(45);
       setUploadMessage('Executing custom calculations...');
       
-      const executedCustomCalculations = customDAXCalculations.map(calc => {
-        const dataset = datasets.find(d => d.id === activeDataset) || datasets[0];
-        if (dataset) {
-          const datasetRelationships = relationships.filter(r => {
-            const matchesDataset = r.fromDataset === dataset.id || r.toDataset === dataset.id;
-            const matchesSchema = schemaType === 'none' || r.schemaType === schemaType;
-            return matchesDataset && matchesSchema;
-          });
-          
-          let workingData = dataset.data;
-          if (datasetRelationships.length > 0 && schemaType !== 'none') {
-            workingData = joinDatasets(dataset, datasetRelationships.filter(r => r.fromDataset === dataset.id));
-          }
-          
-          const workingDataset = { ...dataset, data: workingData };
-          return {
-            ...calc,
-            result: executeDAXCalculation(calc, workingDataset)
-          };
-        }
-        return calc;
-      });
-      setCustomDAXCalculations(executedCustomCalculations);
+      // A custom expression names its own tables, so there is no "which
+      // dataset" question left to answer here.
+      setCustomDAXCalculations(
+        analysisModel
+          ? evaluateCalculations(customDAXCalculations, analysisModel)
+          : customDAXCalculations
+      );
       await yieldToBrowser();
       
       // Stage 3: Generate visualizations
@@ -2497,7 +2455,13 @@ const FunctionalDataUpload: React.FC = () => {
                       daxCalculations: [...daxCalculations, ...customDAXCalculations].slice(0, 20).map(c => ({
                         name: c.name,
                         formula: c.formula,
-                        result: c.result
+                        result: c.result,
+                        // Carried through so the report can distinguish a
+                        // blank from a failure. A PDF is the version of this
+                        // that gets forwarded, so it is the last place a
+                        // number should be allowed to look confident.
+                        error: c.error,
+                        evaluated: c.evaluated
                       })),
                       relationships: relationships.map(r => {
                         const fromDs = datasets.find(d => d.id === r.fromDataset);
@@ -2922,13 +2886,10 @@ const FunctionalDataUpload: React.FC = () => {
 
           {/* Ask Your Data Tab - Natural Language Query - NEW */}
           <TabsContent value="ask-data" className="space-y-6">
-            <NaturalLanguageQuery
-              dataset={datasets.find(d => d.id === activeDataset) || datasets[0] || null}
-              onVisualizationRequest={(viz) => {
-                // Could add the visualization to the dashboard
-                console.log('Visualization requested:', viz);
-              }}
-            />
+            {/* The whole model, not one dataset: a question names its own
+                columns, and an answer that has to cross a relationship
+                cannot be computed from a single table. */}
+            <NaturalLanguageQuery model={semanticModel} />
           </TabsContent>
 
           {/* Smart Connections Tab - NEW */}
@@ -3230,34 +3191,40 @@ const FunctionalDataUpload: React.FC = () => {
               onSave={setInterpretation}
             />
 
+            {/* Measure Library */}
+            <MeasureLibraryPanel model={semanticModel} />
+
             {/* Custom DAX Calculator */}
             <CustomDAXCalculator
-              datasets={datasets}
+              model={semanticModel}
               customCalculations={customDAXCalculations}
               onAddCalculation={(calc) => {
                 const newCalc: DAXCalculation = {
                   ...calc,
                   id: `custom-${Date.now()}`
                 };
-                setCustomDAXCalculations(prev => [...prev, newCalc]);
-                
-                // Auto-execute if dataset is available
-                const dataset = datasets.find(d => d.id === activeDataset) || datasets[0];
-                if (dataset) {
-                  try {
-                    const result = executeDAXCalculation(newCalc, dataset);
-                    setCustomDAXCalculations(prev => prev.map(c => 
-                      c.id === newCalc.id ? { ...c, result } : c
-                    ));
-                  } catch (error) {
-                    console.error('Error executing custom calculation:', error);
-                  }
-                }
+                const model = ensureSemanticModel();
+                setCustomDAXCalculations(prev => [
+                  ...prev,
+                  model ? evaluateCalculations([newCalc], model)[0] : newCalc
+                ]);
               }}
               onDeleteCalculation={(id) => {
                 setCustomDAXCalculations(prev => prev.filter(c => c.id !== id));
               }}
-              onExecuteCalculation={executeDAXCalculation}
+              onRunCalculation={(calc) => {
+                const model = ensureSemanticModel();
+                if (!model) {
+                  toast.error('Upload a dataset before running a calculation.');
+                  return;
+                }
+                const [evaluated] = evaluateCalculations([calc], model);
+                setCustomDAXCalculations(prev =>
+                  prev.map(c => (c.id === calc.id ? evaluated : c))
+                );
+                if (evaluated.error) toast.error(evaluated.error);
+                else toast.success(`${calc.name}: ${formatDaxValue(evaluated.result ?? null)}`);
+              }}
             />
 
             {/* Automatic DAX Calculations */}
@@ -3285,10 +3252,19 @@ const FunctionalDataUpload: React.FC = () => {
                           </div>
                           <p className="text-sm text-gray-600">{calc.description}</p>
                           <code className="text-xs bg-gray-100 p-2 rounded block">{calc.formula}</code>
-                          {calc.result !== null && calc.result !== undefined && (
-                            <div className="text-lg font-bold text-blue-600">
-                              Result: {typeof calc.result === 'object' ? JSON.stringify(calc.result) : calc.result}
+                          {calc.error ? (
+                            <div className="rounded border border-red-200 bg-red-50 p-2">
+                              <p className="text-xs font-medium text-red-700">
+                                This could not be calculated
+                              </p>
+                              <p className="mt-1 text-xs text-red-600">{calc.error}</p>
                             </div>
+                          ) : calc.evaluated ? (
+                            <div className="text-lg font-bold text-blue-600">
+                              {formatDaxValue(calc.result ?? null)}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-400">Not evaluated yet</p>
                           )}
                           <div className="flex items-center gap-2">
                             <div className="flex-1 bg-gray-200 rounded-full h-2">

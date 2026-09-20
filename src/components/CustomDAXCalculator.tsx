@@ -1,5 +1,5 @@
 // Custom DAX Calculation Component
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,24 +8,107 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
-import { Dataset, DAXCalculation } from '@/lib/types';
-import { Plus, Calculator, Zap, Play, AlertCircle, CheckCircle } from 'lucide-react';
+import { DAXCalculation } from '@/lib/types';
+import type { SemanticModel } from '@/lib/semantic/types';
+import { checkDax, formatDaxValue } from '@/lib/dax/run';
+import { columnRef, tableRef } from '@/lib/dax/printer';
+import { Plus, Calculator, Play, AlertCircle, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface CustomDAXCalculatorProps {
-  datasets: Dataset[];
+  /**
+   * The model expressions resolve against, or null before any data is
+   * loaded. A DAX expression names its own tables, so there is no longer a
+   * "run this against which dataset" question for the caller to answer.
+   */
+  model: SemanticModel | null;
   customCalculations: DAXCalculation[];
   onAddCalculation: (calculation: Omit<DAXCalculation, 'id'>) => void;
   onDeleteCalculation: (calculationId: string) => void;
-  onExecuteCalculation: (calculation: DAXCalculation, dataset: Dataset) => any;
+  /** Evaluates and stores the result; the parent owns both. */
+  onRunCalculation: (calculation: DAXCalculation) => void;
 }
 
+/**
+ * Worked examples, built from the model's own table and column names.
+ *
+ * The fixed list this replaces - SUM(ColumnName), COUNTROWS(Table) - was not
+ * valid DAX and named nothing that existed, so anyone who clicked one got a
+ * formula that could not run. These are real references, taken from the data
+ * actually loaded, and they parse.
+ */
+const examplesFor = (model: SemanticModel | null) => {
+  if (!model) return [];
+
+  const table =
+    model.tables.find(t => !t.isGenerated && t.columns.some(c => c.role === 'measure')) ??
+    model.tables.find(t => !t.isGenerated);
+  if (!table) return [];
+
+  const measure = table.columns.find(c => c.role === 'measure');
+  const dimension = table.columns.find(c => c.role === 'dimension');
+
+  const examples: { name: string; formula: string; description: string }[] = [
+    {
+      name: `Rows in ${table.name}`,
+      formula: `COUNTROWS(${tableRef(table.name)})`,
+      description: 'How many rows the table holds.',
+    },
+  ];
+
+  if (measure) {
+    const reference = columnRef(table.name, measure.name);
+    examples.push(
+      {
+        name: `Total ${measure.name}`,
+        formula: `SUM(${reference})`,
+        description: `Sum of ${measure.name}.`,
+      },
+      {
+        name: `Average ${measure.name}`,
+        formula: `AVERAGE(${reference})`,
+        description: `Mean ${measure.name}, ignoring blanks.`,
+      }
+    );
+
+    if (dimension) {
+      const example = table.rows.find(row => row[dimension.name] != null)?.[dimension.name];
+      if (example !== undefined) {
+        examples.push({
+          name: `${measure.name} for one ${dimension.name}`,
+          formula: `CALCULATE(SUM(${reference}), ${columnRef(table.name, dimension.name)} = "${String(
+            example
+          ).replace(/"/g, '""')}")`,
+          description: 'An aggregation under a filter.',
+        });
+      }
+    }
+  }
+
+  if (model.dateTableName) {
+    const dateTable = model.tables.find(t => t.name === model.dateTableName);
+    const dateColumn = dateTable?.columns.find(c => c.dataType === 'date');
+    if (dateTable && dateColumn && measure) {
+      examples.push({
+        name: `${measure.name} year to date`,
+        formula: `TOTALYTD(SUM(${columnRef(table.name, measure.name)}), ${columnRef(
+          dateTable.name,
+          dateColumn.name
+        )})`,
+        description: 'Accumulated from the start of the year.',
+      });
+    }
+  }
+
+  return examples;
+};
+
 const CustomDAXCalculator: React.FC<CustomDAXCalculatorProps> = ({
-  datasets,
+  model,
   customCalculations,
   onAddCalculation,
   onDeleteCalculation,
-  onExecuteCalculation
+  onRunCalculation
 }) => {
   const [showDialog, setShowDialog] = useState(false);
   const [newCalculation, setNewCalculation] = useState<Partial<Omit<DAXCalculation, 'id'>>>({
@@ -37,9 +120,33 @@ const CustomDAXCalculator: React.FC<CustomDAXCalculatorProps> = ({
     confidence: 1.0
   });
 
+  const daxExamples = useMemo(() => examplesFor(model), [model]);
+
+  /**
+   * Check the formula as it is typed.
+   *
+   * Validation is a name-resolution pass over the parsed tree, not an
+   * evaluation, so it costs nothing on a large model and the user finds out
+   * about a misspelled column before they save rather than after.
+   */
+  const issues = useMemo(() => {
+    if (!model || !newCalculation.formula?.trim()) return [];
+    return checkDax(newCalculation.formula, model);
+  }, [model, newCalculation.formula]);
+
+  const blocking = issues.filter(issue => issue.severity === 'error');
+
   const handleCreateCalculation = () => {
     if (!newCalculation.name || !newCalculation.formula) {
       toast.error('Please provide a name and formula');
+      return;
+    }
+
+    // Refuse to store an expression that cannot resolve. The point of having
+    // a validator is that a broken formula never becomes a saved card that
+    // shows a blank where a number should be.
+    if (blocking.length > 0) {
+      toast.error(blocking[0].message);
       return;
     }
 
@@ -64,30 +171,6 @@ const CustomDAXCalculator: React.FC<CustomDAXCalculatorProps> = ({
     toast.success('Custom calculation created!');
   };
 
-  const executeCalculation = (calc: DAXCalculation, datasetId: string) => {
-    const dataset = datasets.find(d => d.id === datasetId);
-    if (!dataset) {
-      toast.error('Dataset not found');
-      return;
-    }
-
-    try {
-      const result = onExecuteCalculation(calc, dataset);
-      toast.success(`Calculation executed: ${result}`);
-    } catch (error) {
-      toast.error(`Error executing calculation: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  };
-
-  const daxExamples = [
-    { name: 'Total Sum', formula: 'SUM(ColumnName)', description: 'Sum of all values in a column' },
-    { name: 'Average', formula: 'AVERAGE(ColumnName)', description: 'Average value of a column' },
-    { name: 'Count Rows', formula: 'COUNTROWS(Table)', description: 'Total number of rows' },
-    { name: 'Max Value', formula: 'MAX(ColumnName)', description: 'Maximum value in a column' },
-    { name: 'Min Value', formula: 'MIN(ColumnName)', description: 'Minimum value in a column' },
-    { name: 'Year Extract', formula: 'YEAR(DateColumn)', description: 'Extract year from date' }
-  ];
-
   return (
     <Card>
       <CardHeader>
@@ -98,7 +181,7 @@ const CustomDAXCalculator: React.FC<CustomDAXCalculatorProps> = ({
           </CardTitle>
           <Dialog open={showDialog} onOpenChange={setShowDialog}>
             <DialogTrigger asChild>
-              <Button size="sm">
+              <Button size="sm" disabled={!model}>
                 <Plus className="h-4 w-4 mr-2" />
                 Add Custom Calculation
               </Button>
@@ -121,13 +204,30 @@ const CustomDAXCalculator: React.FC<CustomDAXCalculatorProps> = ({
                   <Textarea
                     value={newCalculation.formula}
                     onChange={(e) => setNewCalculation({ ...newCalculation, formula: e.target.value })}
-                    placeholder="e.g., SUM(Sales[Amount])"
+                    placeholder={
+                      daxExamples[0]?.formula ?? 'e.g., SUM(Sales[Amount])'
+                    }
                     rows={3}
                     className="font-mono text-sm"
                   />
                   <p className="text-xs text-gray-500">
-                    Enter a valid DAX expression. Use column names from your datasets.
+                    Reference a column as Table[Column]. Names with spaces need single
+                    quotes: 'Q1 Sales'[Net Amount].
                   </p>
+                  {issues.length > 0 && (
+                    <div className="space-y-1">
+                      {issues.map((issue, index) => (
+                        <p
+                          key={`${issue.code}-${issue.start}-${index}`}
+                          className={`text-xs ${
+                            issue.severity === 'error' ? 'text-red-600' : 'text-amber-600'
+                          }`}
+                        >
+                          {issue.message}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-2">
                   <Label>Description</Label>
@@ -143,7 +243,7 @@ const CustomDAXCalculator: React.FC<CustomDAXCalculatorProps> = ({
                     <Label>Category</Label>
                     <Select
                       value={newCalculation.category}
-                      onValueChange={(value: DAXCalculation['category']) => 
+                      onValueChange={(value: DAXCalculation['category']) =>
                         setNewCalculation({ ...newCalculation, category: value })
                       }
                     >
@@ -171,30 +271,34 @@ const CustomDAXCalculator: React.FC<CustomDAXCalculatorProps> = ({
                     />
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">DAX Examples</Label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {daxExamples.map((example, index) => (
-                      <Card key={index} className="p-2 cursor-pointer hover:bg-gray-50" onClick={() => {
-                        setNewCalculation({
-                          ...newCalculation,
-                          name: example.name,
-                          formula: example.formula,
-                          description: example.description
-                        });
-                      }}>
-                        <p className="text-xs font-medium">{example.name}</p>
-                        <p className="text-xs text-gray-500 font-mono">{example.formula}</p>
-                      </Card>
-                    ))}
+                {daxExamples.length > 0 && (
+                  <div className="space-y-2">
+                    <Label className="text-sm font-medium">
+                      Examples, using your own tables
+                    </Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {daxExamples.map((example, index) => (
+                        <Card key={index} className="p-2 cursor-pointer hover:bg-gray-50" onClick={() => {
+                          setNewCalculation({
+                            ...newCalculation,
+                            name: example.name,
+                            formula: example.formula,
+                            description: example.description
+                          });
+                        }}>
+                          <p className="text-xs font-medium">{example.name}</p>
+                          <p className="text-xs text-gray-500 font-mono break-all">{example.formula}</p>
+                        </Card>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setShowDialog(false)}>
                   Cancel
                 </Button>
-                <Button onClick={handleCreateCalculation}>
+                <Button onClick={handleCreateCalculation} disabled={blocking.length > 0}>
                   Create Calculation
                 </Button>
               </DialogFooter>
@@ -207,7 +311,11 @@ const CustomDAXCalculator: React.FC<CustomDAXCalculatorProps> = ({
           <div className="text-center py-8 text-gray-500">
             <Calculator className="h-12 w-12 mx-auto mb-4 text-gray-300" />
             <p>No custom calculations yet</p>
-            <p className="text-sm text-gray-400 mt-2">Create custom DAX expressions to analyze your data</p>
+            <p className="text-sm text-gray-400 mt-2">
+              {model
+                ? 'Create custom DAX expressions to analyze your data'
+                : 'Upload a dataset to start writing DAX'}
+            </p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -219,39 +327,53 @@ const CustomDAXCalculator: React.FC<CustomDAXCalculatorProps> = ({
                       <div className="flex items-center gap-2 mb-1">
                         <h4 className="font-medium">{calc.name}</h4>
                         <Badge variant="secondary">{calc.category}</Badge>
-                        {calc.result !== undefined && calc.result !== null && (
+                        {calc.error ? (
+                          <Badge variant="outline" className="text-red-600">
+                            <AlertCircle className="h-3 w-3 mr-1" />
+                            Failed
+                          </Badge>
+                        ) : calc.evaluated ? (
                           <Badge variant="outline" className="text-green-600">
                             <CheckCircle className="h-3 w-3 mr-1" />
                             Executed
                           </Badge>
-                        )}
+                        ) : null}
                       </div>
                       <p className="text-sm text-gray-600 mb-2">{calc.description}</p>
                       <code className="text-xs bg-gray-100 p-2 rounded block font-mono">
                         {calc.formula}
                       </code>
-                      {calc.result !== undefined && calc.result !== null && (
+                      {calc.error ? (
+                        <div className="mt-2 rounded border border-red-200 bg-red-50 p-2">
+                          <p className="text-xs font-medium text-red-700">
+                            This could not be calculated
+                          </p>
+                          <p className="mt-1 text-xs text-red-600">{calc.error}</p>
+                          {calc.errorDetail && (
+                            <pre className="mt-2 overflow-x-auto whitespace-pre font-mono text-[11px] text-red-500">
+                              {calc.errorDetail}
+                            </pre>
+                          )}
+                        </div>
+                      ) : calc.evaluated ? (
                         <div className="mt-2 p-2 bg-blue-50 rounded">
                           <p className="text-xs text-gray-600 mb-1">Result:</p>
                           <p className="text-lg font-bold text-blue-600">
-                            {typeof calc.result === 'object' ? JSON.stringify(calc.result) : calc.result}
+                            {formatDaxValue(calc.result ?? null)}
                           </p>
                         </div>
-                      )}
+                      ) : null}
                     </div>
                     <div className="flex flex-col gap-2">
-                      {datasets.length > 0 && (
-                        <Select onValueChange={(datasetId) => executeCalculation(calc, datasetId)}>
-                          <SelectTrigger className="w-[150px]">
-                            <SelectValue placeholder="Execute on..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {datasets.map(ds => (
-                              <SelectItem key={ds.id} value={ds.id}>{ds.name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!model}
+                        onClick={() => onRunCalculation(calc)}
+                      >
+                        <Play className="h-3 w-3 mr-1" />
+                        Run
+                      </Button>
                       <Button
                         variant="ghost"
                         size="sm"
@@ -264,8 +386,8 @@ const CustomDAXCalculator: React.FC<CustomDAXCalculatorProps> = ({
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="flex-1 bg-gray-200 rounded-full h-2">
-                      <div 
-                        className="bg-green-500 h-2 rounded-full" 
+                      <div
+                        className="bg-green-500 h-2 rounded-full"
                         style={{ width: `${(calc.confidence || 0) * 100}%` }}
                       />
                     </div>
@@ -282,5 +404,3 @@ const CustomDAXCalculator: React.FC<CustomDAXCalculatorProps> = ({
 };
 
 export default CustomDAXCalculator;
-
-

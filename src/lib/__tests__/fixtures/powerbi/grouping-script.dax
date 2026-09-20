@@ -1,0 +1,23 @@
+GroupingResults =
+// Paste into Power BI Desktop: Modeling > New table.
+// Runs against the Sales table from sales.csv - already loaded.
+// Put Case and Answer into a Table visual and send the result back.
+//
+// Generated from grouping-expected.ts - 15 cases, 1 answered separately.
+UNION(
+    ROW("Case", "01 canary-the-table-actually-has-rows", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(Sales)), "BLANK", FORMAT(COUNTROWS(Sales), "0.##########")), "ERROR")),
+    ROW("Case", "02 values-counts-blank-as-a-group", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(VALUES(Sales[Region]))), "BLANK", FORMAT(COUNTROWS(VALUES(Sales[Region])), "0.##########")), "ERROR")),
+    ROW("Case", "03 distinct-agrees-with-values", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(DISTINCT(Sales[Region]))), "BLANK", FORMAT(COUNTROWS(DISTINCT(Sales[Region])), "0.##########")), "ERROR")),
+    ROW("Case", "04 groups-cover-the-whole", "Answer", IFERROR(IF(ISBLANK(SUMX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount])))), "BLANK", FORMAT(SUMX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount]))), "0.##########")), "ERROR")),
+    ROW("Case", "05 largest-group-total", "Answer", IFERROR(IF(ISBLANK(MAXX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount])))), "BLANK", FORMAT(MAXX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount]))), "0.##########")), "ERROR")),
+    ROW("Case", "06 smallest-group-total", "Answer", IFERROR(IF(ISBLANK(MINX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount])))), "BLANK", FORMAT(MINX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount]))), "0.##########")), "ERROR")),
+    ROW("Case", "07 blank-amount-inside-a-group", "Answer", IFERROR(IF(ISBLANK(SUMX(VALUES(Sales[Region]), CALCULATE(AVERAGE(Sales[Amount])))), "BLANK", FORMAT(SUMX(VALUES(Sales[Region]), CALCULATE(AVERAGE(Sales[Amount]))), "0.##########")), "ERROR")),
+    ROW("Case", "08 row-count-per-group", "Answer", IFERROR(IF(ISBLANK(MAXX(VALUES(Sales[Region]), CALCULATE(COUNTROWS(Sales)))), "BLANK", FORMAT(MAXX(VALUES(Sales[Region]), CALCULATE(COUNTROWS(Sales))), "0.##########")), "ERROR")),
+    ROW("Case", "09 addcolumns-read-back-by-name", "Answer", IFERROR(IF(ISBLANK(SUMX(ADDCOLUMNS(VALUES(Sales[Region]), "T", CALCULATE(SUM(Sales[Amount]))), [T])), "BLANK", FORMAT(SUMX(ADDCOLUMNS(VALUES(Sales[Region]), "T", CALCULATE(SUM(Sales[Amount]))), [T]), "0.##########")), "ERROR")),
+    ROW("Case", "10 addcolumns-keeps-one-row-per-group", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(ADDCOLUMNS(VALUES(Sales[Region]), "T", 1))), "BLANK", FORMAT(COUNTROWS(ADDCOLUMNS(VALUES(Sales[Region]), "T", 1)), "0.##########")), "ERROR")),
+    ROW("Case", "11 computed-column-has-no-lineage", "Answer", IFERROR(IF(ISBLANK(SUMX(ADDCOLUMNS(VALUES(Sales[Region]), "Half", CALCULATE(SUM(Sales[Amount])) / 2), [Half])), "BLANK", FORMAT(SUMX(ADDCOLUMNS(VALUES(Sales[Region]), "Half", CALCULATE(SUM(Sales[Amount])) / 2), [Half]), "0.##########")), "ERROR")),
+    ROW("Case", "12 grouping-inside-grouping", "Answer", IFERROR(IF(ISBLANK(SUMX(VALUES(Sales[Region]), CALCULATE(MAXX(VALUES(Sales[Product]), CALCULATE(SUM(Sales[Amount])))))), "BLANK", FORMAT(SUMX(VALUES(Sales[Region]), CALCULATE(MAXX(VALUES(Sales[Product]), CALCULATE(SUM(Sales[Amount]))))), "0.##########")), "ERROR")),
+    ROW("Case", "13 outer-filter-limits-the-groups", "Answer", IFERROR(IF(ISBLANK(CALCULATE(COUNTROWS(VALUES(Sales[Region])), Sales[Product] = "Gadget")), "BLANK", FORMAT(CALCULATE(COUNTROWS(VALUES(Sales[Region])), Sales[Product] = "Gadget"), "0.##########")), "ERROR")),
+    ROW("Case", "14 outer-filter-reaches-inside-each-group", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUMX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount]))), Sales[Product] = "Gadget")), "BLANK", FORMAT(CALCULATE(SUMX(VALUES(Sales[Region]), CALCULATE(SUM(Sales[Amount]))), Sales[Product] = "Gadget"), "0.##########")), "ERROR")),
+    ROW("Case", "15 distinct-values-of-a-number", "Answer", IFERROR(IF(ISBLANK(SUMX(VALUES(Sales[Amount]), Sales[Amount])), "BLANK", FORMAT(SUMX(VALUES(Sales[Amount]), Sales[Amount]), "0.##########")), "ERROR"))
+)

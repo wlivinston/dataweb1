@@ -2,6 +2,8 @@
 // Enhanced with Time Intelligence, CALCULATE, conditional, cross-table, and ranking functions
 import React from 'react';
 import { Dataset, ColumnInfo, Relationship, DAXFilterContext } from './types';
+import { summariseDateColumn, parseDateValue } from './semantic/dates';
+import { toDateKey } from './semantic/dateTable';
 
 export type KPIFormula = 
   | 'SUM' 
@@ -371,272 +373,281 @@ export const renderKPICard = (
 // ============================================================
 
 /**
- * Helper: parse a date value
+ * Read a date column once, as canonical yyyy-mm-dd keys.
+ *
+ * Everything below works on those strings rather than Date objects, so there
+ * is no timezone in the arithmetic at all. That matters: the previous version
+ * did `new Date(String(value))` and then read `.getFullYear()`, a LOCAL
+ * getter. An ISO date parses as midnight UTC, which renders as the previous
+ * day everywhere west of Greenwich - so a row dated 1 January was counted in
+ * the wrong year, and "year to date" silently lost it.
+ *
+ * It also decided the reading per value rather than per column, so
+ * "03/04/2024" was taken as 4 March on the American convention with no
+ * warning. Here the format is inferred across the whole column, and a column
+ * that genuinely cannot be read returns null rather than a number - the
+ * caller has to say it does not know.
  */
-const tryParseDate = (value: any): Date | null => {
-  if (value == null || value === '') return null;
-  if (value instanceof Date && !isNaN(value.getTime())) return value;
-  const d = new Date(String(value));
-  return !isNaN(d.getTime()) ? d : null;
+export interface DateColumnKeys {
+  /** One key per row, aligned with dataset.data. Null where unparseable. */
+  keys: (string | null)[];
+}
+
+const dateKeysFor = (dataset: Dataset, dateColumn: string): DateColumnKeys | null => {
+  const values = dataset.data.map(row => row[dateColumn]);
+  const summary = summariseDateColumn(values);
+  // Ambiguous or inconsistent: refuse rather than pick a reading. Being wrong
+  // by a month on every figure is worse than declining to answer.
+  if (!summary.appliedFormat) return null;
+
+  const format = summary.appliedFormat;
+  return {
+    keys: values.map(value => {
+      const parsed = parseDateValue(value, format);
+      return parsed ? toDateKey(parsed) : null;
+    }),
+  };
+};
+
+/**
+ * The reference point as a calendar date.
+ *
+ * Read in UTC, to match both the date keys above and the DAX engine's
+ * TODAY(). Within a few hours of midnight this can differ from the viewer's
+ * wall-clock date; consistency with the rest of the arithmetic is worth more
+ * than matching a local calendar that the stored dates do not use.
+ */
+const referenceKey = (referenceDate?: Date): string => toDateKey(referenceDate ?? new Date());
+
+const yearOf = (key: string): number => Number(key.slice(0, 4));
+const monthOf = (key: string): number => Number(key.slice(5, 7));
+const quarterOf = (key: string): number => Math.ceil(monthOf(key) / 3);
+
+const numberAt = (dataset: Dataset, index: number, valueColumn: string): number | null => {
+  const value = Number(dataset.data[index][valueColumn]);
+  return Number.isNaN(value) ? null : value;
+};
+
+/**
+ * Sum the rows whose date key satisfies `keep`.
+ *
+ * Returns null when the date column cannot be read, so "I could not work this
+ * out" never arrives disguised as zero.
+ */
+const sumWhere = (
+  dataset: Dataset,
+  valueColumn: string,
+  dateColumn: string,
+  keep: (key: string) => boolean
+): number | null => {
+  const read = dateKeysFor(dataset, dateColumn);
+  if (!read) return null;
+
+  let total = 0;
+  read.keys.forEach((key, index) => {
+    if (key === null || !keep(key)) return;
+    const value = numberAt(dataset, index, valueColumn);
+    if (value !== null) total += value;
+  });
+  return total;
+};
+
+const round2 = (value: number): number => Math.round(value * 100) / 100;
+
+const changeBetween = (
+  current: number,
+  previous: number
+): { absolute: number; percentage: number } => {
+  const absolute = current - previous;
+  return {
+    absolute: round2(absolute),
+    percentage: previous !== 0 ? round2((absolute / Math.abs(previous)) * 100) : 0,
+  };
 };
 
 // ============================================================
 // Time Intelligence Functions
+//
+// Each returns null when the date column cannot be read. Callers must handle
+// that rather than print the number anyway.
 // ============================================================
 
-/**
- * TOTALYTD: Year-to-Date total for a value column
- */
+/** TOTALYTD: the current year up to and including the reference date. */
 export const calculateTotalYTD = (
   dataset: Dataset,
   valueColumn: string,
   dateColumn: string,
   referenceDate?: Date
-): number => {
-  const refDate = referenceDate || new Date();
-  const currentYear = refDate.getFullYear();
-
-  let total = 0;
-  for (const row of dataset.data) {
-    const date = tryParseDate(row[dateColumn]);
-    if (!date) continue;
-    if (date.getFullYear() === currentYear && date <= refDate) {
-      const val = Number(row[valueColumn]);
-      if (!isNaN(val)) total += val;
-    }
-  }
-  return total;
+): number | null => {
+  const reference = referenceKey(referenceDate);
+  const year = yearOf(reference);
+  return sumWhere(dataset, valueColumn, dateColumn, key => yearOf(key) === year && key <= reference);
 };
 
-/**
- * TOTALQTD: Quarter-to-Date total
- */
+/** TOTALQTD: the reference quarter up to and including the reference date. */
 export const calculateTotalQTD = (
   dataset: Dataset,
   valueColumn: string,
   dateColumn: string,
   referenceDate?: Date
-): number => {
-  const refDate = referenceDate || new Date();
-  const currentYear = refDate.getFullYear();
-  const currentQuarter = Math.ceil((refDate.getMonth() + 1) / 3);
-  const quarterStartMonth = (currentQuarter - 1) * 3; // 0-indexed
-
-  let total = 0;
-  for (const row of dataset.data) {
-    const date = tryParseDate(row[dateColumn]);
-    if (!date) continue;
-    if (
-      date.getFullYear() === currentYear &&
-      date.getMonth() >= quarterStartMonth &&
-      date <= refDate
-    ) {
-      const val = Number(row[valueColumn]);
-      if (!isNaN(val)) total += val;
-    }
-  }
-  return total;
+): number | null => {
+  const reference = referenceKey(referenceDate);
+  const year = yearOf(reference);
+  const quarter = quarterOf(reference);
+  return sumWhere(
+    dataset,
+    valueColumn,
+    dateColumn,
+    key => yearOf(key) === year && quarterOf(key) === quarter && key <= reference
+  );
 };
 
-/**
- * TOTALMTD: Month-to-Date total
- */
+/** TOTALMTD: the reference month up to and including the reference date. */
 export const calculateTotalMTD = (
   dataset: Dataset,
   valueColumn: string,
   dateColumn: string,
   referenceDate?: Date
-): number => {
-  const refDate = referenceDate || new Date();
-  const currentYear = refDate.getFullYear();
-  const currentMonth = refDate.getMonth();
-
-  let total = 0;
-  for (const row of dataset.data) {
-    const date = tryParseDate(row[dateColumn]);
-    if (!date) continue;
-    if (
-      date.getFullYear() === currentYear &&
-      date.getMonth() === currentMonth &&
-      date <= refDate
-    ) {
-      const val = Number(row[valueColumn]);
-      if (!isNaN(val)) total += val;
-    }
-  }
-  return total;
+): number | null => {
+  const reference = referenceKey(referenceDate);
+  const year = yearOf(reference);
+  const month = monthOf(reference);
+  return sumWhere(
+    dataset,
+    valueColumn,
+    dateColumn,
+    key => yearOf(key) === year && monthOf(key) === month && key <= reference
+  );
 };
 
-/**
- * SAMEPERIODLASTYEAR: Calculate the same metric for the equivalent period last year
- */
+/** SAMEPERIODLASTYEAR: the equivalent period one year earlier. */
 export const calculateSamePeriodLastYear = (
   dataset: Dataset,
   valueColumn: string,
   dateColumn: string,
   periodType: 'year' | 'quarter' | 'month' = 'year',
   referenceDate?: Date
-): number => {
-  const now = referenceDate || new Date();
-  const lastYear = now.getFullYear() - 1;
-  const currentMonth = now.getMonth();
-  const currentQuarter = Math.ceil((currentMonth + 1) / 3);
+): number | null => {
+  const reference = referenceKey(referenceDate);
+  const lastYear = yearOf(reference) - 1;
+  const month = monthOf(reference);
+  const quarter = quarterOf(reference);
 
-  let total = 0;
-  for (const row of dataset.data) {
-    const date = tryParseDate(row[dateColumn]);
-    if (!date || date.getFullYear() !== lastYear) continue;
-
-    let inPeriod = false;
-    switch (periodType) {
-      case 'year':
-        inPeriod = true;
-        break;
-      case 'quarter':
-        inPeriod = Math.ceil((date.getMonth() + 1) / 3) === currentQuarter;
-        break;
-      case 'month':
-        inPeriod = date.getMonth() === currentMonth;
-        break;
-    }
-
-    if (inPeriod) {
-      const val = Number(row[valueColumn]);
-      if (!isNaN(val)) total += val;
-    }
-  }
-  return total;
+  return sumWhere(dataset, valueColumn, dateColumn, key => {
+    if (yearOf(key) !== lastYear) return false;
+    if (periodType === 'quarter') return quarterOf(key) === quarter;
+    if (periodType === 'month') return monthOf(key) === month;
+    return true;
+  });
 };
 
-/**
- * YoY Change: Year-over-Year absolute and percentage change
- */
+/** Year-over-year change between the reference year and the one before it. */
 export const calculateYoYChange = (
   dataset: Dataset,
   valueColumn: string,
   dateColumn: string,
   referenceDate?: Date
-): { absolute: number; percentage: number; currentYear: number; previousYear: number } => {
-  const now = referenceDate || new Date();
-  const currentYear = now.getFullYear();
+): { absolute: number; percentage: number; currentYear: number; previousYear: number } | null => {
+  const reference = referenceKey(referenceDate);
+  const year = yearOf(reference);
 
-  let currentTotal = 0;
-  let previousTotal = 0;
-
-  for (const row of dataset.data) {
-    const date = tryParseDate(row[dateColumn]);
-    if (!date) continue;
-    const val = Number(row[valueColumn]);
-    if (isNaN(val)) continue;
-
-    if (date.getFullYear() === currentYear) currentTotal += val;
-    else if (date.getFullYear() === currentYear - 1) previousTotal += val;
-  }
-
-  const absolute = currentTotal - previousTotal;
-  const percentage = previousTotal !== 0 ? (absolute / Math.abs(previousTotal)) * 100 : 0;
+  const current = sumWhere(dataset, valueColumn, dateColumn, key => yearOf(key) === year);
+  const previous = sumWhere(dataset, valueColumn, dateColumn, key => yearOf(key) === year - 1);
+  if (current === null || previous === null) return null;
 
   return {
-    absolute: Math.round(absolute * 100) / 100,
-    percentage: Math.round(percentage * 100) / 100,
-    currentYear: Math.round(currentTotal * 100) / 100,
-    previousYear: Math.round(previousTotal * 100) / 100
+    ...changeBetween(current, previous),
+    currentYear: round2(current),
+    previousYear: round2(previous),
   };
 };
 
 /**
- * QoQ Change: Quarter-over-Quarter change
+ * Compare the last two periods that actually carry data.
+ *
+ * Deliberately NOT the last two calendar periods: a gap would otherwise
+ * compare against an empty period and report a 100% collapse.
  */
+const changeOverLastTwoPeriods = (
+  dataset: Dataset,
+  valueColumn: string,
+  dateColumn: string,
+  periodKey: (key: string) => string
+): { absolute: number; percentage: number } | null => {
+  const read = dateKeysFor(dataset, dateColumn);
+  if (!read) return null;
+
+  const periods = new Map<string, number>();
+  read.keys.forEach((key, index) => {
+    if (key === null) return;
+    const value = numberAt(dataset, index, valueColumn);
+    if (value === null) return;
+    const period = periodKey(key);
+    periods.set(period, (periods.get(period) ?? 0) + value);
+  });
+
+  const sorted = [...periods.entries()].sort((left, right) => left[0].localeCompare(right[0]));
+  if (sorted.length < 2) return { absolute: 0, percentage: 0 };
+
+  return changeBetween(sorted[sorted.length - 1][1], sorted[sorted.length - 2][1]);
+};
+
+/** Quarter-over-quarter change across the last two quarters holding data. */
 export const calculateQoQChange = (
   dataset: Dataset,
   valueColumn: string,
   dateColumn: string
-): { absolute: number; percentage: number } => {
-  const periods: Record<string, number> = {};
+): { absolute: number; percentage: number } | null =>
+  changeOverLastTwoPeriods(
+    dataset,
+    valueColumn,
+    dateColumn,
+    key => `${yearOf(key)}-Q${quarterOf(key)}`
+  );
 
-  for (const row of dataset.data) {
-    const date = tryParseDate(row[dateColumn]);
-    if (!date) continue;
-    const val = Number(row[valueColumn]);
-    if (isNaN(val)) continue;
-
-    const key = `${date.getFullYear()}-Q${Math.ceil((date.getMonth() + 1) / 3)}`;
-    periods[key] = (periods[key] || 0) + val;
-  }
-
-  const sortedPeriods = Object.entries(periods).sort((a, b) => a[0].localeCompare(b[0]));
-  if (sortedPeriods.length < 2) return { absolute: 0, percentage: 0 };
-
-  const current = sortedPeriods[sortedPeriods.length - 1][1];
-  const previous = sortedPeriods[sortedPeriods.length - 2][1];
-  const absolute = current - previous;
-  const percentage = previous !== 0 ? (absolute / Math.abs(previous)) * 100 : 0;
-
-  return { absolute: Math.round(absolute * 100) / 100, percentage: Math.round(percentage * 100) / 100 };
-};
-
-/**
- * MoM Change: Month-over-Month change
- */
+/** Month-over-month change across the last two months holding data. */
 export const calculateMoMChange = (
   dataset: Dataset,
   valueColumn: string,
   dateColumn: string
-): { absolute: number; percentage: number } => {
-  const periods: Record<string, number> = {};
-
-  for (const row of dataset.data) {
-    const date = tryParseDate(row[dateColumn]);
-    if (!date) continue;
-    const val = Number(row[valueColumn]);
-    if (isNaN(val)) continue;
-
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-    periods[key] = (periods[key] || 0) + val;
-  }
-
-  const sortedPeriods = Object.entries(periods).sort((a, b) => a[0].localeCompare(b[0]));
-  if (sortedPeriods.length < 2) return { absolute: 0, percentage: 0 };
-
-  const current = sortedPeriods[sortedPeriods.length - 1][1];
-  const previous = sortedPeriods[sortedPeriods.length - 2][1];
-  const absolute = current - previous;
-  const percentage = previous !== 0 ? (absolute / Math.abs(previous)) * 100 : 0;
-
-  return { absolute: Math.round(absolute * 100) / 100, percentage: Math.round(percentage * 100) / 100 };
-};
+): { absolute: number; percentage: number } | null =>
+  changeOverLastTwoPeriods(dataset, valueColumn, dateColumn, key => key.slice(0, 7));
 
 /**
- * Running Total / Cumulative Sum
+ * Cumulative sum, in date order when a date column is given.
+ *
+ * Sorting on the canonical keys means it sorts lexically, which for
+ * yyyy-mm-dd is chronological. Rows whose date cannot be read sort last
+ * rather than being dropped, so the totals still add up to the full sum.
  */
 export const calculateRunningTotal = (
   dataset: Dataset,
   valueColumn: string,
   dateColumn?: string
 ): number[] => {
-  let data = [...dataset.data];
+  let order = dataset.data.map((_, index) => index);
 
-  // Sort by date if date column provided
   if (dateColumn) {
-    data = data.sort((a, b) => {
-      const da = tryParseDate(a[dateColumn]);
-      const db = tryParseDate(b[dateColumn]);
-      if (!da || !db) return 0;
-      return da.getTime() - db.getTime();
-    });
+    const read = dateKeysFor(dataset, dateColumn);
+    if (read) {
+      order = order.sort((left, right) => {
+        const a = read.keys[left];
+        const b = read.keys[right];
+        if (a === null && b === null) return left - right;
+        if (a === null) return 1;
+        if (b === null) return -1;
+        return a === b ? left - right : a.localeCompare(b);
+      });
+    }
   }
 
   const result: number[] = [];
   let cumulative = 0;
-
-  for (const row of data) {
-    const val = Number(row[valueColumn]);
-    if (!isNaN(val)) {
-      cumulative += val;
-    }
-    result.push(Math.round(cumulative * 100) / 100);
+  for (const index of order) {
+    const value = numberAt(dataset, index, valueColumn);
+    if (value !== null) cumulative += value;
+    result.push(round2(cumulative));
   }
-
   return result;
 };
 
@@ -818,53 +829,16 @@ export const calculateRANKX = (
 // ============================================================
 
 /**
- * Generate enhanced KPIs including time intelligence when date columns are present
+ * Deleted: generateEnhancedKPIs.
+ *
+ * It produced "YTD <column>" and "YoY Change" tiles whose `formula` was a
+ * plain 'SUM' and 'PERCENTAGE', with a comment saying they would be
+ * "overridden by enhanced execution". No such execution existed, so a tile
+ * labelled year-to-date would have shown the all-time total. Nothing called
+ * it, so nobody ever saw that - but it was a trap for whoever wired it up.
+ *
+ * Time-intelligence tiles belong on the DAX engine in src/lib/dax, where
+ * TOTALYTD and SAMEPERIODLASTYEAR are implemented and tested, rather than on
+ * a second implementation here.
  */
-export const generateEnhancedKPIs = (dataset: Dataset | null): KPIDefinition[] => {
-  // Start with base KPIs
-  const baseKPIs = generateKPIs(dataset);
-  if (!dataset) return baseKPIs;
 
-  const dateColumns = dataset.columns.filter(col => col.type === 'date');
-  const numericColumns = dataset.columns.filter(col => col.type === 'number');
-
-  if (dateColumns.length === 0 || numericColumns.length === 0) {
-    return baseKPIs;
-  }
-
-  const dateCol = dateColumns[0];
-  const primaryNumCol = numericColumns[0];
-  const cleanName = primaryNumCol.name.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
-
-  // Add time intelligence KPIs
-  const timeKPIs: KPIDefinition[] = [];
-
-  // YTD
-  timeKPIs.push({
-    id: `kpi-ytd-${primaryNumCol.name}`,
-    title: `YTD ${cleanName}`,
-    formula: 'SUM', // Will be overridden by enhanced execution
-    columnName: primaryNumCol.name,
-    columnName2: dateCol.name,
-    format: 'number',
-    icon: 'calendar',
-    color: 'text-indigo-500',
-    description: `Year-to-date total of ${cleanName}`
-  });
-
-  // YoY Change
-  timeKPIs.push({
-    id: `kpi-yoy-${primaryNumCol.name}`,
-    title: `YoY Change`,
-    formula: 'PERCENTAGE',
-    columnName: primaryNumCol.name,
-    columnName2: dateCol.name,
-    format: 'percentage',
-    icon: 'trending-up',
-    color: 'text-emerald-500',
-    description: `Year-over-year change in ${cleanName}`
-  });
-
-  // Combine: show up to 8 KPIs (6 base + 2 time intelligence)
-  return [...baseKPIs.slice(0, 6), ...timeKPIs.slice(0, 2)];
-};

@@ -1,0 +1,215 @@
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { buildSemanticModel } from '../semantic/model';
+import { runDax, formatDaxValue } from '../dax/run';
+import { PARITY_CASES, pendingCount, type ParityCase } from './fixtures/powerbi/expected';
+import { buildPowerBiScript } from './fixtures/powerbi/script';
+import type { ColumnInfo, Dataset } from '../types';
+
+/**
+ * Parity against Power BI.
+ *
+ * These are the cases where my reading of DAX is a judgement call rather
+ * than a derivation - leap days, month-end clamping, fiscal year ends,
+ * blank comparison - chosen so that different readings give different
+ * numbers. No property test reaches them: a reading that is wrong in the
+ * same direction everywhere satisfies every law.
+ *
+ * A case with `expected: null` is skipped, so this file is useful the
+ * moment a single number is filled in rather than needing all of them.
+ */
+
+const FIXTURE_DIR = join(__dirname, 'fixtures', 'powerbi');
+
+/** Parse the fixture CSV the way the upload pipeline would. */
+const loadFixture = (): Dataset => {
+  const text = readFileSync(join(FIXTURE_DIR, 'sales.csv'), 'utf8').trim();
+  const [header, ...lines] = text.split(/\r?\n/);
+  const names = header.split(',');
+
+  const rows = lines.map(line => {
+    const cells = line.split(',');
+    const row: Record<string, unknown> = {};
+    names.forEach((name, index) => {
+      const cell = cells[index] ?? '';
+      if (cell === '') {
+        row[name] = null;
+      } else if (name === 'Amount') {
+        row[name] = Number(cell);
+      } else {
+        row[name] = cell;
+      }
+    });
+    return row;
+  });
+
+  const types: Record<string, ColumnInfo['type']> = {
+    OrderID: 'string',
+    Date: 'date',
+    Region: 'string',
+    Product: 'string',
+    Amount: 'number',
+  };
+
+  const columns: ColumnInfo[] = names.map(name => {
+    const values = rows.map(row => row[name]);
+    const present = values.filter(v => v !== null && v !== undefined && v !== '');
+    return {
+      name,
+      type: types[name],
+      sampleValues: present.slice(0, 5),
+      nullCount: values.length - present.length,
+      uniqueCount: new Set(present.map(v => String(v))).size,
+    };
+  });
+
+  return {
+    id: 'ds-powerbi-parity',
+    name: 'Sales',
+    description: 'Power BI parity fixture',
+    columns,
+    rowCount: rows.length,
+    dataTypes: Object.fromEntries(names.map(n => [n, types[n]])) as Dataset['dataTypes'],
+    data: rows,
+  };
+};
+
+const model = buildSemanticModel([loadFixture()]);
+
+/** How this engine answers a case, in the same vocabulary as the sheet. */
+const engineAnswer = (entry: ParityCase): string => {
+  const outcome = runDax(entry.engineDax ?? entry.dax, model);
+  if (!outcome.ok) return `ERROR: ${outcome.message}`;
+  return outcome.value === null ? 'BLANK' : formatDaxValue(outcome.value);
+};
+
+/**
+ * How an infinity was spelled, which is a rendering choice rather than a
+ * disagreement. Power BI's FORMAT wrote "inf"; this engine writes the symbol.
+ */
+const INFINITIES = new Set(['∞', 'INF', 'INFINITY', '+∞']);
+
+const isInfinity = (text: string): boolean =>
+  INFINITIES.has(text.trim().toUpperCase());
+
+/** Compare loosely enough that 447.06 and 447.0588 agree. */
+const agrees = (engine: string, expected: number | string): boolean => {
+  if (typeof expected === 'number') {
+    const parsed = Number(engine.replace(/,/g, ''));
+    if (Number.isNaN(parsed)) return false;
+    const tolerance = Math.max(Math.abs(expected) * 1e-6, 1e-6);
+    return Math.abs(parsed - expected) <= tolerance;
+  }
+  if (isInfinity(expected) && isInfinity(engine)) return true;
+  return engine.trim().toUpperCase().startsWith(expected.trim().toUpperCase());
+};
+
+// ============================================================
+// The fixture and the sheet have to be sound first
+// ============================================================
+
+describe('parity fixture', () => {
+  it('loads the calendar the time-intelligence cases need', () => {
+    expect(model.dateTableName).toBeTruthy();
+    const joined = model.relationships.some(
+      r => r.isActive && r.to.table === model.dateTableName && r.from.table === 'Sales'
+    );
+    expect(joined).toBe(true);
+  });
+
+  it('keeps the blank Region and the blank Amount that the blank cases probe', () => {
+    const sales = model.tables.find(t => t.name === 'Sales')!;
+    expect(sales.rows.some(row => row.Region === null)).toBe(true);
+    expect(sales.rows.some(row => row.Amount === null)).toBe(true);
+  });
+
+  it('names the table on the first line, before any comment', () => {
+    // See the note in script.ts: a comment above the assignment becomes part
+    // of the table name in Power BI. This model already grew a table called
+    // `// Paste this into Power BI Desktop: ...` before anyone noticed.
+    const script = buildPowerBiScript();
+    expect(script.slice(0, script.indexOf('=')).trim()).toBe('ParityResults');
+  });
+
+  it('keeps the generated Power BI script in step with the cases', () => {
+    // The .dax file is what someone pastes into Power BI. If it drifts from
+    // the expressions the comparison below runs, the answers come back
+    // against different questions and the whole sheet is quietly worthless.
+    const committed = readFileSync(join(FIXTURE_DIR, 'powerbi-script.dax'), 'utf8');
+    const normalised = committed.split('\r\n').join('\n');
+    expect(normalised).toBe(buildPowerBiScript());
+  });
+
+  it('pushes only numeric cases through FORMAT in that script', () => {
+    // FORMAT on text errors, which IFERROR would turn into "ERROR" - an
+    // answer that looks like a Power BI refusal but is really a bug here.
+    const script = buildPowerBiScript();
+    for (const entry of PARITY_CASES.filter(c => c.returnsText)) {
+      const line = script.split('\n').find(l => l.includes(entry.id))!;
+      expect(line, entry.id).not.toContain('FORMAT(');
+    }
+  });
+
+  it('gives every case a unique id and a non-empty expression', () => {
+    const ids = PARITY_CASES.map(c => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const entry of PARITY_CASES) {
+      expect(entry.dax.trim().length, entry.id).toBeGreaterThan(0);
+      expect(entry.probes.trim().length, entry.id).toBeGreaterThan(0);
+    }
+  });
+
+  it('can evaluate every case, so no answer is wasted on an expression I cannot run', () => {
+    // If this fails, the sheet is asking for a number against something this
+    // engine refuses - which would waste the effort of reading it off.
+    const broken = PARITY_CASES.filter(entry => !entry.engineRefuses)
+      .map(entry => ({ id: entry.id, answer: engineAnswer(entry) }))
+      .filter(entry => entry.answer.startsWith('ERROR'))
+      .map(entry => `${entry.id}: ${entry.answer}`);
+
+    expect(broken).toEqual([]);
+  });
+});
+
+// ============================================================
+// The comparison itself
+// ============================================================
+
+describe('parity with Power BI', () => {
+  for (const entry of PARITY_CASES) {
+    const runner = entry.expected === null ? it.skip : it;
+    runner(`${entry.id} - ${entry.probes}`, () => {
+      const engine = engineAnswer(entry);
+      expect(
+        agrees(engine, entry.expected!),
+        `${entry.id}\n  expression: ${entry.engineDax ?? entry.dax}\n` +
+          `  Power BI:   ${entry.expected}\n  this engine: ${engine}`
+      ).toBe(true);
+    });
+  }
+
+  it('marks a deliberate refusal as one, so the guard above stays meaningful', () => {
+    // A case flagged engineRefuses must actually refuse. If the engine
+    // starts answering it, the flag is stale and the sheet is now asking a
+    // question that has quietly changed.
+    for (const entry of PARITY_CASES.filter(c => c.engineRefuses)) {
+      expect(engineAnswer(entry), entry.id).toMatch(/^ERROR/);
+    }
+  });
+
+  it('reports how much of the sheet is still unanswered', () => {
+    const pending = pendingCount();
+    const total = PARITY_CASES.length;
+    if (pending > 0) {
+      console.log(
+        `\n  Power BI parity: ${total - pending} of ${total} answered, ${pending} pending.` +
+          `\n  Fill in expected values in src/lib/__tests__/fixtures/powerbi/expected.ts` +
+          `\n  See that folder's README.md for how.\n`
+      );
+    }
+    // Never fails. An unanswered sheet is a known gap, not a broken build -
+    // the CI gate is not the right place to nag about it.
+    expect(pending).toBeLessThanOrEqual(total);
+  });
+});
