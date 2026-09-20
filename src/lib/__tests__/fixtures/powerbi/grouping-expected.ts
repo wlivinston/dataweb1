@@ -28,9 +28,15 @@ export const GROUPING_CASES: ParityCase[] = [
       'so all fourteen cases come back BLANK for one reason that has nothing ' +
       'to do with grouping. That happened on the first attempt, and fourteen ' +
       'blanks look like fourteen answers until you check. If this is not 18, ' +
-      'the rest of the sheet means nothing.',
+      'the rest of the sheet means nothing.\n\n' +
+      'ANSWERED from the blank sheet rather than this one: the grouping ' +
+      'screenshot came back without the canary row, and the blank sheet asks ' +
+      'the identical question - COUNTROWS(Sales), same sales.csv, same model - ' +
+      'and Power BI answered 18. Borrowed rather than assumed, and said so ' +
+      'here, because an unanswered canary that stays skipped is exactly the ' +
+      'hole it was added to close.',
     dax: 'COUNTROWS(Sales)',
-    expected: null,
+    expected: 18,
   },
   {
     id: 'values-counts-blank-as-a-group',
