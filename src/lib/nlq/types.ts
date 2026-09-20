@@ -1,4 +1,5 @@
 import type { DaxScalar } from '../dax/value';
+import type { DaxResultColumn } from '../dax/run';
 import type { SemanticColumn } from '../semantic/types';
 
 /**
@@ -20,6 +21,8 @@ import type { SemanticColumn } from '../semantic/types';
 
 export interface NlqAnswered {
   ok: true;
+  /** One figure. */
+  shape: 'scalar';
   question: string;
   /** The exact text the engine ran, so the answer can be checked. */
   dax: string;
@@ -29,6 +32,33 @@ export interface NlqAnswered {
   interpretation: string;
   /** The column the answer is about, when there is one. */
   column?: SemanticColumn;
+}
+
+/**
+ * A figure per group: "average revenue by region".
+ *
+ * Always ranked, even when the question did not ask for a ranking. An
+ * unranked result that hits the row cap shows an arbitrary slice, and an
+ * arbitrary 500 rows is indistinguishable on screen from the top 500 - a
+ * true answer that invites a false conclusion. Ranking makes the rows that
+ * come back the ones worth seeing, and makes the cap honest.
+ */
+export interface NlqTableAnswered {
+  ok: true;
+  shape: 'table';
+  question: string;
+  /** The exact text the engine ran, so the answer can be checked. */
+  dax: string;
+  columns: DaxResultColumn[];
+  rows: DaxScalar[][];
+  /** How many groups there were, before any cap. */
+  totalRows: number;
+  truncated: boolean;
+  /** What the question was taken to mean, in the model's own names. */
+  interpretation: string;
+  /** The column grouped by, and the one measured. */
+  groupColumn: SemanticColumn;
+  measureColumn: SemanticColumn;
 }
 
 export interface NlqRefused {
@@ -47,4 +77,4 @@ export interface NlqRefused {
  * value and an error at once will eventually carry both, and the UI will
  * show the wrong one.
  */
-export type NlqAnswer = NlqAnswered | NlqRefused;
+export type NlqAnswer = NlqAnswered | NlqTableAnswered | NlqRefused;

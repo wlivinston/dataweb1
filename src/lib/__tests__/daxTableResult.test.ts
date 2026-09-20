@@ -167,6 +167,23 @@ describe('capping the rows', () => {
     expect(result.truncated).toBe(true);
   });
 
+  it('warns that the kept rows are arbitrary, not the largest', () => {
+    // 500 rows chosen by nothing look exactly like the top 500. The
+    // difference has to be stated, or a reader draws the wrong conclusion
+    // from a technically correct answer.
+    const result = table('Sales', { limit: 2 });
+    const warning = result.warnings.find(issue => issue.code === 'truncated');
+    expect(warning).toBeDefined();
+    expect(warning!.message).toContain('Showing 2 of 4 rows');
+    expect(warning!.message).toContain('not the largest');
+    expect(warning!.message).toContain('TOPN');
+  });
+
+  it('says nothing about truncation when nothing was truncated', () => {
+    const result = table('Sales', { limit: 10 });
+    expect(result.warnings.some(issue => issue.code === 'truncated')).toBe(false);
+  });
+
   it('an empty table is empty rather than truncated', () => {
     const result = table('FILTER(Sales, Sales[Amount] > 1000)');
     expect(result.rows).toEqual([]);

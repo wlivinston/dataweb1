@@ -34,7 +34,16 @@ export type DaxIssueCode =
   | 'unknown_column'
   | 'ambiguous_column'
   | 'unknown_measure'
-  | 'not_implemented';
+  | 'not_implemented'
+  /**
+   * More rows were produced than were returned.
+   *
+   * Not a fault in the expression, which is why it is a warning - but it
+   * travels through the same channel so that any caller already showing
+   * warnings surfaces it without extra work. Silence here is how an
+   * arbitrary 500 rows gets mistaken for the top 500.
+   */
+  | 'truncated';
 
 export interface DaxIssue {
   code: DaxIssueCode;

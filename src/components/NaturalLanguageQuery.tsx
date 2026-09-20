@@ -14,7 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   MessageSquare, Send, Sparkles, HelpCircle, Lightbulb, ChevronRight, X,
-  History, Hash, Copy,
+  History, Hash, Copy, Table as TableIcon,
 } from 'lucide-react';
 import type { SemanticModel } from '@/lib/semantic/types';
 import { answerQuestion, suggestQuestions } from '@/lib/nlq';
@@ -211,7 +211,11 @@ const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model }) =>
                       </span>
                     </div>
                     <span className="text-xs text-gray-500">
-                      {item.answer.ok ? item.answer.formatted : 'Not answered'}
+                      {!item.answer.ok
+                        ? 'Not answered'
+                        : item.answer.shape === 'scalar'
+                          ? item.answer.formatted
+                          : `${item.answer.totalRows} rows`}
                     </span>
                   </button>
                 ))}
@@ -220,7 +224,7 @@ const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model }) =>
           </div>
         )}
 
-        {current && current.ok && (
+        {current && current.ok && current.shape === 'scalar' && (
           <div className="overflow-hidden rounded-lg border">
             <div className="flex items-center gap-2 border-b bg-green-50 p-3">
               <Hash className="h-4 w-4 text-violet-500" />
@@ -232,6 +236,93 @@ const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model }) =>
               </p>
               {/* The DAX is shown, not hidden. An answer nobody can check is
                   the thing that let a wrong average run for months. */}
+              <div className="relative mt-6">
+                <p className="mb-1 text-xs text-gray-500">Worked out as:</p>
+                <pre className="whitespace-pre-wrap break-words rounded bg-gray-100 p-2 pr-8 text-xs">
+                  {current.dax}
+                </pre>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(current.dax).then(
+                      () => toast.success('DAX copied'),
+                      () => toast.error('Could not copy to the clipboard')
+                    );
+                  }}
+                  className="absolute right-1 top-6 rounded p-1 text-gray-500 hover:bg-gray-200"
+                  aria-label="Copy the DAX"
+                >
+                  <Copy className="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {current && current.ok && current.shape === 'table' && (
+          <div className="overflow-hidden rounded-lg border">
+            <div className="flex items-center gap-2 border-b bg-green-50 p-3">
+              <TableIcon className="h-4 w-4 text-violet-500" />
+              <span className="text-sm font-medium text-gray-700">{current.interpretation}</span>
+            </div>
+            <div className="bg-white p-4">
+              <ScrollArea className="max-h-80">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-gray-50">
+                    <tr>
+                      {current.columns.map(column => (
+                        <th
+                          key={column.name}
+                          // A figure is right-aligned and a label is not.
+                          // Lineage is what tells them apart: a column with
+                          // an origin is a value from the data, one without
+                          // was computed over it.
+                          className={`border-b px-3 py-2 font-medium text-gray-700 ${
+                            column.origin ? 'text-left' : 'text-right'
+                          }`}
+                        >
+                          {column.name}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {current.rows.map((row, index) => (
+                      <tr key={index} className="border-b border-gray-100 hover:bg-gray-50">
+                        {row.map((cell, position) => (
+                          <td
+                            key={position}
+                            className={`px-3 py-2 ${
+                              current.columns[position]?.origin
+                                ? 'text-gray-700'
+                                : 'text-right font-medium text-violet-600'
+                            }`}
+                          >
+                            {/* A blank group is a real group, and labelling
+                                it "(blank)" is the only way a reader can
+                                tell it apart from an empty cell. */}
+                            {cell === null ? (
+                              <span className="italic text-gray-400">(blank)</span>
+                            ) : typeof cell === 'number' ? (
+                              cell.toLocaleString(undefined, { maximumFractionDigits: 2 })
+                            ) : (
+                              String(cell)
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </ScrollArea>
+
+              {current.truncated && (
+                <p className="mt-2 text-xs text-amber-700">
+                  Showing {current.rows.length} of {current.totalRows}, ranked so these are
+                  the ones worth seeing rather than an arbitrary slice.
+                </p>
+              )}
+
               <div className="relative mt-6">
                 <p className="mb-1 text-xs text-gray-500">Worked out as:</p>
                 <pre className="whitespace-pre-wrap break-words rounded bg-gray-100 p-2 pr-8 text-xs">
@@ -291,8 +382,8 @@ const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model }) =>
         )}
 
         <p className="pt-2 text-center text-xs text-gray-400">
-          Totals, averages, smallest, largest and counts. Breakdowns by column and
-          ranked lists are not available yet.
+          Totals, averages, counts, breakdowns by column, and ranked lists.
+          Grouping by more than one column is not available yet.
         </p>
       </CardContent>
     </Card>

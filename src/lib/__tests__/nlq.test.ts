@@ -26,15 +26,31 @@ const withBlank = (): Dataset =>
     { id: 'ds-blank', name: 'Sales' }
   );
 
+/** A single-figure answer, failing loudly on a refusal or a table. */
 const answered = (question: string, model: SemanticModel) => {
   const result = answerQuestion(question, model);
   if (!result.ok) throw new Error(`refused: ${result.reason}`);
+  if (result.shape !== 'scalar') {
+    throw new Error(`expected one figure, got a table of ${result.rows.length} rows`);
+  }
+  return result;
+};
+
+/** A table answer. */
+const grouped = (question: string, model: SemanticModel) => {
+  const result = answerQuestion(question, model);
+  if (!result.ok) throw new Error(`refused: ${result.reason}`);
+  if (result.shape !== 'table') throw new Error(`expected a table, got ${result.formatted}`);
   return result;
 };
 
 const refused = (question: string, model: SemanticModel) => {
   const result = answerQuestion(question, model);
-  if (result.ok) throw new Error(`answered ${result.formatted} via ${result.dax}`);
+  if (result.ok) {
+    throw new Error(
+      `answered via ${result.dax}: ${result.shape === 'scalar' ? result.formatted : `${result.rows.length} rows`}`
+    );
+  }
   return result;
 };
 
@@ -266,5 +282,141 @@ describe('refusing, with a reason', () => {
       const result = answerQuestion(suggestion, model);
       expect(result.ok, `${suggestion}: ${result.ok ? '' : result.reason}`).toBe(true);
     }
+  });
+});
+
+// ============================================================
+// A figure per group
+// ============================================================
+
+const regional = (): SemanticModel =>
+  buildSemanticModel([
+    makeDataset(
+      [
+        { Region: 'North', Product: 'Widget', Amount: 100 },
+        { Region: 'South', Product: 'Widget', Amount: 200 },
+        { Region: 'North', Product: 'Gadget', Amount: 300 },
+        { Region: null, Product: 'Widget', Amount: 50 },
+      ],
+      [
+        { name: 'Region', type: 'string' },
+        { name: 'Product', type: 'string' },
+        { name: 'Amount', type: 'number' },
+      ],
+      { id: 'ds-regional', name: 'Sales' }
+    ),
+  ]);
+
+describe('breaking a figure down by a column', () => {
+  it('reads "<figure> by <column>", with the figure first', () => {
+    const result = grouped('total Amount by Region', regional());
+    expect(result.dax).toContain('VALUES(Sales[Region])');
+    expect(result.dax).toContain('CALCULATE(SUM(Sales[Amount]))');
+    expect(result.rows).toEqual([
+      ['North', 400],
+      ['South', 200],
+      [null, 50],
+    ]);
+  });
+
+  it('reads "top N <column> by <figure>", with the grouping first', () => {
+    // The opposite word order, and the columns swap sides with it.
+    const result = grouped('top 2 regions by Amount', regional());
+    expect(result.dax).toContain('VALUES(Sales[Region])');
+    expect(result.dax).toContain('SUM(Sales[Amount])');
+    expect(result.rows).toEqual([
+      ['North', 400],
+      ['South', 200],
+    ]);
+  });
+
+  it('matches a plural to a singular column name', () => {
+    // "regions" has to find Region, or the commonest phrasing of a ranked
+    // question never works.
+    expect(grouped('top 1 regions by Amount', regional()).rows).toEqual([['North', 400]]);
+  });
+
+  it('ranks the other way for "bottom"', () => {
+    expect(grouped('bottom 1 region by Amount', regional()).rows).toEqual([[null, 50]]);
+  });
+
+  it('keeps a blank group rather than dropping it', () => {
+    // Power BI counts blank as a group. Dropping it here would make the
+    // rows stop summing to the total, silently.
+    const result = grouped('total Amount by Region', regional());
+    const total = result.rows.reduce((sum, row) => sum + Number(row[1]), 0);
+    expect(total).toBe(650);
+    expect(result.rows.some(row => row[0] === null)).toBe(true);
+  });
+
+  it('carries lineage, so a label can be told from a figure', () => {
+    const [group, measure] = grouped('total Amount by Region', regional()).columns;
+    expect(group.origin).toEqual({ table: 'Sales', column: 'Region' });
+    expect(measure.origin).toBeUndefined();
+  });
+
+  it('always ranks, even when nothing asked it to', () => {
+    // An unranked result that hits the row cap shows an arbitrary slice,
+    // and an arbitrary 500 rows looks exactly like the top 500.
+    const result = grouped('total Amount by Region', regional());
+    expect(result.dax.startsWith('TOPN(')).toBe(true);
+    const amounts = result.rows.map(row => Number(row[1]));
+    expect([...amounts].sort((a, b) => b - a)).toEqual(amounts);
+  });
+
+  it('names the computed column after what it computed', () => {
+    expect(grouped('average Amount by Region', regional()).columns[1].name).toBe(
+      'Average of Amount'
+    );
+  });
+
+  it('agrees with the same grouping asked the other way round', () => {
+    const one = grouped('total Amount by Product', regional());
+    const other = grouped('top 10 products by Amount', regional());
+    expect(other.rows).toEqual(one.rows);
+  });
+});
+
+describe('refusing a grouping that would mean nothing', () => {
+  it('refuses to group a column by itself', () => {
+    expect(refused('total Region by Region', regional()).reason).toMatch(/by itself/);
+  });
+
+  it('refuses a grouping column that does not exist', () => {
+    expect(refused('total Amount by Nonsense', regional()).reason).toMatch(/"nonsense"/);
+  });
+
+  it('refuses to average a column that holds text', () => {
+    expect(refused('average Product by Region', regional()).reason).toMatch(
+      /does not hold numbers/
+    );
+  });
+
+  it('refuses to group one table by a column of another', () => {
+    // Crossing a relationship needs the join followed. A figure per group
+    // computed across an unrelated grain would look ordinary and mean
+    // nothing.
+    const customers = makeDataset(
+      [{ CustomerID: 'C1', Tier: 'Gold' }],
+      [
+        { name: 'CustomerID', type: 'string' },
+        { name: 'Tier', type: 'string' },
+      ],
+      { id: 'ds-cust2', name: 'Customers' }
+    );
+    const orders = makeDataset(
+      [{ CustomerID: 'C1', Amount: 10 }],
+      [
+        { name: 'CustomerID', type: 'string' },
+        { name: 'Amount', type: 'number' },
+      ],
+      { id: 'ds-ord2', name: 'Orders' }
+    );
+    const result = refused('total Amount by Tier', buildSemanticModel([orders, customers]));
+    expect(result.reason).toMatch(/different tables/);
+  });
+
+  it('refuses a ranking that does not say what to rank by', () => {
+    expect(refused('top 5 regions', regional()).reason).toMatch(/needs to say what to rank by/);
   });
 });

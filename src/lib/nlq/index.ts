@@ -1,4 +1,4 @@
-import { runDax, formatDaxValue } from '../dax/run';
+import { runDax, runDaxTable, formatDaxValue, DEFAULT_ROW_LIMIT as ROW_LIMIT } from '../dax/run';
 import { columnRef, tableRef } from '../dax/printer';
 import { AGGREGATIONS, ROW_WORDS, normalise } from './vocabulary';
 import { meaningfulWords, resolveColumn, resolveTable, soleKeyOf } from './resolve';
@@ -114,32 +114,31 @@ export const answerQuestion = (
     };
   }
 
-  // Shapes this slice cannot compile, caught before the column resolver sees
-  // them. "average Revenue by Region" would otherwise match Revenue and
-  // Region equally and be reported as an ambiguous column, which is a true
-  // statement about the wrong problem.
+  // Grouped and ranked questions are answered as tables, and are routed
+  // before the scalar resolver sees them. "average Revenue by Region" would
+  // otherwise match Revenue and Region equally and be reported as an
+  // ambiguous column - a true statement about the wrong problem.
   const text = normalise(question);
+  const ranked = RANKING.exec(text);
+  const splitAt = text.search(SPLIT_WORD);
 
-  if (/\b(by|per|breakdown|grouped|split)\b|\bfor each\b/.test(text)) {
-    return refuse(
-      model,
-      question,
-      'I cannot break a figure down by another column yet - only whole-table ' +
-        'answers. Ask for the overall number and I can give you that.'
-    );
-  }
-
-  if (/\b(top|bottom|best|worst|rank|ranked|ranking)\b/.test(text)) {
-    return refuse(
-      model,
-      question,
-      'I cannot produce ranked lists yet. I can give you a single largest or ' +
-        'smallest value - "highest Revenue" - or an overall total.'
-    );
+  // A grouping is marked by the split word, not by the ranking word.
+  // "Highest Cost" ranks nothing - it is MAX of a column - and routing it
+  // here on a ranking word alone refused a question that works.
+  if (splitAt !== -1) {
+    return answerGrouped(question, text, model, ranked, splitAt);
   }
 
   const parsed = parse(question);
   if (!parsed) {
+    if (ranked) {
+      return refuse(
+        model,
+        question,
+        'A ranking needs to say what to rank by. "Top 5 regions by revenue" names ' +
+          'both the grouping and the figure; "top 5 regions" names only one.'
+      );
+    }
     return refuse(
       model,
       question,
@@ -289,11 +288,187 @@ const finish = (
   }
   return {
     ok: true,
+    shape: 'scalar',
     question,
     dax,
     value: outcome.value,
     formatted: formatDaxValue(outcome.value),
     interpretation,
     column,
+  };
+};
+
+// ============================================================
+// A figure per group
+// ============================================================
+
+/**
+ * "Top 5", "bottom 3", "worst 10". The number is optional: "top regions by
+ * revenue" is a perfectly ordinary question.
+ *
+ * Deliberately excludes highest, lowest, largest and smallest, which are
+ * aggregation words. Treating them as rankings read "highest Cost" as a
+ * ranking with nothing to rank by, and would have read "highest Amount by
+ * Region" with the columns the wrong way round - grouping by Amount and
+ * measuring Region. Top and bottom are never aggregations, so they mark the
+ * ranking form unambiguously.
+ */
+const RANKING = /\b(top|bottom|best|worst)\s+(\d+)?\s*/;
+
+/** Where the measure stops and the grouping column starts. */
+const SPLIT_WORD = /\b(by|per)\b|\bfor each\b/;
+
+const DESCENDING_WORDS = ['top', 'best'];
+
+/**
+ * How many groups a ranked question returns when it does not say.
+ *
+ * Small on purpose. "Top regions by revenue" wants the ones worth looking
+ * at, and a screen of forty is not an answer to that question.
+ */
+const DEFAULT_RANK_SIZE = 10;
+
+/** A name for the computed column, distinct from the column grouped by. */
+const labelFor = (aggregation: AggregationWord, measure: SemanticColumn, group: SemanticColumn): string => {
+  const base =
+    aggregation.dax === 'COUNTROWS'
+      ? 'Rows'
+      : `${aggregation.dax.charAt(0)}${aggregation.dax.slice(1).toLowerCase()} of ${measure.name}`;
+  // ADDCOLUMNS refuses a name the table already has, and the grouping
+  // column is already there.
+  return base.toLowerCase() === group.name.toLowerCase() ? `${base} ` : base;
+};
+
+const answerGrouped = (
+  question: string,
+  text: string,
+  model: SemanticModel,
+  ranked: RegExpExecArray | null,
+  splitAt: number
+): NlqAnswer => {
+  const before = text.slice(0, splitAt);
+  const after = text.slice(splitAt).replace(SPLIT_WORD, ' ');
+
+  // Two word orders, and they put the columns on opposite sides:
+  //   "average Amount by Region"     figure first, grouping after "by"
+  //   "top 5 regions by Amount"      grouping first, figure after "by"
+  const rankingForm = ranked !== null;
+  const groupText = rankingForm ? before.replace(RANKING, ' ') : after;
+  const measureText = rankingForm ? after : before;
+
+  const aggregation =
+    parse(measureText)?.aggregation ??
+    // A ranking usually names no aggregation - "top 5 regions by revenue"
+    // means the total. Summing is the only reading that does not need the
+    // question to have said something it did not.
+    AGGREGATIONS.find(entry => entry.dax === 'SUM')!;
+
+  const parsedMeasure = parse(measureText);
+  const measureTerms = parsedMeasure ? parsedMeasure.subject : meaningfulWords(measureText);
+  const groupTerms = meaningfulWords(groupText);
+
+  if (groupTerms.length === 0) {
+    return refuse(model, question, 'I could not tell which column to group by.');
+  }
+  if (measureTerms.length === 0) {
+    return refuse(model, question, 'I could not tell which figure to work out for each group.');
+  }
+
+  const group = resolveColumn(model, groupTerms);
+  if (group.kind === 'none') {
+    return refuse(model, question, `Nothing in this data is called "${groupTerms.join(' ')}".`);
+  }
+  if (group.kind === 'ambiguous') {
+    return refuse(
+      model,
+      question,
+      `"${groupTerms.join(' ')}" could mean ${group.candidates.map(describeColumn).join(' and ')}. ` +
+        'Say which table you mean.'
+    );
+  }
+
+  const measure = resolveColumn(model, measureTerms);
+  if (measure.kind === 'none') {
+    return refuse(model, question, `Nothing in this data is called "${measureTerms.join(' ')}".`);
+  }
+  if (measure.kind === 'ambiguous') {
+    return refuse(
+      model,
+      question,
+      `"${measureTerms.join(' ')}" could mean ${measure.candidates.map(describeColumn).join(' and ')}. ` +
+        'Say which table you mean.'
+    );
+  }
+
+  if (group.value.table.toLowerCase() !== measure.value.table.toLowerCase()) {
+    // Grouping one table by another needs the relationship followed, which
+    // the compiler does not do yet. A figure per group computed across an
+    // unrelated grain would look ordinary and mean nothing.
+    return refuse(
+      model,
+      question,
+      `${describeColumn(group.value)} and ${describeColumn(measure.value)} are in different ` +
+        'tables, and I cannot yet group one table by a column of another.'
+    );
+  }
+
+  if (group.value.name.toLowerCase() === measure.value.name.toLowerCase()) {
+    return refuse(
+      model,
+      question,
+      `That groups ${describeColumn(group.value)} by itself, which gives one row per value ` +
+        'and nothing to compare.'
+    );
+  }
+
+  if (aggregation.needsNumeric && measure.value.dataType !== 'number') {
+    return refuse(
+      model,
+      question,
+      `${describeColumn(measure.value)} does not hold numbers, so ${aggregation.describes} it ` +
+        `is not something I can work out. ${measure.value.roleReason}`
+    );
+  }
+
+  const label = labelFor(aggregation, measure.value, group.value);
+  const grouped =
+    `ADDCOLUMNS(VALUES(${columnRef(group.value.table, group.value.name)}), ` +
+    `"${label}", CALCULATE(${aggregation.dax}(${columnRef(measure.value.table, measure.value.name)})))`;
+
+  const descending = !ranked || DESCENDING_WORDS.includes(ranked[1]);
+  const size = ranked && ranked[2] ? Number(ranked[2]) : rankingForm ? DEFAULT_RANK_SIZE : ROW_LIMIT;
+
+  // Always ranked, even when nothing asked for a ranking. An unranked result
+  // that hits the cap shows an arbitrary slice, and an arbitrary 500 rows
+  // looks exactly like the top 500 on screen.
+  const dax = `TOPN(${size}, ${grouped}, [${label}], ${descending ? 'DESC' : 'ASC'})`;
+
+  const outcome = runDaxTable(dax, model, { limit: ROW_LIMIT });
+  if (!outcome.ok) {
+    return { ok: false, question, reason: outcome.message, suggestions: suggestQuestions(model) };
+  }
+
+  const shown = outcome.rows.length;
+  const ordering = descending ? 'largest first' : 'smallest first';
+  const capped =
+    rankingForm || outcome.totalRows <= shown
+      ? ''
+      : ` There are ${outcome.totalRows} in all; these are the ${shown} ${ordering}.`;
+
+  return {
+    ok: true,
+    shape: 'table',
+    question,
+    dax,
+    columns: outcome.columns,
+    rows: outcome.rows,
+    totalRows: outcome.totalRows,
+    truncated: outcome.totalRows > shown,
+    interpretation:
+      `${aggregation.describes.charAt(0).toUpperCase()}${aggregation.describes.slice(1)} ` +
+      `${describeColumn(measure.value)} for each ${describeColumn(group.value)}, ${ordering}.` +
+      capped,
+    groupColumn: group.value,
+    measureColumn: measure.value,
   };
 };

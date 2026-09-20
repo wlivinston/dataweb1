@@ -358,6 +358,24 @@ export const runDaxTable = (
   const limit = Math.max(0, options.limit ?? DEFAULT_ROW_LIMIT);
   const materialised = materialise(outcome.value, model, limit);
 
+  const warnings = warningsOf(outcome.issues);
+  if (materialised.truncated) {
+    // Which rows were kept depends on the order the expression produced,
+    // and an expression that did not rank anything has no meaningful
+    // order. Saying so is the difference between "the top 500" and "500 of
+    // them, arbitrarily" - and only one of those is true here.
+    warnings.push({
+      code: 'truncated',
+      severity: 'warning',
+      message:
+        `Showing ${materialised.rows.length} of ${materialised.totalRows} rows. ` +
+        'These are the first rows the expression produced, not the largest - ' +
+        'rank it with TOPN to choose which ones you get.',
+      start: 0,
+      length: Math.max(1, formula.trim().length),
+    });
+  }
+
   return {
     ok: true,
     columns: materialised.columns,
@@ -365,7 +383,7 @@ export const runDaxTable = (
     totalRows: materialised.totalRows,
     truncated: materialised.truncated,
     normalised: outcome.normalised,
-    warnings: warningsOf(outcome.issues),
+    warnings,
   };
 };
 

@@ -39,15 +39,29 @@ export const meaningfulWords = (phrase: string): string[] =>
     .map(word => word.trim())
     .filter(word => word.length > 0 && !STOPWORDS.has(word));
 
+/**
+ * The singular of a word, for the cases English makes easy.
+ *
+ * "Top 5 regions" should find the Region column. Deliberately shallow -
+ * no irregular plurals, no -ies rules - because a clever stemmer that
+ * turns "status" into "statu" or "address" into "addres" would match the
+ * wrong column with confidence, which is worse than not matching at all.
+ */
+const singular = (word: string): string =>
+  word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word;
+
 const scoreAgainst = (terms: string[], name: string): number => {
   if (terms.length === 0) return 0;
   const nameTokens = new Set(tokeniseColumnName(name));
   const joined = compact(terms.join(' '));
+  const joinedSingular = compact(terms.map(singular).join(' '));
   let score = 0;
 
-  if (compact(name) === joined) score += EXACT_BONUS;
+  // Scored once either way, so a plural is not worth more than a singular.
+  if (compact(name) === joined || compact(name) === joinedSingular) score += EXACT_BONUS;
   for (const term of terms) {
-    if (nameTokens.has(term.toLowerCase())) score += TOKEN_POINTS;
+    const lower = term.toLowerCase();
+    if (nameTokens.has(lower) || nameTokens.has(singular(lower))) score += TOKEN_POINTS;
   }
   return score;
 };
