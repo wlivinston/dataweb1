@@ -256,7 +256,7 @@ const SIGNATURES: DaxFunctionSignature[] = [
   // ----------------------------------------------------------------
   fn('SUMMARIZE', 'filter', [table('table'), any('groupBy')], 'table', 'Groups a table by columns, adding aggregated columns.', { variadic: true }),
   fn('SUMMARIZECOLUMNS', 'filter', [any('groupBy')], 'table', 'Groups and aggregates across columns without naming a base table.', { variadic: true }),
-  fn('ADDCOLUMNS', 'filter', [table('table'), scalar('name'), scalar('expression')], 'table', 'Adds calculated columns to a table expression.', { variadic: true }),
+  fn('ADDCOLUMNS', 'filter', [any('table'), scalar('name'), scalar('expression')], 'table', 'Adds calculated columns to a table expression.', { variadic: true, implemented: true }),
   fn('SELECTCOLUMNS', 'filter', [table('table'), scalar('name'), scalar('expression')], 'table', 'Picks and renames columns from a table expression.', { variadic: true }),
   fn('CROSSJOIN', 'filter', [table('table1'), table('table2')], 'table', 'Every combination of rows from two tables.', { variadic: true }),
   fn('UNION', 'filter', [table('table1'), table('table2')], 'table', 'The rows of two tables combined.', { variadic: true }),

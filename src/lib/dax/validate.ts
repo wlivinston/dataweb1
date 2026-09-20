@@ -217,6 +217,24 @@ export const validateDax = (
     });
   });
 
+  // Names that ADDCOLUMNS brings into existence. [Total] is a measure
+  // reference everywhere else, but inside an iterator over
+  // ADDCOLUMNS(..., "Total", ...) it is that column.
+  //
+  // Lexical and deliberately loose: a name introduced anywhere in the
+  // expression is accepted anywhere in it. Being stricter would need the
+  // validator to model scope, and erring toward acceptance is the right way
+  // round - the evaluator still refuses a genuinely out-of-scope name, with
+  // a precise message, whereas a false rejection here blocks valid DAX.
+  const introduced = new Set<string>();
+  visit(expression, node => {
+    if (node.kind !== 'call' || node.name.toUpperCase() !== 'ADDCOLUMNS') return;
+    for (let i = 1; i < node.args.length; i += 2) {
+      const argument = node.args[i];
+      if (argument.kind === 'string') introduced.add(argument.value.toLowerCase());
+    }
+  });
+
   visit(expression, node => {
     switch (node.kind) {
       case 'call': {
@@ -283,7 +301,7 @@ export const validateDax = (
       }
 
       case 'measure': {
-        if (!findMeasure(model, node.name)) {
+        if (!findMeasure(model, node.name) && !introduced.has(node.name.toLowerCase())) {
           // Square brackets on their own mean a measure in DAX. Writing
           // [Amount] when Sales[Amount] was meant is the commonest way to
           // land here, so say that outright rather than listing measures.

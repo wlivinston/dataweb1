@@ -42,10 +42,41 @@ export interface FilterContext {
 }
 
 /** One iterated row, as SUMX and friends establish. */
-export interface RowContext {
+/** Iterating the rows of a model table, as SUMX(Sales, ...) does. */
+export interface ModelRowContext {
+  kind: 'row';
   table: string;
   rowIndex: number;
 }
+
+/** One column of a derived row, and the value it holds on this row. */
+export interface DerivedBinding {
+  name: string;
+  /** The model column this came from, when it came from one. */
+  origin?: { table: string; column: string };
+  value: DaxScalar;
+}
+
+/**
+ * Iterating a computed table, where a row is values rather than a position.
+ *
+ * ADDCOLUMNS(VALUES(Sales[Region]), ...) has no row of Sales to point at -
+ * a region is not a row. So the row context carries the values, and on
+ * context transition each binding that still knows its model column
+ * narrows that column. That is what makes
+ *
+ *   ADDCOLUMNS(VALUES(Sales[Region]), "Avg", CALCULATE(AVERAGE(Sales[Amount])))
+ *
+ * compute an average per region rather than the same grand total on every
+ * row - the same failure context transition was introduced to prevent for
+ * SUMX.
+ */
+export interface DerivedRowContext {
+  kind: 'derived';
+  bindings: DerivedBinding[];
+}
+
+export type RowContext = ModelRowContext | DerivedRowContext;
 
 export interface EvalContext {
   filter: FilterContext;

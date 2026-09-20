@@ -20,6 +20,7 @@ import {
   withoutTable,
   type EvalContext,
   type FilterContext,
+  type RowContext,
   type VisibilityCache,
 } from './context';
 import {
@@ -38,6 +39,7 @@ import {
   type DaxRowSet,
   type DaxScalar,
   type DaxTable,
+  type DerivedColumn,
   type DaxValue,
 } from './value';
 import { applyDaxFormat, DaxFormatError } from './format';
@@ -301,6 +303,18 @@ class Evaluator {
     // A bare column reference only means something for a particular row.
     for (let i = context.rowContexts.length - 1; i >= 0; i -= 1) {
       const rowContext = context.rowContexts[i];
+      if (rowContext.kind === 'derived') {
+        // A derived row supplies the column only when one of its own
+        // columns still knows it came from this one.
+        const binding = rowContext.bindings.find(
+          candidate =>
+            candidate.origin !== undefined &&
+            candidate.origin.table.toLowerCase() === owner.toLowerCase() &&
+            candidate.origin.column.toLowerCase() === resolved.value.name.toLowerCase()
+        );
+        if (binding) return binding.value;
+        continue;
+      }
       if (rowContext.table.toLowerCase() === owner.toLowerCase()) {
         return cellValue(this.model, owner, resolved.value.name, rowContext.rowIndex);
       }
@@ -308,8 +322,11 @@ class Evaluator {
 
     // Available through a relationship from the row being iterated.
     for (let i = context.rowContexts.length - 1; i >= 0; i -= 1) {
+      const outer = context.rowContexts[i];
+      // Following a relationship needs a real row to start from.
+      if (outer.kind === 'derived') continue;
       const related = this.followRelationship(
-        context.rowContexts[i],
+        outer,
         owner,
         resolved.value.name,
         context.filter
@@ -352,6 +369,18 @@ class Evaluator {
   }
 
   private evaluateMeasure(name: string, node: Expression, context: EvalContext): DaxValue {
+    // [Name] inside an iterator over a computed table means that table's
+    // column, not a model measure - which is how the result of ADDCOLUMNS
+    // is read back. Innermost row context wins, as everywhere else.
+    for (let i = context.rowContexts.length - 1; i >= 0; i -= 1) {
+      const rowContext = context.rowContexts[i];
+      if (rowContext.kind !== 'derived') continue;
+      const binding = rowContext.bindings.find(
+        candidate => candidate.name.toLowerCase() === name.toLowerCase()
+      );
+      if (binding) return binding.value;
+    }
+
     const measure = findMeasure(this.model, name);
     if (!measure) {
       this.fail(node, `There is no measure called [${name}].`);
@@ -392,6 +421,26 @@ class Evaluator {
 
     for (let i = context.rowContexts.length - 1; i >= 0; i -= 1) {
       const rowContext = context.rowContexts[i];
+
+      if (rowContext.kind === 'derived') {
+        // Each column that still knows its model column narrows it. A
+        // computed column - an average, say - has no lineage and narrows
+        // nothing, which is what DAX does too.
+        for (const binding of rowContext.bindings) {
+          if (!binding.origin) continue;
+          const key = `${binding.origin.table.toLowerCase()}.${binding.origin.column.toLowerCase()}`;
+          if (pinned.has(key)) continue;
+          pinned.add(key);
+          filter = withColumnFilter(
+            filter,
+            binding.origin.table,
+            binding.origin.column,
+            new Set([keyOf(binding.value) ?? BLANK_KEY])
+          );
+        }
+        continue;
+      }
+
       const key = rowContext.table.toLowerCase();
       if (pinned.has(key)) continue; // Innermost row context wins.
       pinned.add(key);
@@ -501,17 +550,65 @@ class Evaluator {
     return rows.map(index => cellValue(this.model, reference.table, reference.column, index));
   }
 
+  /**
+   * The columns of a table of either kind, with their lineage.
+   *
+   * A row set's columns are the model table's own, so every one of them
+   * knows where it came from. A derived table's are whatever built it.
+   */
+  columnsOf(table: DaxTable): DerivedColumn[] {
+    if (isDerived(table)) return table.columns;
+    const owner = findTable(this.model, table.table);
+    if (!owner) return [];
+    return owner.columns.map(column => ({
+      name: column.name,
+      origin: { table: owner.name, column: column.name },
+    }));
+  }
+
+  /** One row context per row, of the kind that table's rows call for. */
+  rowContextsOf(table: DaxTable): RowContext[] {
+    if (!isDerived(table)) {
+      return table.rows.map(rowIndex => ({
+        kind: 'row' as const,
+        table: table.table,
+        rowIndex,
+      }));
+    }
+    return table.rows.map(row => ({
+      kind: 'derived' as const,
+      bindings: table.columns.map((column, index) => ({
+        name: column.name,
+        origin: column.origin,
+        value: row[index],
+      })),
+    }));
+  }
+
+  /** The values already in a row, before anything is added to it. */
+  valuesOf(table: DaxTable, rowContext: RowContext): DaxScalar[] {
+    if (rowContext.kind === 'derived') {
+      return rowContext.bindings.map(binding => binding.value);
+    }
+    return this.columnsOf(table).map(column =>
+      cellValue(this.model, table.source === 'rows' ? table.table : '', column.name, rowContext.rowIndex)
+    );
+  }
+
   iterate(
-    table: DaxRowSet,
+    table: DaxTable,
     context: EvalContext,
     scope: Scope | null,
     body: Expression
   ): DaxValue[] {
     const results: DaxValue[] = [];
-    for (const rowIndex of table.rows) {
+    // Row contexts rather than row indices, so an iterator walks a computed
+    // table exactly as it walks a model one. SUMX over VALUES(Sales[Region])
+    // is the grouping case, and it is the same loop.
+    for (const rowContext of this.rowContextsOf(table)) {
       const inner: EvalContext = {
         filter: context.filter,
-        rowContexts: [...context.rowContexts, { table: table.table, rowIndex }],
+        rowContexts: [...context.rowContexts, rowContext],
       };
       results.push(this.evaluate(body, inner, scope));
     }
@@ -641,13 +738,13 @@ const HANDLERS: Record<string, Handler> = {
     if (node.args.length === 0) {
       throw evaluator.error(node, 'COUNTROWS needs a table, for example COUNTROWS(Sales).');
     }
-    const table = evaluator.tableArg(node, 0, context, scope);
+    const table = evaluator.anyTableArg(node, 0, context, scope);
     return table.rows.length === 0 ? BLANK : table.rows.length;
   },
 
   // -- iterators ----------------------------------------------------------
   SUMX: (evaluator, node, context, scope) => {
-    const table = evaluator.tableArg(node, 0, context, scope);
+    const table = evaluator.anyTableArg(node, 0, context, scope);
     const numbers = numericValues(
       evaluator.iterate(table, context, scope, node.args[1]).map(v => expectScalar(v, 'SUMX'))
     );
@@ -655,7 +752,7 @@ const HANDLERS: Record<string, Handler> = {
   },
 
   AVERAGEX: (evaluator, node, context, scope) => {
-    const table = evaluator.tableArg(node, 0, context, scope);
+    const table = evaluator.anyTableArg(node, 0, context, scope);
     const numbers = numericValues(
       evaluator.iterate(table, context, scope, node.args[1]).map(v => expectScalar(v, 'AVERAGEX'))
     );
@@ -663,7 +760,7 @@ const HANDLERS: Record<string, Handler> = {
   },
 
   MINX: (evaluator, node, context, scope) => {
-    const table = evaluator.tableArg(node, 0, context, scope);
+    const table = evaluator.anyTableArg(node, 0, context, scope);
     const present = evaluator
       .iterate(table, context, scope, node.args[1])
       .map(v => expectScalar(v, 'MINX'))
@@ -673,7 +770,7 @@ const HANDLERS: Record<string, Handler> = {
   },
 
   MAXX: (evaluator, node, context, scope) => {
-    const table = evaluator.tableArg(node, 0, context, scope);
+    const table = evaluator.anyTableArg(node, 0, context, scope);
     const present = evaluator
       .iterate(table, context, scope, node.args[1])
       .map(v => expectScalar(v, 'MAXX'))
@@ -683,7 +780,7 @@ const HANDLERS: Record<string, Handler> = {
   },
 
   COUNTX: (evaluator, node, context, scope) => {
-    const table = evaluator.tableArg(node, 0, context, scope);
+    const table = evaluator.anyTableArg(node, 0, context, scope);
     const numbers = numericValues(
       evaluator.iterate(table, context, scope, node.args[1]).map(v => expectScalar(v, 'COUNTX'))
     );
@@ -709,7 +806,7 @@ const HANDLERS: Record<string, Handler> = {
     for (const rowIndex of table.rows) {
       const inner: EvalContext = {
         filter: context.filter,
-        rowContexts: [...context.rowContexts, { table: table.table, rowIndex }],
+        rowContexts: [...context.rowContexts, { kind: 'row' as const, table: table.table, rowIndex }],
       };
       if (toBoolean(evaluator.evaluate(node.args[1], inner, scope), 'FILTER')) {
         kept.push(rowIndex);
@@ -760,9 +857,80 @@ const HANDLERS: Record<string, Handler> = {
     if (argument.kind === 'table') {
       return makeTable(argument.name, evaluator.visibleRowsOf(argument.name, context));
     }
-    throw evaluator.error(
-      argument,
-      'VALUES over a single column is not supported yet. Use VALUES(Table), or DISTINCTCOUNT for a count.'
+
+    // VALUES of one column: a one-column table of its distinct visible
+    // values. Not a set of model rows - two rows sharing a region are one
+    // value - so it is derived, and keeps its lineage so that grouping by
+    // it can filter the column it came from.
+    const reference = evaluator.columnArg(node, 0);
+    const seen = new Map<string, DaxScalar>();
+    for (const value of evaluator.columnValues(reference, context)) {
+      // Keyed the way filters are keyed, so "Accra" and "ACCRA" are one
+      // value here exactly as they are one value to a filter.
+      const key = keyOf(value) ?? BLANK_KEY;
+      if (!seen.has(key)) seen.set(key, value);
+    }
+
+    return makeDerivedTable(
+      [{ name: reference.column, origin: { table: reference.table, column: reference.column } }],
+      [...seen.values()].map(value => [value])
+    );
+  },
+
+  ADDCOLUMNS: (evaluator, node, context, scope) => {
+    const source = evaluator.anyTableArg(node, 0, context, scope);
+
+    // Name/expression pairs after the table.
+    const rest = node.args.slice(1);
+    if (rest.length === 0 || rest.length % 2 !== 0) {
+      throw evaluator.error(
+        node,
+        'ADDCOLUMNS takes a table then a name and an expression for each column ' +
+          `to add. ${rest.length} argument${rest.length === 1 ? '' : 's'} after the table ` +
+          'does not pair up.'
+      );
+    }
+
+    const added: string[] = [];
+    for (let i = 0; i < rest.length; i += 2) {
+      const nameNode = rest[i];
+      if (nameNode.kind !== 'string') {
+        throw evaluator.error(nameNode, 'Each added column needs a name in quotes.');
+      }
+      added.push(nameNode.value);
+    }
+
+    const existing = evaluator.columnsOf(source);
+    for (const name of added) {
+      if (existing.some(column => column.name.toLowerCase() === name.toLowerCase())) {
+        throw evaluator.error(
+          node,
+          `This table already has a column called "${name}".`
+        );
+      }
+    }
+
+    const rows: DaxScalar[][] = [];
+    for (const rowContext of evaluator.rowContextsOf(source)) {
+      const inner: EvalContext = {
+        filter: context.filter,
+        rowContexts: [...context.rowContexts, rowContext],
+      };
+      const base = evaluator.valuesOf(source, rowContext);
+      const extra: DaxScalar[] = [];
+      for (let i = 0; i < rest.length; i += 2) {
+        const value = evaluator.evaluate(rest[i + 1], inner, scope);
+        if (isTable(value)) {
+          throw evaluator.error(rest[i + 1], `"${added[i / 2]}" must be a single value, not a table.`);
+        }
+        extra.push(value);
+      }
+      rows.push([...base, ...extra]);
+    }
+
+    return makeDerivedTable(
+      [...existing, ...added.map(name => ({ name }))],
+      rows
     );
   },
 
@@ -1884,7 +2052,7 @@ const STATISTICAL_HANDLERS: Record<string, Handler> = {
   }),
 
   CONCATENATEX: (evaluator, node, context, scope) => {
-    const table = evaluator.tableArg(node, 0, context, scope);
+    const table = evaluator.anyTableArg(node, 0, context, scope);
     const delimiter =
       node.args.length > 2 ? evaluator.textArg(node, 2, context, scope) : '';
     const parts = evaluator
@@ -1895,7 +2063,7 @@ const STATISTICAL_HANDLERS: Record<string, Handler> = {
   },
 
   RANKX: (evaluator, node, context, scope) => {
-    const table = evaluator.tableArg(node, 0, context, scope);
+    const table = evaluator.anyTableArg(node, 0, context, scope);
     const expression = node.args[1];
 
     const values = evaluator
@@ -1946,7 +2114,7 @@ const STATISTICAL_HANDLERS: Record<string, Handler> = {
       value: expectScalar(
         evaluator.evaluate(node.args[2], {
           filter: context.filter,
-          rowContexts: [...context.rowContexts, { table: table.table, rowIndex }],
+          rowContexts: [...context.rowContexts, { kind: 'row' as const, table: table.table, rowIndex }],
         }, scope),
         'TOPN'
       ),
