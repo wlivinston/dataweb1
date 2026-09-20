@@ -1,6 +1,7 @@
 import { PARITY_CASES } from './expected';
 import { GROUPING_CASES } from './grouping-expected';
 import { TABLE_CASES } from './table-expected';
+import { BLANK_CASES } from './blank-expected';
 import type { ResolvedMeasure } from '../../../measures';
 
 /**
@@ -174,6 +175,31 @@ export const buildTableScript = (): string => {
       'Put Case and Answer into a Table visual and send the result back.',
       '',
       `Generated from table-expected.ts - ${cases.length} cases.`,
+    ],
+    ['UNION(', rows.join(',\n'), ')']
+  );
+};
+
+// ============================================================
+// What an empty cell becomes on import
+// ============================================================
+
+/** The follow-up the table sheet asked for, kept small and decisive. */
+export const buildBlankScript = (): string => {
+  const rows = BLANK_CASES.map((entry, index) => {
+    const position = String(index + 1).padStart(2, '0');
+    const answer = answerExpression(entry.dax, entry.returnsText === true);
+    return `    ROW("Case", "${position} ${entry.id}", "Answer", ${answer})`;
+  });
+
+  return assignTo(
+    'BlankResults',
+    [
+      'Paste into Power BI Desktop: Modeling > New table.',
+      'Runs against the Sales table from sales.csv.',
+      'Put Case and Answer into a Table visual and send the result back.',
+      '',
+      `Generated from blank-expected.ts - ${BLANK_CASES.length} cases.`,
     ],
     ['UNION(', rows.join(',\n'), ')']
   );

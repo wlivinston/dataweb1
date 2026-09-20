@@ -2075,10 +2075,17 @@ const STATISTICAL_HANDLERS: Record<string, Handler> = {
     const table = evaluator.anyTableArg(node, 0, context, scope);
     const delimiter =
       node.args.length > 2 ? evaluator.textArg(node, 2, context, scope) : '';
+    // Every row contributes, including one whose expression is blank.
+    //
+    // This filtered empty strings out, so a list of three regions where one
+    // is blank came back as "North|South" - eleven characters where Power BI
+    // produces "North|South|" at twelve. Dropping the slot loses the row
+    // entirely: a reader counting items in the list counts two, and there
+    // are three. Found by pasting, since both readings look reasonable until
+    // something else disagrees.
     const parts = evaluator
       .iterate(table, context, scope, node.args[1])
-      .map(value => toText(value, 'CONCATENATEX'))
-      .filter(text => text.length > 0);
+      .map(value => toText(value, 'CONCATENATEX'));
     return parts.length === 0 ? BLANK : parts.join(delimiter);
   },
 

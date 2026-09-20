@@ -35,14 +35,24 @@ const answerFor = (dax: string): string => {
   return result.value === null ? 'BLANK' : String(result.value);
 };
 
-const agrees = (engine: string, expected: number | string): boolean => {
+/** The items of a flattened table, as a set, for order-free comparison. */
+const items = (text: string): string => text.trim().split('>').sort().join('>');
+
+const agrees = (
+  engine: string,
+  expected: number | string,
+  unordered = false
+): boolean => {
   if (typeof expected === 'number') {
     const parsed = Number(engine.replace(/,/g, ''));
     if (Number.isNaN(parsed)) return false;
     return Math.abs(parsed - expected) <= Math.max(Math.abs(expected) * 1e-6, 1e-6);
   }
-  // Exact for text: a flattened table differing by one character is a
-  // different table, and "starts with" would hide a missing last row.
+  // Compared as a set where DAX does not define the order, so a difference
+  // that is not a defect does not read as one - but still exact within
+  // each item, because a flattened row differing by one character is a
+  // different row.
+  if (unordered) return items(engine) === items(expected);
   return engine.trim() === expected.trim();
 };
 
@@ -89,15 +99,45 @@ describe('table parity fixture', () => {
 describe('table parity with Power BI', () => {
   for (const entry of TABLE_CASES) {
     const runner = entry.expected === null ? it.skip : it;
+
+    if (entry.divergence) {
+      const pinned = entry.divergence;
+      runner(`${entry.id} - KNOWN DIVERGENCE, pinned`, () => {
+        // Not a claim of agreement. This asserts the disagreement is still
+        // exactly what was recorded, so neither side can drift without
+        // someone noticing - and so a green suite is not a false all-clear.
+        const engine = answerFor(entry.engineDax ?? entry.dax);
+        expect(engine, `${entry.id}: this engine moved.\n  ${pinned.note}`).toBe(
+          pinned.engine
+        );
+        expect(
+          agrees(engine, entry.expected!, entry.unorderedText === true),
+          `${entry.id} now AGREES with Power BI - unpin it.\n  ${pinned.note}`
+        ).toBe(false);
+      });
+      continue;
+    }
+
     runner(`${entry.id}`, () => {
       const engine = answerFor(entry.engineDax ?? entry.dax);
       expect(
-        agrees(engine, entry.expected!),
+        agrees(engine, entry.expected!, entry.unorderedText === true),
         `${entry.id}\n  dax: ${entry.dax}\n  probes: ${entry.probes}\n` +
           `  Power BI:    ${entry.expected}\n  this engine: ${engine}`
       ).toBe(true);
     });
   }
+
+  it('reports every divergence still open, so none goes quiet', () => {
+    const open = TABLE_CASES.filter(entry => entry.divergence);
+    if (open.length > 0) {
+      console.log(
+        `\n  ${open.length} pinned divergence${open.length === 1 ? '' : 's'}: ` +
+          `${open.map(entry => entry.id).join(', ')}\n  ${open[0].divergence!.note}\n`
+      );
+    }
+    expect(open.every(entry => entry.divergence!.note.length > 0)).toBe(true);
+  });
 
   it('reports how much of the sheet is still unanswered', () => {
     const pending = pendingTableCount();

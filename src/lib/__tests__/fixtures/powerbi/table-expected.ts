@@ -30,6 +30,14 @@ const GROUPED =
 /** A label that shows a blank group instead of hiding it. */
 const LABEL = 'IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region])';
 
+/** The one disagreement this sheet found, shared by five cases. */
+const BLANK_LABEL_NOTE =
+  'Power BI reads Sales[Region] on the blank row as NOT blank, so the ' +
+  'IF(ISBLANK(...)) label falls through to the value itself and renders ' +
+  'empty. This engine reads it as BLANK. Whether Power BI imported the empty ' +
+  'CSV cell as an empty string, or something else is happening, is the open ' +
+  'question - COUNTBLANK settles it and is being asked.';
+
 export const TABLE_CASES: ParityCase[] = [
   {
     id: 'canary-the-table-actually-has-rows',
@@ -39,7 +47,7 @@ export const TABLE_CASES: ParityCase[] = [
       'notice they are all the same. If this is not 18, nothing below it means ' +
       'anything.',
     dax: 'COUNTROWS(Sales)',
-    expected: null,
+    expected: 18,
   },
   {
     id: 'ranked-rows-in-order',
@@ -48,8 +56,13 @@ export const TABLE_CASES: ParityCase[] = [
       '3800, North 3600, blank 200. Order is the part no scalar case has ever ' +
       'checked, and it is the order an analyst reads down the screen.',
     dax: `CONCATENATEX(TOPN(3, ${GROUPED}, [T], DESC), ${LABEL}, ">")`,
-    expected: null,
+    expected: 'North>South>',
     returnsText: true,
+    divergence: {
+      engine: 'South>North>(blank)',
+      note: BLANK_LABEL_NOTE,
+    },
+    unorderedText: true,
   },
   {
     id: 'ranked-rows-with-their-figures',
@@ -57,8 +70,13 @@ export const TABLE_CASES: ParityCase[] = [
       'The same table with the values attached, so a right answer in the wrong ' +
       'order and a wrong answer in the right order cannot both pass.',
     dax: `CONCATENATEX(TOPN(3, ${GROUPED}, [T], DESC), ${LABEL} & "=" & [T], ">")`,
-    expected: null,
+    expected: 'North=3600>South=3800>=200',
     returnsText: true,
+    divergence: {
+      engine: 'South=3800>North=3600>(blank)=200',
+      note: BLANK_LABEL_NOTE,
+    },
+    unorderedText: true,
   },
   {
     id: 'ranked-the-other-way',
@@ -66,8 +84,13 @@ export const TABLE_CASES: ParityCase[] = [
       'ASC should exactly reverse the DESC order. If it does not, one of the ' +
       'two is not sorting by the column it claims to.',
     dax: `CONCATENATEX(TOPN(3, ${GROUPED}, [T], ASC), ${LABEL} & "=" & [T], ">")`,
-    expected: null,
+    expected: 'North=3600>South=3800>=200',
     returnsText: true,
+    divergence: {
+      engine: '(blank)=200>North=3600>South=3800',
+      note: BLANK_LABEL_NOTE,
+    },
+    unorderedText: true,
   },
   {
     id: 'top-one-group',
@@ -75,7 +98,7 @@ export const TABLE_CASES: ParityCase[] = [
       'A single row, so the answer cannot depend on order at all. Isolates ' +
       '"did TOPN pick the right group" from "did it keep them in order".',
     dax: `CONCATENATEX(TOPN(1, ${GROUPED}, [T], DESC), ${LABEL}, ">")`,
-    expected: null,
+    expected: 'South',
     returnsText: true,
   },
   {
@@ -85,8 +108,12 @@ export const TABLE_CASES: ParityCase[] = [
       'mean blank is not being treated as a group when ranking, even though it ' +
       'is when counting.',
     dax: `CONCATENATEX(TOPN(1, ${GROUPED}, [T], ASC), ${LABEL}, ">")`,
-    expected: null,
+    expected: '',
     returnsText: true,
+    divergence: {
+      engine: '(blank)',
+      note: BLANK_LABEL_NOTE,
+    },
   },
   {
     id: 'asking-for-more-groups-than-exist',
@@ -96,7 +123,7 @@ export const TABLE_CASES: ParityCase[] = [
       'character identical to the TOPN(3) case, so it could not have told ' +
       'the two apart and would have been a case that proves nothing.',
     dax: `COUNTROWS(TOPN(10, ${GROUPED}, [T], DESC))`,
-    expected: null,
+    expected: 3,
   },
   {
     id: 'a-tie-keeps-both-rows',
@@ -108,7 +135,7 @@ export const TABLE_CASES: ParityCase[] = [
     dax:
       'COUNTROWS(TOPN(1, ADDCOLUMNS(VALUES(Sales[Amount]), "C", ' +
       'CALCULATE(COUNTROWS(Sales))), [C], DESC))',
-    expected: null,
+    expected: 2,
   },
   {
     id: 'ordering-by-text-puts-blank-where',
@@ -117,8 +144,13 @@ export const TABLE_CASES: ParityCase[] = [
       'order decides whether a breakdown opens or closes with the unlabelled ' +
       'group, which is the first thing a reader sees.',
     dax: `CONCATENATEX(TOPN(3, VALUES(Sales[Region]), Sales[Region], ASC), ${LABEL}, ">")`,
-    expected: null,
+    expected: 'North>South>',
     returnsText: true,
+    divergence: {
+      engine: '(blank)>North>South',
+      note: BLANK_LABEL_NOTE,
+    },
+    unorderedText: true,
   },
   {
     id: 'grouping-by-a-different-column',
@@ -128,8 +160,9 @@ export const TABLE_CASES: ParityCase[] = [
     dax:
       'CONCATENATEX(TOPN(2, ADDCOLUMNS(VALUES(Sales[Product]), "T", ' +
       'CALCULATE(SUM(Sales[Amount]))), [T], DESC), Sales[Product] & "=" & [T], ">")',
-    expected: null,
+    expected: 'Widget=3600>Gadget=4000',
     returnsText: true,
+    unorderedText: true,
   },
   {
     id: 'blank-inside-concatenatex',
@@ -140,7 +173,7 @@ export const TABLE_CASES: ParityCase[] = [
       'the two disagree about every list either of them ever produces. Length ' +
       'rather than the text itself, so the answer does not depend on order.',
     dax: 'LEN(CONCATENATEX(VALUES(Sales[Region]), Sales[Region], "|"))',
-    expected: null,
+    expected: 12,
   },
 ];
 

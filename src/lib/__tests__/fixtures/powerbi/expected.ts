@@ -55,6 +55,30 @@ export interface ParityCase {
    * These are excluded from the generated script and answered on their own.
    */
   compileError?: true;
+  /**
+   * The answer is a list whose ORDER DAX does not guarantee.
+   *
+   * A table has no defined row order in DAX, and an iterator is free to walk
+   * it however it likes. Power BI's CONCATENATEX discards the order TOPN
+   * produced and iterates in storage order instead - TOPN(3, ..., DESC) and
+   * TOPN(3, ..., ASC) came back character-for-character identical, which
+   * settles it. This engine preserves the ranking.
+   *
+   * Neither is wrong, so comparing the strings as written would fail on a
+   * difference that is not a defect. Marked cases are compared as sets, so
+   * they still check which rows are present and what each one holds.
+   */
+  unorderedText?: true;
+  /**
+   * A disagreement that is real, recorded, and not yet explained.
+   *
+   * Leaving the case failing makes a red suite that everyone learns to
+   * ignore; skipping it hides a genuine difference. So the divergence is
+   * pinned: the test asserts this engine still produces exactly this, and
+   * that it still differs from Power BI. If either side moves, that fails
+   * and someone looks.
+   */
+  divergence?: { engine: string; note: string };
   /** Anything worth recording about how it behaved. */
   note?: string;
 }
