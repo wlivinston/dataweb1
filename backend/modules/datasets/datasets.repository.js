@@ -1,5 +1,5 @@
 const { randomUUID } = require('crypto');
-const { query } = require('../../config/database');
+const { query, withTransaction } = require('../../config/database');
 const logger = require('../../config/logger');
 
 /**
@@ -260,8 +260,9 @@ async function appendRows(datasetId, startIndex, rows) {
     return rows.length;
   }
 
-  await query('BEGIN', []);
-  try {
+  // One connection for the whole batch, so a failure part-way through rolls
+  // the whole batch back instead of leaving some of its rows behind.
+  await withTransaction(async (run) => {
     for (let start = 0; start < rows.length; start += INSERT_CHUNK_ROWS) {
       const chunk = rows.slice(start, start + INSERT_CHUNK_ROWS);
       const values = [];
@@ -271,7 +272,7 @@ async function appendRows(datasetId, startIndex, rows) {
         values.push(`($${base + 1}, $${base + 2}, $${base + 3}::jsonb)`);
         params.push(datasetId, startIndex + start + offset, JSON.stringify(row));
       });
-      await query(
+      await run(
         `INSERT INTO analytics_dataset_rows (dataset_id, row_index, data)
          VALUES ${values.join(', ')}
          ON CONFLICT (dataset_id, row_index) DO UPDATE SET data = EXCLUDED.data`,
@@ -279,26 +280,15 @@ async function appendRows(datasetId, startIndex, rows) {
       );
     }
 
-    await query(
+    await run(
       `UPDATE analytics_datasets
        SET byte_size = byte_size + $2, updated_at = NOW()
        WHERE id = $1`,
       [datasetId, addedBytes]
     );
+  });
 
-    await query('COMMIT', []);
-    return rows.length;
-  } catch (error) {
-    try {
-      await query('ROLLBACK', []);
-    } catch (rollbackError) {
-      logger.error(
-        { err: rollbackError?.message || rollbackError },
-        'dataset row append rollback failed'
-      );
-    }
-    throw error;
-  }
+  return rows.length;
 }
 
 /** How many rows are actually stored. The number the client claims is checked against this. */
