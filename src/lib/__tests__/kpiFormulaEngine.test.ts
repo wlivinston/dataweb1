@@ -459,3 +459,89 @@ describe('Running total with a few unreadable dates', () => {
     ).toBe(30);
   });
 });
+
+/**
+ * Blank cells in a numeric column.
+ *
+ * Found on the live site, not here: the KPI tile read "Average Amount 15.00"
+ * for [10, 20, blank, 30] while the Ask Data tab, the panel directly beneath
+ * it, answered 20 with the DAX to prove it. Every aggregation converted the
+ * cell with Number() before checking it for null - and Number('') is 0 - so
+ * the blank became a real zero and joined the data.
+ *
+ * These are the numbers a user can check by hand, which is what makes them
+ * worth asserting.
+ */
+describe('a blank cell is not a zero', () => {
+  const withBlank = makeDataset(
+    [
+      { region: 'North', amount: 10 },
+      { region: 'South', amount: 20 },
+      { region: 'East', amount: '' },
+      { region: 'West', amount: 30 },
+    ],
+    [
+      { name: 'region', type: 'string' },
+      { name: 'amount', type: 'number' },
+    ]
+  );
+
+  it('averages over the values present, not over every row', () => {
+    // 60 / 3, not 60 / 4. This exact number was wrong in production.
+    expect(executeKPIFormula(withBlank, 'AVERAGE', 'amount')).toBe(20);
+  });
+
+  it('does not report a minimum of zero for a column whose smallest value is 10', () => {
+    // The worse half of the same bug: a price column with one empty cell
+    // reported a minimum of 0.
+    expect(executeKPIFormula(withBlank, 'MIN', 'amount')).toBe(10);
+  });
+
+  it('leaves the sum alone, because a phantom zero never changed it', () => {
+    expect(executeKPIFormula(withBlank, 'SUM', 'amount')).toBe(60);
+  });
+
+  it('takes the median of the three real values', () => {
+    // [10, 20, 30] -> 20. With the phantom zero it was [0, 10, 20, 30] -> 15.
+    expect(executeKPIFormula(withBlank, 'MEDIAN', 'amount')).toBe(20);
+  });
+
+  it('does not let a value nobody entered inflate the spread', () => {
+    // Population stddev of [10, 20, 30] is exactly sqrt(200/3).
+    expect(executeKPIFormula(withBlank, 'STDDEV', 'amount')).toBeCloseTo(
+      Math.sqrt(200 / 3),
+      10
+    );
+  });
+
+  it('treats whitespace, null and undefined the same as an empty cell', () => {
+    const messy = makeDataset(
+      [
+        { amount: 10 },
+        { amount: '   ' },
+        { amount: null },
+        { amount: undefined },
+        { amount: 30 },
+      ],
+      [{ name: 'amount', type: 'number' }]
+    );
+    expect(executeKPIFormula(messy, 'AVERAGE', 'amount')).toBe(20);
+    expect(executeKPIFormula(messy, 'MIN', 'amount')).toBe(10);
+  });
+
+  it('still leaves out text that is not a number', () => {
+    const messy = makeDataset(
+      [{ amount: 10 }, { amount: 'n/a' }, { amount: 30 }],
+      [{ name: 'amount', type: 'number' }]
+    );
+    expect(executeKPIFormula(messy, 'AVERAGE', 'amount')).toBe(20);
+  });
+
+  it('agrees with the DAX the Ask Data tab shows for the same question', () => {
+    // The two panels sit on the same screen. When they disagreed, one of them
+    // was lying to the user and nothing on the page said which.
+    const viaKpi = executeKPIFormula(withBlank, 'AVERAGE', 'amount');
+    const present = [10, 20, 30];
+    expect(viaKpi).toBe(present.reduce((a, b) => a + b, 0) / present.length);
+  });
+});

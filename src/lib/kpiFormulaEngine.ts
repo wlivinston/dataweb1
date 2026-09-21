@@ -4,6 +4,37 @@ import React from 'react';
 import { Dataset, ColumnInfo, Relationship, DAXFilterContext } from './types';
 import { summariseDateColumn, parseDateValue } from './semantic/dates';
 import { toDateKey } from './semantic/dateTable';
+import { cellAsNumber } from './dax/value';
+
+/**
+ * The numbers in a column, with blanks left out.
+ *
+ * Every aggregation below used to do this inline, and all of them did it
+ * wrong in the same way:
+ *
+ *   .map(row => Number(row[col]))
+ *   .filter(v => !isNaN(v) && v !== null && v !== undefined)
+ *
+ * Number('') and Number(null) are both 0, so the blank was already a zero by
+ * the time the null check ran - and that check was therefore testing a value
+ * that could never be null. An empty cell became a real 0 and joined the data.
+ *
+ * AVERAGE divided by a count that included it (10, 20, blank, 30 averaged 15
+ * rather than 20), MIN reported 0 for a column whose smallest value was 10,
+ * and MEDIAN and STDDEV were shifted by a value nobody entered. Found on the
+ * live site, not by a test.
+ *
+ * cellAsNumber is the DAX engine's own conversion, so the tiles and the DAX
+ * that the Ask Data tab shows now agree about what an empty cell means.
+ */
+const numericColumnValues = (dataset: Dataset, columnName: string): number[] => {
+  const values: number[] = [];
+  for (const row of dataset.data) {
+    const value = cellAsNumber(row[columnName]);
+    if (value !== null) values.push(value);
+  }
+  return values;
+};
 
 export type KPIFormula = 
   | 'SUM' 
@@ -77,41 +108,30 @@ export const executeKPIFormula = (
 
     case 'SUM':
       if (!columnName) return 0;
-      const sumValues = dataset.data
-        .map(row => Number(row[columnName]))
-        .filter(v => !isNaN(v) && v !== null && v !== undefined);
+      const sumValues = numericColumnValues(dataset, columnName);
       return sumValues.reduce((a, b) => a + b, 0);
 
     case 'AVERAGE':
       if (!columnName) return 0;
-      const avgValues = dataset.data
-        .map(row => Number(row[columnName]))
-        .filter(v => !isNaN(v) && v !== null && v !== undefined);
+      const avgValues = numericColumnValues(dataset, columnName);
       if (avgValues.length === 0) return 0;
       return avgValues.reduce((a, b) => a + b, 0) / avgValues.length;
 
     case 'MIN':
       if (!columnName) return 0;
-      const minValues = dataset.data
-        .map(row => Number(row[columnName]))
-        .filter(v => !isNaN(v) && v !== null && v !== undefined);
+      const minValues = numericColumnValues(dataset, columnName);
       if (minValues.length === 0) return 0;
       return Math.min(...minValues);
 
     case 'MAX':
       if (!columnName) return 0;
-      const maxValues = dataset.data
-        .map(row => Number(row[columnName]))
-        .filter(v => !isNaN(v) && v !== null && v !== undefined);
+      const maxValues = numericColumnValues(dataset, columnName);
       if (maxValues.length === 0) return 0;
       return Math.max(...maxValues);
 
     case 'MEDIAN':
       if (!columnName) return 0;
-      const medianValues = dataset.data
-        .map(row => Number(row[columnName]))
-        .filter(v => !isNaN(v) && v !== null && v !== undefined)
-        .sort((a, b) => a - b);
+      const medianValues = numericColumnValues(dataset, columnName).sort((a, b) => a - b);
       if (medianValues.length === 0) return 0;
       const mid = Math.floor(medianValues.length / 2);
       return medianValues.length % 2 === 0
@@ -120,9 +140,7 @@ export const executeKPIFormula = (
 
     case 'STDDEV':
       if (!columnName) return 0;
-      const stdValues = dataset.data
-        .map(row => Number(row[columnName]))
-        .filter(v => !isNaN(v) && v !== null && v !== undefined);
+      const stdValues = numericColumnValues(dataset, columnName);
       if (stdValues.length === 0) return 0;
       const mean = stdValues.reduce((a, b) => a + b, 0) / stdValues.length;
       const variance = stdValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / stdValues.length;
