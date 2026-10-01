@@ -54,6 +54,7 @@ import { SchemaDetectionResult, TimeSeriesResult, DateTableInfo } from '@/lib/ty
 import { autoDetectTimeSeries, detectDateColumns } from '@/lib/timeSeriesEngine';
 import { autoAdvancedAnalysis } from '@/lib/advancedStatistics';
 import { assertExcelBufferIsSafe, assertWorkbookHasNoMacros } from '@/lib/excelSecurity';
+import { sheetToObjects, EXCEL_READ_OPTIONS } from '@/lib/excelRows';
 import {
   isDatasetTooLarge,
   getPerformanceWarning,
@@ -530,38 +531,23 @@ const FunctionalDataUpload: React.FC = () => {
   const parseExcel = async (file: File): Promise<any[]> => {
     const buffer = await file.arrayBuffer();
     assertExcelBufferIsSafe(file.name, buffer);
-    const workbook = XLSX.read(buffer, { type: 'array' });
+    const workbook = XLSX.read(buffer, EXCEL_READ_OPTIONS);
     assertWorkbookHasNoMacros(file.name, workbook);
 
     // Get the first worksheet
     const firstSheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[firstSheetName];
 
-    // Convert to JSON
-    const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-
-    if (jsonData.length === 0) {
-      return [];
-    }
-
-    // Convert to object format
-    const headers = jsonData[0] as string[];
-    const rows = jsonData.slice(1) as any[][];
-
-    return rows.map(row => {
-      const obj: any = {};
-      headers.forEach((header, index) => {
-        obj[header] = row[index] || '';
-      });
-      return obj;
-    });
+    // sheetToObjects rather than an inline map: `row[index] || ''` turned
+    // every genuine zero into a blank. See src/lib/excelRows.ts.
+    return sheetToObjects(worksheet);
   };
 
   // Excel Parser Function - Returns all sheets as separate datasets
   const parseExcelAllSheets = async (file: File): Promise<Array<{ sheetName: string; data: any[] }>> => {
     const buffer = await file.arrayBuffer();
     assertExcelBufferIsSafe(file.name, buffer);
-    const workbook = XLSX.read(buffer, { type: 'array' });
+    const workbook = XLSX.read(buffer, EXCEL_READ_OPTIONS);
     assertWorkbookHasNoMacros(file.name, workbook);
 
     const allSheets: Array<{ sheetName: string; data: any[] }> = [];
@@ -570,25 +556,11 @@ const FunctionalDataUpload: React.FC = () => {
     workbook.SheetNames.forEach(sheetName => {
       const worksheet = workbook.Sheets[sheetName];
 
-      // Convert to JSON
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-
-      if (jsonData.length === 0) {
-        // Empty sheet - skip it
-        return;
-      }
-
-      // Convert to object format
-      const headers = jsonData[0] as string[];
-      const rows = jsonData.slice(1) as any[][];
-
-      const result = rows.map(row => {
-        const obj: any = {};
-        headers.forEach((header, index) => {
-          obj[header] = row[index] || '';
-        });
-        return obj;
-      });
+      // Shared with parseExcel above, and the reason the sharing exists: the
+      // inline version here had the same zero-swallowing bug, so fixing one
+      // copy would have left the multi-sheet path - the path this component
+      // actually uses - still wrong. See src/lib/excelRows.ts.
+      const result = sheetToObjects(worksheet);
 
       if (result.length > 0) {
         allSheets.push({
@@ -1523,7 +1495,12 @@ const FunctionalDataUpload: React.FC = () => {
         .filter(c => !isLikelyNumericId(c.name, dataToUse))
         .slice(0, 8)
         .map(c => c.name);
-      const catValues = [...new Set(dataToUse.slice(0, 2000).map(r => String(r[bestCatCol.name] || '')))].filter(Boolean).slice(0, 6);
+      // `?? ''` and an explicit emptiness test: a category legitimately
+      // labelled "0" or "false" is falsy, and `|| ''` plus filter(Boolean)
+      // dropped it from the chart entirely.
+      const catValues = [...new Set(dataToUse.slice(0, 2000).map(r => String(r[bestCatCol.name] ?? '')))]
+        .filter(value => value !== '')
+        .slice(0, 6);
       if (radarNumCols.length >= 3 && catValues.length >= 2) {
         const radarData = toRadarData(dataToUse, radarNumCols, bestCatCol.name, catValues);
         if (radarData.length >= 3) {

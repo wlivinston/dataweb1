@@ -64,7 +64,7 @@ const PaginatedTable: React.FC<PaginatedTableProps> = ({
                   >
                     {typeof row[col] === 'number'
                       ? row[col].toLocaleString(undefined, { maximumFractionDigits: 2 })
-                      : String(row[col] || '')}
+                      : String(row[col] ?? '')}
                   </td>
                 ))}
               </tr>
