@@ -128,6 +128,29 @@ describe('table parity with Power BI', () => {
     });
   }
 
+  it('records that Power BI TOPN does not order what it returns', () => {
+    // The finding this sheet contained for ten days before anyone read it.
+    // The same grouping asked DESC and ASC came back from Power BI as the
+    // SAME string - a sort identical in both directions is not a sort. It was
+    // filed under the blank-label note instead of followed.
+    //
+    // Asserted here so the fact survives: if a future Power BI round ever
+    // returns different strings for these two, TOPN has started ordering and
+    // the divergence notes need revisiting.
+    const desc = TABLE_CASES.find(entry => entry.id === 'ranked-rows-with-their-figures');
+    const asc = TABLE_CASES.find(entry => entry.id === 'ranked-the-other-way');
+    expect(desc?.dax).toContain('DESC');
+    expect(asc?.dax).toContain('ASC');
+    expect(
+      asc!.expected,
+      'Power BI ASC and DESC no longer agree - TOPN may now order its output'
+    ).toBe(desc!.expected);
+
+    // And this engine does order, which is why the two differ from each other
+    // here while Power BI's two do not.
+    expect(answerFor(desc!.dax)).not.toBe(answerFor(asc!.dax));
+  });
+
   it('reports every divergence still open, so none goes quiet', () => {
     const open = TABLE_CASES.filter(entry => entry.divergence);
     if (open.length > 0) {

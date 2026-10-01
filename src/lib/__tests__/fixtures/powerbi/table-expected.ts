@@ -30,14 +30,40 @@ const GROUPED =
 /** A label that shows a blank group instead of hiding it. */
 const LABEL = 'IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region])';
 
-/** The one disagreement this sheet found, shared by five cases. */
+/**
+ * CORRECTED 2026-09-30. This note was wrong about three of its five cases.
+ *
+ * It said the empty cell explained the whole disagreement. It does not. Three
+ * of these cases differ in ROW ORDER as well as in the blank's label, and the
+ * order has nothing to do with empty cells: Power BI's TOPN selects the top N
+ * rows without ordering what it returns, while this engine returns them
+ * ranked.
+ *
+ * The evidence was already on this sheet when it was written and I did not
+ * read it. `ranked-rows-with-their-figures` uses DESC and `ranked-the-other-way`
+ * uses ASC, and Power BI returned the SAME string for both - which its own
+ * probes text predicts is impossible ("ASC should exactly reverse the DESC
+ * order"). I filed the answer under this note instead of following it.
+ *
+ * `unorderedText: true` on those cases made it worse: it sorts the items
+ * before comparing, so the one check that would have caught an ordering
+ * difference had ordering comparison switched off. The exact engine string is
+ * still pinned, so nothing drifted silently - but the EXPLANATION was wrong,
+ * and a wrong explanation is what someone reads next time.
+ *
+ * See GROUP_ORDER_NOTE in filter-expected.ts for the second cause.
+ */
 const BLANK_LABEL_NOTE =
   "EXPLAINED 2026-09-20. Power BI's Text/CSV connector stores an empty text " +
   'field as an empty string, not BLANK, so IF(ISBLANK(...)) falls through to ' +
   'the value and renders empty. This engine converts it to BLANK on purpose, ' +
   'so that missingness stays visible to completeness and null counts. The ' +
   'divergence is narrow and fully characterised: ISBLANK and COUNTA on a text ' +
-  'column with empty cells, and nothing else. See blank-expected.ts.';
+  'column with empty cells, and nothing else. See blank-expected.ts. ' +
+  'PARTIAL: on the three ranked cases this explains the label only; the row ' +
+  'order differs for a second, independent reason - Power BI TOPN does not ' +
+  'order its output and this engine does. See GROUP_ORDER_NOTE in ' +
+  'filter-expected.ts.';
 
 export const TABLE_CASES: ParityCase[] = [
   {

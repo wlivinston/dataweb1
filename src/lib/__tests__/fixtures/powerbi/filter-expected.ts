@@ -38,6 +38,34 @@ const EMPTY_CELL_NOTE =
   'matches and the total is 200. Same deliberate divergence as the three ' +
   'pinned in blank-expected.ts and the five in table-expected.ts, reached ' +
   'from a fourth direction. Reversible in one line of fromCell.';
+
+/**
+ * A SECOND divergence, found by cases 11 and 12 and present all along.
+ *
+ * Power BI's TOPN selects the top N rows but does NOT order what it returns.
+ * The proof is already in table-expected.ts and I did not read it:
+ * TOPN(3, ..., [T], DESC) and TOPN(3, ..., [T], ASC) return the SAME string
+ * there. A sort that is identical in both directions is not a sort.
+ *
+ * This engine's TOPN does order its output, so every grouped answer comes
+ * back ranked. That is kept deliberately - the row cap is only honest if the
+ * rows shown are the top ones, and an arbitrary 500 of 4000 groups is
+ * indistinguishable on screen from the largest 500. But it IS a divergence,
+ * and DAX copied out of this product into Power BI will list the same rows
+ * in a different order.
+ *
+ * Recorded separately from the empty-cell note because they are independent:
+ * one is about which label a blank renders as, the other about row order, and
+ * five cases in table-expected.ts were pinned under the first when they
+ * differ for both reasons.
+ */
+const GROUP_ORDER_NOTE =
+  "Power BI's TOPN selects rows without ordering them - ASC and DESC return " +
+  'the same order - while this engine returns them ranked, so the row cap ' +
+  'shows the largest groups rather than an arbitrary slice. Deliberate, and ' +
+  'independent of the empty-cell divergence, which these cases also carry: ' +
+  'the blank group renders as "" there and "(blank)" here.';
+
 export const FILTER_CASES: ParityCase[] = [
   {
     id: 'canary-the-table-actually-has-rows',
@@ -154,8 +182,12 @@ export const FILTER_CASES: ParityCase[] = [
       'CONCATENATEX(TOPN(5, ADDCOLUMNS(VALUES(Sales[Region]), "V", ' +
       'CALCULATE(SUM(Sales[Amount]), Sales[Product] = "Gadget")), [V], DESC), ' +
       'IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region]) & "=" & [V], ">")',
-    expected: null,
+    expected: 'North=1000>South=3000>=',
     returnsText: true,
+    divergence: {
+      engine: 'South=3000>North=1000>(blank)=',
+      note: GROUP_ORDER_NOTE,
+    },
   },
   {
     id: 'placement-OUTSIDE-where-it-can-actually-differ',
@@ -170,8 +202,12 @@ export const FILTER_CASES: ParityCase[] = [
       'CONCATENATEX(TOPN(5, CALCULATETABLE(ADDCOLUMNS(VALUES(Sales[Region]), ' +
       '"V", CALCULATE(SUM(Sales[Amount]))), Sales[Product] = "Gadget"), [V], DESC), ' +
       'IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region]) & "=" & [V], ">")',
-    expected: null,
+    expected: 'North=1000>South=3000',
     returnsText: true,
+    divergence: {
+      engine: 'South=3000>North=1000',
+      note: GROUP_ORDER_NOTE,
+    },
   },
 ];
 
