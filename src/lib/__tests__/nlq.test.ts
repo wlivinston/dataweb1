@@ -358,10 +358,59 @@ describe('breaking a figure down by a column', () => {
   it('always ranks, even when nothing asked it to', () => {
     // An unranked result that hits the row cap shows an arbitrary slice,
     // and an arbitrary 500 rows looks exactly like the top 500.
-    const result = grouped('total Amount by Region', regional());
+    //
+    // The fixture this used to run against was ALREADY in descending order by
+    // source position (400, 200, 50), so the assertion held whether or not
+    // anything sorted. It passed while the display sort was broken, and a
+    // hand-checked dataset on the live site caught what it missed.
+    //
+    // This model is deliberately out of order at source - North is first and
+    // smallest - so the test fails unless something actually sorts.
+    const model = buildSemanticModel([
+      makeDataset(
+        [
+          { Region: 'North', Amount: 100 },
+          { Region: 'South', Amount: 900 },
+          { Region: 'East', Amount: 500 },
+        ],
+        [
+          { name: 'Region', type: 'string' },
+          { name: 'Amount', type: 'number' },
+        ],
+        { id: 'ds-unsorted', name: 'Sales' }
+      ),
+    ]);
+
+    const result = grouped('total Amount by Region', model);
     expect(result.dax.startsWith('TOPN(')).toBe(true);
+    expect(result.rows.map(row => row[0])).toEqual(['South', 'East', 'North']);
+
     const amounts = result.rows.map(row => Number(row[1]));
     expect([...amounts].sort((a, b) => b - a)).toEqual(amounts);
+  });
+
+  it('ranks the other way when the question asks for the bottom', () => {
+    // Source order is North, South, East. The bottom two by Amount are East
+    // (100) and North (500), which in SOURCE order would read North, East -
+    // so this only passes if something sorts ascending, rather than if the
+    // rows happen to arrive the right way round.
+    const model = buildSemanticModel([
+      makeDataset(
+        [
+          { Region: 'North', Amount: 500 },
+          { Region: 'South', Amount: 900 },
+          { Region: 'East', Amount: 100 },
+        ],
+        [
+          { name: 'Region', type: 'string' },
+          { name: 'Amount', type: 'number' },
+        ],
+        { id: 'ds-unsorted-asc', name: 'Sales' }
+      ),
+    ]);
+
+    const result = grouped('bottom 2 Region by Amount', model);
+    expect(result.rows.map(row => row[0])).toEqual(['East', 'North']);
   });
 
   it('names the computed column after what it computed', () => {

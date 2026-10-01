@@ -518,7 +518,7 @@ const answerGrouped = (
     question,
     dax,
     columns: outcome.columns,
-    rows: outcome.rows,
+    rows,
     totalRows: outcome.totalRows,
     truncated: outcome.totalRows > shown,
     interpretation:
