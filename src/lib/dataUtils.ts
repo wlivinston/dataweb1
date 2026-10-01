@@ -219,3 +219,41 @@ export const generateInsights = (dataset: Dataset): any[] => {
 };
 
 
+
+/**
+ * The smallest and largest of a list, without spreading it onto the stack.
+ *
+ * `Math.min(...values)` passes every element as a separate argument, and a
+ * JavaScript engine has a finite argument stack. Measured on this project's
+ * Node build: 125,000 elements is fine and 150,000 throws
+ * `RangeError: Maximum call stack size exceeded`. Browsers are in the same
+ * region and some are lower.
+ *
+ * That made a dataset of roughly 130,000 rows a HARD CRASH rather than a slow
+ * page, in several places that each build one number per row - column
+ * statistics after a clean, after an anomaly fix, and the feature scaling in
+ * the ML engine. Nothing capped the row count before any of them.
+ *
+ * Deliberately matches `Math.min`/`Math.max` exactly, including returning
+ * Infinity and -Infinity for an empty list, so every call site could be
+ * swapped without also changing its surrounding guard. Every current caller
+ * checks for an empty list first; the match is for reviewability, not because
+ * Infinity is a useful answer.
+ */
+export const minOf = (values: readonly number[]): number => {
+  let smallest = Infinity;
+  for (const value of values) {
+    if (value < smallest) smallest = value;
+    else if (Number.isNaN(value)) return NaN;
+  }
+  return smallest;
+};
+
+export const maxOf = (values: readonly number[]): number => {
+  let largest = -Infinity;
+  for (const value of values) {
+    if (value > largest) largest = value;
+    else if (Number.isNaN(value)) return NaN;
+  }
+  return largest;
+};

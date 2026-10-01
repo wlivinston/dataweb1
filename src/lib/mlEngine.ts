@@ -3,6 +3,7 @@
 
 import { Dataset } from './types';
 import { multipleRegression, kMeansClustering } from './advancedStatistics';
+import { minOf, maxOf } from './dataUtils';
 
 // ============================================================
 // Types
@@ -582,8 +583,8 @@ export const preprocessDataset = (
     const vals = fitRows.map(r => numericValueOf(r, col)).filter(v => !isNaN(v));
     const m = vals.length > 0 ? mean(vals) : 0;
     const s = vals.length > 0 ? stdDev(vals) : 0;
-    const minVal = vals.length > 0 ? Math.min(...vals) : 0;
-    const maxVal = vals.length > 0 ? Math.max(...vals) : 0;
+    const minVal = vals.length > 0 ? minOf(vals) : 0;
+    const maxVal = vals.length > 0 ? maxOf(vals) : 0;
     scalingParams[col] = {
       mean: m,
       std: s || 1,

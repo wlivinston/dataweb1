@@ -140,5 +140,26 @@ async function withTransaction(run) {
   }
 }
 
-module.exports = { connectDB, query, withTransaction };
+/**
+ * Release every pooled connection.
+ *
+ * The pool is created at module load and nothing ever closed it, so a process
+ * that has touched Postgres will not exit on its own. Jest reports this as
+ * "did not exit one second after the test run" and then force-kills the
+ * worker, which is a warning that trains people to ignore warnings.
+ *
+ * Safe to call when no pool exists, and safe to call twice - pg's end() is
+ * idempotent after the first call resolves - so a caller does not have to
+ * know whether a database was configured.
+ */
+async function closePool() {
+  if (!pgPool) return;
+  try {
+    await pgPool.end();
+  } catch (err) {
+    logger.warn({ err: err.message }, 'closing the postgres pool failed');
+  }
+}
+
+module.exports = { connectDB, query, withTransaction, closePool };
 

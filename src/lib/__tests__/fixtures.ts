@@ -1,4 +1,5 @@
 import type { ColumnInfo, DataType, Dataset } from '../types';
+import { minOf, maxOf } from '../dataUtils';
 
 export interface ColumnSpec {
   name: string;
@@ -29,8 +30,12 @@ export const makeDataset = (
     };
 
     if (spec.type === 'number' && numeric.length > 0) {
-      info.min = Math.min(...numeric);
-      info.max = Math.max(...numeric);
+      // minOf/maxOf, not Math.min(...), for the same reason the production
+      // code uses them: spreading 150,000 elements throws. A fixture helper
+      // that cannot build a large dataset makes large datasets untestable,
+      // which is how the crash this guards against stayed hidden.
+      info.min = minOf(numeric);
+      info.max = maxOf(numeric);
       info.mean = numeric.reduce((a, b) => a + b, 0) / numeric.length;
     }
 

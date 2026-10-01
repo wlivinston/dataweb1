@@ -7,6 +7,7 @@ process.env.DATASET_STORAGE_MODE = 'database';
 
 const service = require('../modules/datasets/datasets.service');
 const repository = require('../modules/datasets/datasets.repository');
+const { closePool } = require('../config/database');
 
 /**
  * The durable half of the dataset store, against a real database.
@@ -71,6 +72,9 @@ afterAll(async () => {
       // Reported by the leaves-nothing-behind test rather than swallowed here.
     }
   }
+  // Without this the pool keeps the process alive and jest force-kills the
+  // worker, printing a leak warning on every run of a suite that passed.
+  await closePool();
 });
 
 describeDurable('dataset storage against a real database', () => {
