@@ -1,0 +1,20 @@
+FilterResults =
+// Paste into Power BI Desktop: Modeling > New table.
+// Runs against the Sales table from sales.csv.
+// Put Case and Answer into a Table visual and send the result back.
+//
+// Generated from filter-expected.ts - 12 cases.
+UNION(
+    ROW("Case", "01 canary-the-table-actually-has-rows", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(Sales)), "BLANK", FORMAT(COUNTROWS(Sales), "0.##########")), "ERROR")),
+    ROW("Case", "02 a-plain-text-filter", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUM(Sales[Amount]), Sales[Region] = "North")), "BLANK", FORMAT(CALCULATE(SUM(Sales[Amount]), Sales[Region] = "North"), "0.##########")), "ERROR")),
+    ROW("Case", "03 the-same-filter-averaged", "Answer", IFERROR(IF(ISBLANK(CALCULATE(AVERAGE(Sales[Amount]), Sales[Region] = "North")), "BLANK", FORMAT(CALCULATE(AVERAGE(Sales[Amount]), Sales[Region] = "North"), "0.##########")), "ERROR")),
+    ROW("Case", "04 a-filter-on-a-second-column", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUM(Sales[Amount]), Sales[Product] = "Widget")), "BLANK", FORMAT(CALCULATE(SUM(Sales[Amount]), Sales[Product] = "Widget"), "0.##########")), "ERROR")),
+    ROW("Case", "05 a-filter-matching-nothing", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUM(Sales[Amount]), Sales[Region] = "Atlantis")), "BLANK", FORMAT(CALCULATE(SUM(Sales[Amount]), Sales[Region] = "Atlantis"), "0.##########")), "ERROR")),
+    ROW("Case", "06 a-filter-on-the-blank-region", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUM(Sales[Amount]), FILTER(Sales, ISBLANK(Sales[Region])))), "BLANK", FORMAT(CALCULATE(SUM(Sales[Amount]), FILTER(Sales, ISBLANK(Sales[Region]))), "0.##########")), "ERROR")),
+    ROW("Case", "07 grouped-with-the-filter-INSIDE-each-group", "Answer", IFERROR(CONCATENATEX(TOPN(3, ADDCOLUMNS(VALUES(Sales[Product]), "V", CALCULATE(SUM(Sales[Amount]), Sales[Region] = "North")), [V], DESC), Sales[Product] & "=" & [V], ">"), "ERROR")),
+    ROW("Case", "08 grouped-with-the-filter-OUTSIDE-the-grouping", "Answer", IFERROR(CONCATENATEX(TOPN(3, CALCULATETABLE(ADDCOLUMNS(VALUES(Sales[Product]), "V", CALCULATE(SUM(Sales[Amount]))), Sales[Region] = "North"), [V], DESC), Sales[Product] & "=" & [V], ">"), "ERROR")),
+    ROW("Case", "09 a-filter-on-a-number-column-value", "Answer", IFERROR(IF(ISBLANK(CALCULATE(COUNTROWS(Sales), Sales[Amount] = 100)), "BLANK", FORMAT(CALCULATE(COUNTROWS(Sales), Sales[Amount] = 100), "0.##########")), "ERROR")),
+    ROW("Case", "10 two-filters-at-once", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUM(Sales[Amount]), Sales[Region] = "North", Sales[Product] = "Widget")), "BLANK", FORMAT(CALCULATE(SUM(Sales[Amount]), Sales[Region] = "North", Sales[Product] = "Widget"), "0.##########")), "ERROR")),
+    ROW("Case", "11 placement-INSIDE-where-it-can-actually-differ", "Answer", IFERROR(CONCATENATEX(TOPN(5, ADDCOLUMNS(VALUES(Sales[Region]), "V", CALCULATE(SUM(Sales[Amount]), Sales[Product] = "Gadget")), [V], DESC), IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region]) & "=" & [V], ">"), "ERROR")),
+    ROW("Case", "12 placement-OUTSIDE-where-it-can-actually-differ", "Answer", IFERROR(CONCATENATEX(TOPN(5, CALCULATETABLE(ADDCOLUMNS(VALUES(Sales[Region]), "V", CALCULATE(SUM(Sales[Amount]))), Sales[Product] = "Gadget"), [V], DESC), IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region]) & "=" & [V], ">"), "ERROR"))
+)

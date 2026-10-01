@@ -90,9 +90,38 @@ describe('table parity fixture', () => {
 
   it('gives every case an answer that could distinguish a wrong reading', () => {
     // A case answering the same thing as its neighbour proves nothing. Every
-    // answer here should be distinct, or the sheet is shorter than it looks.
-    const answers = TABLE_CASES.map(entry => answerFor(entry.dax));
+    // answer should be distinct, or the sheet is shorter than it looks.
+    //
+    // Three cases are exempt, and the exemptions are themselves the finding.
+    //
+    // The DESC and ASC cases now answer identically BECAUSE TOPN selects
+    // without ordering - the very fact they exist to establish. Requiring
+    // them to differ would be requiring this engine to disagree with Power BI.
+    //
+    // `ordering-by-text-puts-blank-where` is a casualty rather than a finding.
+    // It asked where a blank sorts in TEXT order, and TOPN can no longer
+    // answer that for either engine, so it now returns the same string as
+    // `ranked-rows-in-order`. The question is still a good one and is
+    // currently UNASKED: answering it needs CONCATENATEX's own orderBy
+    // argument instead of TOPN, which is a new Power BI round. Exempted with
+    // that stated rather than deleted, so the gap stays visible.
+    const exempt = new Set([
+      'ranked-rows-with-their-figures',
+      'ranked-the-other-way',
+      'ordering-by-text-puts-blank-where',
+    ]);
+    const answers = TABLE_CASES.filter(entry => !exempt.has(entry.id)).map(entry =>
+      answerFor(entry.dax)
+    );
     expect(new Set(answers).size).toBe(answers.length);
+
+    // The exempt pair still has to answer SOMETHING, so an exemption cannot
+    // quietly cover a case that errors.
+    for (const id of exempt) {
+      const entry = TABLE_CASES.find(item => item.id === id);
+      expect(entry, `${id} is exempt but no longer exists`).toBeTruthy();
+      expect(answerFor(entry!.dax)).not.toContain('ERROR:');
+    }
   });
 });
 
@@ -127,6 +156,33 @@ describe('table parity with Power BI', () => {
       ).toBe(true);
     });
   }
+
+  it('records that Power BI TOPN does not order what it returns', () => {
+    // The finding this sheet contained for ten days before anyone read it.
+    // The same grouping asked DESC and ASC came back from Power BI as the
+    // SAME string - a sort identical in both directions is not a sort. It was
+    // filed under the blank-label note instead of followed.
+    //
+    // Asserted here so the fact survives: if a future Power BI round ever
+    // returns different strings for these two, TOPN has started ordering and
+    // the divergence notes need revisiting.
+    const desc = TABLE_CASES.find(entry => entry.id === 'ranked-rows-with-their-figures');
+    const asc = TABLE_CASES.find(entry => entry.id === 'ranked-the-other-way');
+    expect(desc?.dax).toContain('DESC');
+    expect(asc?.dax).toContain('ASC');
+    expect(
+      asc!.expected,
+      'Power BI ASC and DESC no longer agree - TOPN may now order its output'
+    ).toBe(desc!.expected);
+
+    // And this engine now behaves the same way: TOPN selects without
+    // ordering, so ASC and DESC agree here too. Before 2026-09-30 these two
+    // differed, which is what the divergence notes were really recording.
+    expect(
+      answerFor(desc!.dax),
+      'this engine TOPN has started ordering its output again'
+    ).toBe(answerFor(asc!.dax));
+  });
 
   it('reports every divergence still open, so none goes quiet', () => {
     const open = TABLE_CASES.filter(entry => entry.divergence);
