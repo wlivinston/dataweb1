@@ -31,27 +31,30 @@ const GROUPED =
 const LABEL = 'IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region])';
 
 /**
- * CORRECTED 2026-09-30. This note was wrong about three of its five cases.
+ * CORRECTED 2026-09-30, then FIXED the same day.
  *
- * It said the empty cell explained the whole disagreement. It does not. Three
- * of these cases differ in ROW ORDER as well as in the blank's label, and the
- * order has nothing to do with empty cells: Power BI's TOPN selects the top N
- * rows without ordering what it returns, while this engine returns them
- * ranked.
+ * This note once said the empty cell explained the whole disagreement on all
+ * five of its cases. It did not: three of them differed in ROW ORDER too, for
+ * a reason with nothing to do with empty cells. Power BI's TOPN selects the
+ * top N rows without ordering what it returns; this engine used to return
+ * them ranked.
  *
- * The evidence was already on this sheet when it was written and I did not
- * read it. `ranked-rows-with-their-figures` uses DESC and `ranked-the-other-way`
- * uses ASC, and Power BI returned the SAME string for both - which its own
- * probes text predicts is impossible ("ASC should exactly reverse the DESC
- * order"). I filed the answer under this note instead of following it.
+ * The evidence was already on this sheet when it was written and went unread.
+ * `ranked-rows-with-their-figures` uses DESC and `ranked-the-other-way` uses
+ * ASC, and Power BI returned the SAME string for both - which the second
+ * case's own probes text calls impossible ("ASC should exactly reverse the
+ * DESC order"). The answer was filed under this note instead of followed.
  *
  * `unorderedText: true` on those cases made it worse: it sorts the items
  * before comparing, so the one check that would have caught an ordering
- * difference had ordering comparison switched off. The exact engine string is
- * still pinned, so nothing drifted silently - but the EXPLANATION was wrong,
- * and a wrong explanation is what someone reads next time.
+ * difference had ordering comparison switched off. The exact engine strings
+ * stayed pinned, so nothing drifted silently - but the EXPLANATION was wrong,
+ * and the explanation is what the next person reads.
  *
- * See GROUP_ORDER_NOTE in filter-expected.ts for the second cause.
+ * TOPN now selects without ordering, matching Power BI, and the NLQ layer
+ * sorts for display instead. These cases agree on order again, so the blank
+ * label really is the only cause - which is what this note claimed all along
+ * and has only now earned.
  */
 const BLANK_LABEL_NOTE =
   "EXPLAINED 2026-09-20. Power BI's Text/CSV connector stores an empty text " +
@@ -60,10 +63,9 @@ const BLANK_LABEL_NOTE =
   'so that missingness stays visible to completeness and null counts. The ' +
   'divergence is narrow and fully characterised: ISBLANK and COUNTA on a text ' +
   'column with empty cells, and nothing else. See blank-expected.ts. ' +
-  'PARTIAL: on the three ranked cases this explains the label only; the row ' +
-  'order differs for a second, independent reason - Power BI TOPN does not ' +
-  'order its output and this engine does. See GROUP_ORDER_NOTE in ' +
-  'filter-expected.ts.';
+  'This is now the ONLY cause again: the row-order difference these cases ' +
+  'also carried was fixed on 2026-09-30 by making TOPN select without ' +
+  'ordering, as Power BI does.';
 
 export const TABLE_CASES: ParityCase[] = [
   {
@@ -86,7 +88,7 @@ export const TABLE_CASES: ParityCase[] = [
     expected: 'North>South>',
     returnsText: true,
     divergence: {
-      engine: 'South>North>(blank)',
+      engine: 'North>South>(blank)',
       note: BLANK_LABEL_NOTE,
     },
     unorderedText: true,
@@ -100,7 +102,7 @@ export const TABLE_CASES: ParityCase[] = [
     expected: 'North=3600>South=3800>=200',
     returnsText: true,
     divergence: {
-      engine: 'South=3800>North=3600>(blank)=200',
+      engine: 'North=3600>South=3800>(blank)=200',
       note: BLANK_LABEL_NOTE,
     },
     unorderedText: true,
@@ -114,7 +116,7 @@ export const TABLE_CASES: ParityCase[] = [
     expected: 'North=3600>South=3800>=200',
     returnsText: true,
     divergence: {
-      engine: '(blank)=200>North=3600>South=3800',
+      engine: 'North=3600>South=3800>(blank)=200',
       note: BLANK_LABEL_NOTE,
     },
     unorderedText: true,
@@ -169,12 +171,17 @@ export const TABLE_CASES: ParityCase[] = [
     probes:
       'Sorted by Region rather than by a figure. Where a blank sorts in text ' +
       'order decides whether a breakdown opens or closes with the unlabelled ' +
-      'group, which is the first thing a reader sees.',
+      'group, which is the first thing a reader sees. SUPERSEDED 2026-09-30: ' +
+      'TOPN selects without ordering in both engines, so this can no longer ' +
+      'probe sort position and now returns the same string as ' +
+      'ranked-rows-in-order. The question is still open and would need ' +
+      "CONCATENATEX's own orderBy argument to ask - kept rather than deleted " +
+      'so the gap is visible.',
     dax: `CONCATENATEX(TOPN(3, VALUES(Sales[Region]), Sales[Region], ASC), ${LABEL}, ">")`,
     expected: 'North>South>',
     returnsText: true,
     divergence: {
-      engine: '(blank)>North>South',
+      engine: 'North>South>(blank)',
       note: BLANK_LABEL_NOTE,
     },
     unorderedText: true,

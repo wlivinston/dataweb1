@@ -2165,7 +2165,24 @@ const STATISTICAL_HANDLERS: Record<string, Handler> = {
       end += 1;
     }
 
-    return evaluator.takePositions(table, scored.slice(0, end).map(entry => entry.position));
+    // Selected by score, RETURNED IN SOURCE ORDER.
+    //
+    // TOPN picks which rows come back; it does not order them. Verified
+    // against Power BI 2026-09-30: the same grouping asked DESC and asked ASC
+    // returns the identical string, and a sort that is the same in both
+    // directions is not a sort.
+    //
+    // This engine used to return them in score order, which looked helpful
+    // and was a lie about the expression: the DAX shown to a user ordered
+    // rows one way here and another way in Power BI, while the whole promise
+    // of showing the DAX is that running it elsewhere reproduces what they
+    // saw. Ranking for display now happens where display happens.
+    const chosen = scored
+      .slice(0, end)
+      .map(entry => entry.position)
+      .sort((left, right) => left - right);
+
+    return evaluator.takePositions(table, chosen);
   },
 
   LOOKUPVALUE: (evaluator, node, context, scope) => {

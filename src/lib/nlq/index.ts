@@ -1,5 +1,6 @@
 import { runDax, runDaxTable, formatDaxValue, DEFAULT_ROW_LIMIT as ROW_LIMIT } from '../dax/run';
 import { columnRef, tableRef } from '../dax/printer';
+import { compareScalars } from '../dax/value';
 import { AGGREGATIONS, ROW_WORDS, normalise } from './vocabulary';
 import { meaningfulWords, resolveColumn, resolveTable, soleKeyOf } from './resolve';
 import { extractFilter, applyFilter, describeFilter } from './filter';
@@ -486,7 +487,25 @@ const answerGrouped = (
     return { ok: false, question, reason: outcome.message, suggestions: suggestQuestions(model) };
   }
 
-  const shown = outcome.rows.length;
+  // Ranked here, for display, because TOPN does not order what it returns -
+  // in Power BI or, since 2026-09-30, here either. Sorting in the engine made
+  // the DAX shown to the user disagree with the same DAX run in Power BI,
+  // which defeats the point of showing it.
+  //
+  // The rows themselves are still the ones TOPN selected, so the cap stays
+  // honest: these are the top N, now also displayed in that order.
+  const measureAt = outcome.columns.findIndex(
+    column => column.name.toLowerCase() === label.trim().toLowerCase()
+  );
+  const rows =
+    measureAt === -1
+      ? outcome.rows
+      : [...outcome.rows].sort((left, right) => {
+          const comparison = compareScalars(left[measureAt], right[measureAt]);
+          return descending ? -comparison : comparison;
+        });
+
+  const shown = rows.length;
   const ordering = descending ? 'largest first' : 'smallest first';
   const capped =
     rankingForm || outcome.totalRows <= shown

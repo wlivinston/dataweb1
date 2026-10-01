@@ -40,31 +40,28 @@ const EMPTY_CELL_NOTE =
   'from a fourth direction. Reversible in one line of fromCell.';
 
 /**
- * A SECOND divergence, found by cases 11 and 12 and present all along.
+ * A SECOND divergence these cases found - and then closed.
  *
  * Power BI's TOPN selects the top N rows but does NOT order what it returns.
- * The proof is already in table-expected.ts and I did not read it:
- * TOPN(3, ..., [T], DESC) and TOPN(3, ..., [T], ASC) return the SAME string
- * there. A sort that is identical in both directions is not a sort.
+ * The proof was already in table-expected.ts and went unread: TOPN(3, ...,
+ * DESC) and TOPN(3, ..., ASC) return the SAME string there, and a sort that
+ * is identical in both directions is not a sort.
  *
- * This engine's TOPN does order its output, so every grouped answer comes
- * back ranked. That is kept deliberately - the row cap is only honest if the
- * rows shown are the top ones, and an arbitrary 500 of 4000 groups is
- * indistinguishable on screen from the largest 500. But it IS a divergence,
- * and DAX copied out of this product into Power BI will list the same rows
- * in a different order.
+ * This engine's TOPN used to order its output. The first instinct was to keep
+ * it and document the difference, because the row cap is only honest if the
+ * rows shown are the top ones. That was the wrong trade: it made the DAX
+ * displayed beside an answer return a different order when run in Power BI,
+ * and the entire reason for showing the DAX is that running it elsewhere
+ * reproduces what the user saw.
  *
- * Recorded separately from the empty-cell note because they are independent:
- * one is about which label a blank renders as, the other about row order, and
- * five cases in table-expected.ts were pinned under the first when they
- * differ for both reasons.
+ * So TOPN now selects without ordering, exactly as Power BI does, and the NLQ
+ * layer sorts for display. The cap stays honest - the rows are still the ones
+ * TOPN selected - and the expression is now faithful.
+ *
+ * The effect is visible here: placement-OUTSIDE went from a pinned divergence
+ * to an exact match, and placement-INSIDE now differs only by the blank label.
+ * Two divergence causes became one.
  */
-const GROUP_ORDER_NOTE =
-  "Power BI's TOPN selects rows without ordering them - ASC and DESC return " +
-  'the same order - while this engine returns them ranked, so the row cap ' +
-  'shows the largest groups rather than an arbitrary slice. Deliberate, and ' +
-  'independent of the empty-cell divergence, which these cases also carry: ' +
-  'the blank group renders as "" there and "(blank)" here.';
 
 export const FILTER_CASES: ParityCase[] = [
   {
@@ -185,8 +182,8 @@ export const FILTER_CASES: ParityCase[] = [
     expected: 'North=1000>South=3000>=',
     returnsText: true,
     divergence: {
-      engine: 'South=3000>North=1000>(blank)=',
-      note: GROUP_ORDER_NOTE,
+      engine: 'North=1000>South=3000>(blank)=',
+      note: EMPTY_CELL_NOTE,
     },
   },
   {
@@ -204,10 +201,6 @@ export const FILTER_CASES: ParityCase[] = [
       'IF(ISBLANK(Sales[Region]), "(blank)", Sales[Region]) & "=" & [V], ">")',
     expected: 'North=1000>South=3000',
     returnsText: true,
-    divergence: {
-      engine: 'South=3000>North=1000',
-      note: GROUP_ORDER_NOTE,
-    },
   },
 ];
 
