@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
-  Upload, FileText, BarChart3, TrendingUp, Database,
+  Upload, FileText, BarChart3, TrendingUp, Database, GripVertical,
   FileSpreadsheet, FileCode, X, Activity, AlertCircle, Star, Snowflake
 } from 'lucide-react';
 import { Dataset, Visualization, SchemaDetectionResult } from '@/lib/types';
@@ -42,6 +42,94 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
 }) => {
   const activeDataset = datasets.find(d => d.id === activeDatasetId);
 
+  /**
+   * How much of the width the left column takes.
+   *
+   * Remembered per browser, because someone who widens the statistics panel
+   * to read it has said something about how they work, and making them say it
+   * again on every visit is its own small insult. localStorage can throw in a
+   * private window, so every read and write is guarded and the default stands
+   * if it fails.
+   */
+  const LEFT_MIN = 20;
+  const LEFT_MAX = 70;
+  const LEFT_DEFAULT = 34;
+  const STORAGE_KEY = 'dataafrik.dashboard.leftPercent';
+
+  const [leftPercent, setLeftPercent] = useState<number>(() => {
+    try {
+      const saved = Number(window.localStorage.getItem(STORAGE_KEY));
+      if (Number.isFinite(saved) && saved >= LEFT_MIN && saved <= LEFT_MAX) return saved;
+    } catch {
+      // Blocked or unavailable storage is not a reason to fail to render.
+    }
+    return LEFT_DEFAULT;
+  });
+
+  // Matches the `lg:` breakpoint the layout stacks at, so the inline width is
+  // only applied when there are two columns to divide.
+  const [isWide, setIsWide] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.innerWidth >= 1024
+  );
+
+  React.useEffect(() => {
+    const query = window.matchMedia('(min-width: 1024px)');
+    const onChange = () => setIsWide(query.matches);
+    onChange();
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+
+  const remember = (percent: number) => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, String(percent));
+    } catch {
+      // See above - a width that does not persist is still a width that works.
+    }
+  };
+
+  const splitRef = React.useRef<HTMLDivElement>(null);
+
+  const startDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const container = splitRef.current;
+    if (!container) return;
+
+    const move = (pointer: PointerEvent) => {
+      const box = container.getBoundingClientRect();
+      if (box.width === 0) return;
+      const raw = ((pointer.clientX - box.left) / box.width) * 100;
+      setLeftPercent(Math.min(LEFT_MAX, Math.max(LEFT_MIN, raw)));
+    };
+
+    const stop = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      document.body.style.userSelect = '';
+      setLeftPercent(current => {
+        remember(current);
+        return current;
+      });
+    };
+
+    // Without this, dragging selects the text under the pointer.
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+  };
+
+  /** The same control from the keyboard, so the split is not mouse-only. */
+  const nudgeWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = event.key === 'ArrowLeft' ? -2 : event.key === 'ArrowRight' ? 2 : 0;
+    if (step === 0) return;
+    event.preventDefault();
+    setLeftPercent(current => {
+      const next = Math.min(LEFT_MAX, Math.max(LEFT_MIN, current + step));
+      remember(next);
+      return next;
+    });
+  };
+
   const getFileIcon = (fileName: string) => {
     const extension = fileName.toLowerCase().split('.').pop();
     if (['xlsx', 'xls'].includes(extension || '')) {
@@ -55,9 +143,28 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
 
 
   return (
-    <div className="grid grid-cols-12 gap-6 h-full">
-      {/* Left Panel - Narrow */}
-      <div className="col-span-4 space-y-6">
+    /**
+     * A draggable split rather than a fixed 4/8 grid.
+     *
+     * The statistics table needs about 990px for a seven-column dataset -
+     * 150px for the Statistic column and 120px for each one after it - and a
+     * third of the screen is rarely that. It was readable only by finding a
+     * thin horizontal scrollbar, which is close to not being readable at all.
+     *
+     * Deliberately NOT ResizablePanelGroup, which is used elsewhere in this
+     * file. That primitive needs a container of definite height, and this
+     * dashboard is an ordinary scrolling document - dropping it in collapsed
+     * the whole layout to one pixel tall. Percentage widths with auto heights
+     * keep the page scrolling the way it already does.
+     *
+     * Stacks below lg, where a side-by-side split leaves neither side usable.
+     */
+    <div ref={splitRef} className="flex flex-col lg:flex-row h-full">
+      {/* Left Panel - width is draggable on large screens */}
+      <div
+        className="space-y-6 w-full lg:w-auto min-w-0"
+        style={isWide ? { width: `${leftPercent}%` } : undefined}
+      >
         {/* UPLOAD DATASET Section - Large */}
         <Card className="h-[60%]">
           <CardHeader>
@@ -187,13 +294,39 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
         </Card>
 
         {/* DESCRIBE DATA Section - Statistical Description */}
-        <div className="h-[40%]">
+        <div className="h-[40%] min-h-[320px]">
           <StatisticalDescription dataset={activeDataset || null} />
         </div>
       </div>
 
-      {/* Right Panel - Wider */}
-      <div className="col-span-8 space-y-6">
+      {/* Drag to widen either side. Hidden when the panels are stacked. */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Drag to resize the panels"
+        tabIndex={0}
+        onPointerDown={startDrag}
+        onKeyDown={nudgeWithKeyboard}
+        title="Drag to resize"
+        className={
+          'hidden lg:flex group relative mx-1 w-3 shrink-0 cursor-col-resize ' +
+          'items-center justify-center rounded focus:outline-none ' +
+          'focus-visible:ring-2 focus-visible:ring-blue-500'
+        }
+      >
+        <div className="h-full w-px bg-gray-200 group-hover:bg-blue-400 transition-colors" />
+        <div
+          className={
+            'absolute flex h-8 w-3 items-center justify-center rounded border ' +
+            'border-gray-300 bg-white shadow-sm group-hover:border-blue-400'
+          }
+        >
+          <GripVertical className="h-3 w-3 text-gray-400 group-hover:text-blue-500" />
+        </div>
+      </div>
+
+      {/* Right Panel - takes whatever the left one does not */}
+      <div className="space-y-6 flex-1 min-w-0">
         {/* Schema Detection Badge */}
         {schemaInfo && schemaInfo.schemaType !== 'none' && schemaInfo.schemaType !== 'flat' && (
           <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200">

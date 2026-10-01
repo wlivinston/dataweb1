@@ -71,7 +71,7 @@ const StatisticalDescription: React.FC<StatisticalDescriptionProps> = ({ dataset
           {/* All Columns */}
           <TabsContent value="all" className="space-y-4">
             {statistics.length > 0 ? (
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto show-scrollbar">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -235,7 +235,7 @@ const StatisticalDescription: React.FC<StatisticalDescriptionProps> = ({ dataset
           {/* Numeric Columns Only */}
           <TabsContent value="numeric" className="space-y-4">
             {numericStats.length > 0 ? (
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto show-scrollbar">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -325,7 +325,7 @@ const StatisticalDescription: React.FC<StatisticalDescriptionProps> = ({ dataset
           {/* Categorical Columns Only */}
           <TabsContent value="categorical" className="space-y-4">
             {categoricalStats.length > 0 ? (
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto show-scrollbar">
                 <Table>
                   <TableHeader>
                     <TableRow>
