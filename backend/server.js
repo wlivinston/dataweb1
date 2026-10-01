@@ -221,6 +221,23 @@ const financeJobLimiter = createLimiter({
 });
 app.use('/api/v1/finance', applyLimiterToMethods(writeMethods, financeJobLimiter));
 
+// Dataset writes are deliberately far more generous than the other write
+// limiters. A dataset is uploaded in batches, so ONE legitimate upload is
+// many POSTs - a 500,000-row dataset at 5,000 rows a batch is 100 of them
+// plus a create and a complete. A finance-style cap of 30 would reject the
+// second half of a single honest upload and look like data loss.
+const datasetWriteLimiter = createLimiter({
+  windowMs: parsePositiveInt(
+    process.env.RATE_LIMIT_DATASET_WINDOW_MS,
+    10 * 60 * 1000,
+    60 * 1000,
+    24 * 60 * 60 * 1000
+  ),
+  max: parsePositiveInt(process.env.RATE_LIMIT_DATASET_MAX, 600, 1, 20000),
+  message: 'Too many dataset requests. Please try again shortly.',
+});
+app.use('/api/v1/datasets', applyLimiterToMethods(writeMethods, datasetWriteLimiter));
+
 /* -------------------- Parsers -------------------- */
 const webhookPrefixes = [
   '/api/v1/subscriptions/webhooks/stripe',

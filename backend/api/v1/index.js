@@ -7,6 +7,7 @@ const subscriptionsRoutes = require('./routes/subscriptions');
 const financeRoutes = require('./routes/finance');
 const systemRoutes = require('./routes/system');
 const notificationsRoutes = require('./routes/notifications');
+const datasetsRoutes = require('./routes/datasets');
 
 const router = express.Router();
 
@@ -21,7 +22,7 @@ router.get('/', (_req, res) => {
     data: {
       version: 'v1',
       status: 'active',
-      domains: ['auth', 'blog', 'comments', 'reports', 'subscriptions', 'finance', 'system', 'notifications'],
+      domains: ['auth', 'blog', 'comments', 'reports', 'subscriptions', 'finance', 'system', 'notifications', 'datasets'],
       openapi: '/api/v1/system/openapi',
     },
   });
@@ -35,5 +36,6 @@ router.use('/subscriptions', subscriptionsRoutes);
 router.use('/finance', financeRoutes);
 router.use('/system', systemRoutes);
 router.use('/notifications', notificationsRoutes);
+router.use('/datasets', datasetsRoutes);
 
 module.exports = router;
