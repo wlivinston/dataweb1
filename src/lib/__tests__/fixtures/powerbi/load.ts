@@ -58,6 +58,28 @@ export const loadCsvDataset = (
   };
 };
 
+/**
+ * The customer dimension that orders.csv points at.
+ *
+ * C4 Kwame has no orders at all, on purpose: a group with no rows behind it
+ * is the case that separates "this customer bought nothing" from "this
+ * customer does not exist", and a breakdown that silently drops them is
+ * wrong in a way that looks fine. CreditLimit holds a genuine 0 for the same
+ * reason - a zero that a reader could mistake for a missing value.
+ */
+export const loadCustomers = (): Dataset =>
+  loadCsvDataset('customers.csv', {
+    id: 'ds-powerbi-customers',
+    name: 'Customers',
+    types: {
+      CustomerID: 'string',
+      Name: 'string',
+      Country: 'string',
+      Segment: 'string',
+      CreditLimit: 'number',
+    },
+  });
+
 /** The measure-library fixture: revenue and cost on one grain, two years. */
 export const loadOrders = (): Dataset =>
   loadCsvDataset('orders.csv', {

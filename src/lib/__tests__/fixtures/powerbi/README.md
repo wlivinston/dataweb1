@@ -122,6 +122,51 @@ Power BI, but where we differ, Power BI is the one your users expect.
 
 ---
 
+## The cross-table sheet (`crosstable-script.dax`)
+
+Added 2026-10-01. Every other sheet here asks **one** table a question. This
+one asks two, because "total Revenue by Country" — where Revenue is in
+`Orders` and Country is in `Customers` — was refused by the product until
+that date and is now answered.
+
+It needs a different setup from the rest:
+
+1. **Get data → Text/CSV** → `orders.csv` → **Load**
+2. **Get data → Text/CSV** → `customers.csv` → **Load**
+3. **Model** view. Power BI usually detects the join on its own. If it has
+   not, drag `Orders[CustomerID]` onto `Customers[CustomerID]`. Check the
+   relationship reads **Many to one (\*:1)** with **Single** cross-filter
+   direction — not Both. Several cases on the sheet are about exactly that
+   setting, and Both changes half the answers.
+4. **Modeling → New table**, paste `crosstable-script.dax`, put `Case` and
+   `Answer` into a Table visual.
+
+**Read row 01 first.** `canary-the-join-exists` returns **1200** when the
+relationship is there and **2100** when it is not — and 2100 looks every bit
+as much like an answer, so a missing join produces a full sheet of
+plausible, worthless numbers.
+
+The case that matters most is
+`grouping-the-wrong-way-round-gives-every-group-the-same-figure`. It should
+return the **same figure three times** (`P1=3500>P2=3500>P3=3500`). That is
+not a bug — it is the evidence that questions asked in that direction are
+meaningless, which is why the product refuses them. If Power BI returns three
+*different* figures there, it follows the join in a direction this engine does
+not, and the refusal is wrong rather than protective. That one row is worth
+more than the rest of the sheet.
+
+Fill the answers into `crosstable-expected.ts` and run:
+
+```bash
+npx vitest run src/lib/__tests__/crossTableParity.test.ts
+```
+
+Until then that test reports `0 of 11 answered`, and the cross-table grouping
+in the product is verified by hand-computation only — **not** against Power
+BI.
+
+---
+
 ## If you would rather use your own measures
 
 Same idea, less setup for you and more for me. Send:

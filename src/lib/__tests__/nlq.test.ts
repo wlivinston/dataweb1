@@ -3,7 +3,7 @@ import { makeDataset } from './fixtures';
 import { buildSemanticModel } from '../semantic/model';
 import { runDax } from '../dax/run';
 import { answerQuestion, suggestQuestions } from '../nlq';
-import { loadOrders } from './fixtures/powerbi/load';
+import { loadOrders, loadCustomers } from './fixtures/powerbi/load';
 import type { SemanticModel } from '../semantic/types';
 import type { Dataset } from '../types';
 
@@ -441,28 +441,36 @@ describe('refusing a grouping that would mean nothing', () => {
     );
   });
 
-  it('refuses to group one table by a column of another', () => {
-    // Crossing a relationship needs the join followed. A figure per group
-    // computed across an unrelated grain would look ordinary and mean
-    // nothing.
-    const customers = makeDataset(
-      [{ CustomerID: 'C1', Tier: 'Gold' }],
+  it('refuses to group two tables that are not related at all', () => {
+    // No join, so no filter can travel and every group would show the grand
+    // total. The message says to connect the tables rather than implying the
+    // question is malformed, because it is not - the model is incomplete.
+    const weather = makeDataset(
       [
-        { name: 'CustomerID', type: 'string' },
-        { name: 'Tier', type: 'string' },
+        { City: 'Accra', Rainfall: 20 },
+        { City: 'Kumasi', Rainfall: 40 },
       ],
-      { id: 'ds-cust2', name: 'Customers' }
-    );
-    const orders = makeDataset(
-      [{ CustomerID: 'C1', Amount: 10 }],
       [
-        { name: 'CustomerID', type: 'string' },
-        { name: 'Amount', type: 'number' },
+        { name: 'City', type: 'string' },
+        { name: 'Rainfall', type: 'number' },
       ],
-      { id: 'ds-ord2', name: 'Orders' }
+      { id: 'ds-weather', name: 'Weather' }
     );
-    const result = refused('total Amount by Tier', buildSemanticModel([orders, customers]));
-    expect(result.reason).toMatch(/different tables/);
+    const staff = makeDataset(
+      [
+        { StaffID: 'S1', Grade: 'Senior', Salary: 100 },
+        { StaffID: 'S2', Grade: 'Junior', Salary: 50 },
+      ],
+      [
+        { name: 'StaffID', type: 'string' },
+        { name: 'Grade', type: 'string' },
+        { name: 'Salary', type: 'number' },
+      ],
+      { id: 'ds-staff', name: 'Staff' }
+    );
+    const result = refused('total Salary by City', buildSemanticModel([weather, staff]));
+    expect(result.reason).toMatch(/no relationship between them/);
+    expect(result.reason).toMatch(/Connect the tables/);
   });
 
   it('refuses a ranking that does not say what to rank by', () => {
@@ -585,5 +593,159 @@ describe('filtered questions', () => {
     const answer = answered('What is the total Amount?', salesModel());
     expect(answer.dax).toBe('SUM(Sales[Amount])');
     expect(answer.value).toBe(1000);
+  });
+});
+
+/**
+ * Grouping a figure in one table by a column of another.
+ *
+ * Refused outright until 2026-10-01 with "I cannot yet group one table by a
+ * column of another". The refusal was right about the danger and wrong about
+ * the scope: the engine propagates filters along relationships perfectly
+ * well, and "total Revenue by Country" is both correct and the single most
+ * ordinary question anyone asks of a sales model.
+ *
+ * What still has to be refused is the case where the filter does not travel,
+ * because that one produces a table in which every group shows the grand
+ * total - and nothing about it looks wrong.
+ */
+describe('grouping across a relationship', () => {
+  /**
+   * Orders joined to Customers.
+   *
+   *   C1 Ama   Ghana Retail    1000   orders 100 + 200 + 400 = 700
+   *   C2 Kofi  Kenya Retail    2000   orders 300 + 600       = 900
+   *   C3 Yaa   Ghana Wholesale    0   order  500             = 500
+   *   C4 Kwame Kenya Wholesale  500   no orders at all
+   *
+   * so Ghana 1200, Kenya 900, and 2100 in all.
+   */
+  const joined = (): SemanticModel => buildSemanticModel([loadOrders(), loadCustomers()]);
+
+  it('groups a fact figure by a dimension column', () => {
+    const answer = grouped('total Revenue by Country', joined());
+    expect(answer.dax).toContain('VALUES(Customers[Country])');
+    expect(answer.dax).toContain('SUM(Orders[Revenue])');
+    expect(answer.rows).toEqual([
+      ['Ghana', 1200],
+      ['Kenya', 900],
+    ]);
+  });
+
+  it('says which join it followed, because the number crossed one', () => {
+    // A figure that crossed a join is not self-explanatory, and two tables
+    // can be joinable on more than one column. Which one was used changes
+    // the answer, so it is stated rather than left for the reader to assume.
+    const answer = grouped('total Revenue by Country', joined());
+    expect(answer.interpretation).toContain(
+      'Followed Orders[CustomerID] = Customers[CustomerID]'
+    );
+  });
+
+  it('keeps a group that has no rows behind it', () => {
+    // Kwame bought nothing. Dropping him would read as "no such customer"
+    // rather than "bought nothing", which is a different claim about the data.
+    const answer = grouped('total Revenue by Name', joined());
+    expect(answer.rows).toHaveLength(4);
+    const kwame = answer.rows.find(row => row[0] === 'Kwame');
+    expect(kwame, 'the customer with no orders was dropped from the breakdown').toBeDefined();
+    expect(kwame![1]).toBeNull();
+  });
+
+  it('says nothing about unjoined rows when every row joins', () => {
+    // The note has to stay quiet in the normal case, or it becomes noise and
+    // then it is ignored in the case that matters.
+    expect(grouped('total Revenue by Country', joined()).interpretation).not.toContain(
+      'join to no'
+    );
+  });
+
+  it('reports rows that belong to no group', () => {
+    // The hazard that makes a cross-table breakdown dangerous: a row whose
+    // key matches nothing is in no group, so the groups do not add up to the
+    // total and the table still looks complete.
+    const orphans = makeDataset(
+      [
+        { OrderID: 'X1', CustomerID: 'C1', Revenue: 100 },
+        { OrderID: 'X2', CustomerID: 'C1', Revenue: 200 },
+        { OrderID: 'X3', CustomerID: 'C2', Revenue: 300 },
+        { OrderID: 'X4', CustomerID: 'GHOST', Revenue: 400 },
+      ],
+      [
+        { name: 'OrderID', type: 'string' },
+        { name: 'CustomerID', type: 'string' },
+        { name: 'Revenue', type: 'number' },
+      ],
+      { id: 'ds-orphan-orders', name: 'Orders' }
+    );
+    const customers = makeDataset(
+      [
+        { CustomerID: 'C1', Country: 'Ghana' },
+        { CustomerID: 'C2', Country: 'Kenya' },
+      ],
+      [
+        { name: 'CustomerID', type: 'string' },
+        { name: 'Country', type: 'string' },
+      ],
+      { id: 'ds-orphan-customers', name: 'Customers' }
+    );
+
+    const answer = grouped(
+      'total Revenue by Country',
+      buildSemanticModel([orphans, customers])
+    );
+    // The groups total 600 while the table totals 1000. Without the note
+    // there is nothing on screen to say the other 400 exists.
+    expect(answer.rows).toEqual([
+      ['Ghana', 300],
+      ['Kenya', 300],
+    ]);
+    expect(answer.interpretation).toContain('1 of the 4 Orders rows join to no Customers row');
+  });
+
+  it('refuses the same grouping asked the wrong way round', () => {
+    // CreditLimit is on the one side and ProductID on the many side, so no
+    // filter travels and every product would show the same 3500. The engine
+    // computes it quite happily - this is a refusal of a meaningless answer,
+    // not of an impossible one.
+    const result = refused('total CreditLimit by ProductID', joined());
+    expect(result.reason).toMatch(/cannot narrow/);
+    expect(result.reason).toContain('Customers → Orders');
+    expect(result.reason).toMatch(/would show the same figure/);
+  });
+
+  it('tells the asker which way round the question does work', () => {
+    // A refusal that only says no leaves the user guessing. Orders is the
+    // table to take a figure from, Customers the one to group by.
+    const result = refused('total CreditLimit by ProductID', joined());
+    expect(result.reason).toContain('group a Orders figure by a Customers column');
+  });
+
+  it('proves the wrong way round really would be meaningless', () => {
+    // Not an assertion about the NLQ layer at all: it runs the DAX the
+    // refused question would have produced, and shows every group getting
+    // the identical grand total. If this ever stops being true, the refusal
+    // above is wrong and should go.
+    const model = joined();
+    const everyGroup = runDax(
+      'CONCATENATEX(ADDCOLUMNS(VALUES(Orders[ProductID]), "T", ' +
+        'CALCULATE(SUM(Customers[CreditLimit]))), Orders[ProductID] & "=" & [T], ">")',
+      model
+    );
+    expect(everyGroup.ok).toBe(true);
+    const figures = String(everyGroup.ok ? everyGroup.value : '')
+      .split('>')
+      .map(part => part.split('=')[1]);
+    expect(figures).toHaveLength(3);
+    expect(new Set(figures).size, 'the groups differ, so the refusal is wrong').toBe(1);
+    expect(figures[0]).toBe('3500');
+  });
+
+  it('still groups within one table when both columns share a table', () => {
+    // The single-table path must be untouched, and in particular must not
+    // start printing a join note.
+    const answer = grouped('total Revenue by ProductID', ordersModel());
+    expect(answer.interpretation).not.toContain('Followed');
+    expect(answer.rows.length).toBeGreaterThan(1);
   });
 });

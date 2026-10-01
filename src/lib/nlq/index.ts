@@ -7,6 +7,8 @@ import { extractFilter, applyFilter, describeFilter } from './filter';
 import type { ResolvedFilter } from './filter';
 import type { AggregationWord } from './vocabulary';
 import type { NlqAnswer } from './types';
+import { propagationPath, describePath, describeJoins } from '../semantic/propagation';
+import type { PropagationPath } from '../semantic/propagation';
 import type { SemanticColumn, SemanticModel, SemanticTable } from '../semantic/types';
 
 export * from './types';
@@ -88,6 +90,51 @@ const parse = (question: string): Parsed | null => {
 };
 
 const describeColumn = (column: SemanticColumn): string => `${column.table}[${column.name}]`;
+
+/**
+ * Warn when a cross-table breakdown does not cover every row.
+ *
+ * A grouping that crosses a join only shows rows that reach a group. An order
+ * whose CustomerID matches no customer, or is blank, belongs to no group and
+ * silently vanishes - so the groups do not add up to the total, and nothing
+ * on screen says so. On a breakdown of revenue by region that is the
+ * difference between "the North sold the least" and "a tenth of the revenue
+ * is not in this table at all".
+ *
+ * Measured by asking the ENGINE rather than by walking the relationship here:
+ * the difference between the table's own row count and the rows reachable
+ * from the groups. Working it out independently would mean a second
+ * implementation of propagation that could disagree with the one that
+ * produced the figures, and then the warning would be the thing that is
+ * wrong.
+ *
+ * Returns '' when every row is accounted for, which is the normal case, so
+ * the sentence only appears when it has something to say.
+ */
+const unjoinedRowNote = (
+  model: SemanticModel,
+  group: SemanticColumn,
+  measure: SemanticColumn,
+  crossing: PropagationPath
+): string => {
+  const total = runDax(`COUNTROWS(${tableRef(measure.table)})`, model);
+  const covered = runDax(
+    `SUMX(VALUES(${columnRef(group.table, group.name)}), ` +
+      `CALCULATE(COUNTROWS(${tableRef(measure.table)})))`,
+    model
+  );
+  if (!total.ok || !covered.ok) return '';
+
+  const all = typeof total.value === 'number' ? total.value : 0;
+  const reached = typeof covered.value === 'number' ? covered.value : 0;
+  const missing = all - reached;
+  if (missing <= 0) return '';
+
+  return (
+    ` ${missing} of the ${all} ${measure.table} rows join to no ${crossing.tables[0]} row ` +
+    'and are in none of these groups.'
+  );
+};
 
 /**
  * Say which blanks were left out.
@@ -425,16 +472,42 @@ const answerGrouped = (
     );
   }
 
+  // Grouping across tables, allowed only where the join actually carries the
+  // filter. This used to be refused outright with "I cannot yet group one
+  // table by a column of another". The refusal was right about the danger and
+  // wrong about the scope: the engine propagates filters along relationships
+  // perfectly well, so "total Amount by Region" across a Sales -> Customers
+  // join was being refused even though the DAX for it is correct and Power BI
+  // agrees with the answer.
+  //
+  // What the refusal has to keep catching is the case where the filter does
+  // NOT travel: an unrelated pair, or a related pair asked the wrong way
+  // round. Both of those produce a table in which every group shows the grand
+  // total - a result that looks like an ordinary breakdown and means nothing.
+  // That is worse than a refusal precisely because nothing about it looks
+  // wrong, so the direction is checked rather than assumed.
+  let crossing: PropagationPath | null = null;
   if (group.value.table.toLowerCase() !== measure.value.table.toLowerCase()) {
-    // Grouping one table by another needs the relationship followed, which
-    // the compiler does not do yet. A figure per group computed across an
-    // unrelated grain would look ordinary and mean nothing.
-    return refuse(
-      model,
-      question,
-      `${describeColumn(group.value)} and ${describeColumn(measure.value)} are in different ` +
-        'tables, and I cannot yet group one table by a column of another.'
-    );
+    crossing = propagationPath(model, group.value.table, measure.value.table);
+    if (!crossing) {
+      const reverse = propagationPath(model, measure.value.table, group.value.table);
+      return refuse(
+        model,
+        question,
+        reverse
+          ? // The dangerous one. The tables ARE joined, so the question looks
+            // answerable, but filters only travel from the one side to the
+            // many side - so every group would show the same total. Say which
+            // way round it does work rather than only that it does not.
+            `${describeColumn(group.value)} cannot narrow ${describeColumn(measure.value)}: ` +
+              `the relationship runs ${describePath(reverse)}, and a filter travels that way ` +
+              `only. Every ${group.value.name} would show the same figure. Ask it the other ` +
+              `way round - group a ${group.value.table} figure by a ${measure.value.table} column.`
+          : `${describeColumn(group.value)} and ${describeColumn(measure.value)} are in ` +
+              'different tables with no relationship between them, so there is no way to work ' +
+              'out one for each of the other. Connect the tables first.'
+      );
+    }
   }
 
   if (group.value.name.toLowerCase() === measure.value.name.toLowerCase()) {
@@ -471,6 +544,7 @@ const answerGrouped = (
   // region does not exist" rather than "this region sold none".
   const filterArg = filter ? `, ${filter.predicate}` : '';
   const grouped =
+
     `ADDCOLUMNS(VALUES(${columnRef(group.value.table, group.value.name)}), ` +
     `"${label}", CALCULATE(${aggregation.dax}(${columnRef(measure.value.table, measure.value.name)})${filterArg}))`;
 
@@ -512,6 +586,9 @@ const answerGrouped = (
       ? ''
       : ` There are ${outcome.totalRows} in all; these are the ${shown} ${ordering}.`;
 
+  const crossed = crossing ? ` Followed ${describeJoins(crossing)}.` : '';
+  const orphans = crossing ? unjoinedRowNote(model, group.value, measure.value, crossing) : '';
+
   return {
     ok: true,
     shape: 'table',
@@ -525,7 +602,9 @@ const answerGrouped = (
       `${aggregation.describes.charAt(0).toUpperCase()}${aggregation.describes.slice(1)} ` +
       `${describeColumn(measure.value)} for each ${describeColumn(group.value)}` +
       `${filter ? `, ${describeFilter(filter)}` : ''}, ${ordering}.` +
-      capped,
+      capped +
+      crossed +
+      orphans,
     groupColumn: group.value,
     measureColumn: measure.value,
   };
