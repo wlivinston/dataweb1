@@ -1,0 +1,26 @@
+CrossTableResults =
+// Paste into Power BI Desktop: Modeling > New table.
+//
+// Needs BOTH orders.csv and customers.csv loaded, joined on CustomerID.
+// Power BI usually detects the join; if it does not, create it as
+// Orders[CustomerID] -> Customers[CustomerID], many to one, single
+// cross-filter direction. The first case returns 1200 when the join is
+// there and 2100 when it is not - and 2100 looks just as much like an
+// answer, so check that row before reading any other.
+//
+// Put Case and Answer into a Table visual and send the result back.
+//
+// Generated from crosstable-expected.ts - 11 cases.
+UNION(
+    ROW("Case", "01 canary-the-join-exists", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUM(Orders[Revenue]), Customers[Country] = "Ghana")), "BLANK", FORMAT(CALCULATE(SUM(Orders[Revenue]), Customers[Country] = "Ghana"), "0.##########")), "ERROR")),
+    ROW("Case", "02 canary-both-tables-loaded", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(Orders) * 10 + COUNTROWS(Customers)), "BLANK", FORMAT(COUNTROWS(Orders) * 10 + COUNTROWS(Customers), "0.##########")), "ERROR")),
+    ROW("Case", "03 revenue-by-country", "Answer", IFERROR(CONCATENATEX(ADDCOLUMNS(VALUES(Customers[Country]), "T", CALCULATE(SUM(Orders[Revenue]))), Customers[Country] & "=" & [T], ">"), "ERROR")),
+    ROW("Case", "04 revenue-by-segment", "Answer", IFERROR(CONCATENATEX(ADDCOLUMNS(VALUES(Customers[Segment]), "T", CALCULATE(SUM(Orders[Revenue]))), Customers[Segment] & "=" & [T], ">"), "ERROR")),
+    ROW("Case", "05 a-group-with-no-rows-behind-it", "Answer", IFERROR(CONCATENATEX(ADDCOLUMNS(VALUES(Customers[Name]), "T", CALCULATE(SUM(Orders[Revenue]))), Customers[Name] & "=" & IF(ISBLANK([T]), "(blank)", [T]), ">"), "ERROR")),
+    ROW("Case", "06 how-many-groups-when-one-has-no-rows", "Answer", IFERROR(IF(ISBLANK(COUNTROWS(ADDCOLUMNS(VALUES(Customers[Name]), "T", CALCULATE(SUM(Orders[Revenue]))))), "BLANK", FORMAT(COUNTROWS(ADDCOLUMNS(VALUES(Customers[Name]), "T", CALCULATE(SUM(Orders[Revenue])))), "0.##########")), "ERROR")),
+    ROW("Case", "07 grouping-the-wrong-way-round-gives-every-group-the-same-figure", "Answer", IFERROR(CONCATENATEX(ADDCOLUMNS(VALUES(Orders[ProductID]), "T", CALCULATE(SUM(Customers[CreditLimit]))), Orders[ProductID] & "=" & [T], ">"), "ERROR")),
+    ROW("Case", "08 filtering-the-fact-leaves-the-dimension-whole", "Answer", IFERROR(IF(ISBLANK(CALCULATE(SUM(Customers[CreditLimit]), Orders[Revenue] > 400)), "BLANK", FORMAT(CALCULATE(SUM(Customers[CreditLimit]), Orders[Revenue] > 400), "0.##########")), "ERROR")),
+    ROW("Case", "09 every-order-reaches-a-group", "Answer", IFERROR(IF(ISBLANK(SUMX(VALUES(Customers[Country]), CALCULATE(COUNTROWS(Orders)))), "BLANK", FORMAT(SUMX(VALUES(Customers[Country]), CALCULATE(COUNTROWS(Orders))), "0.##########")), "ERROR")),
+    ROW("Case", "10 the-largest-country", "Answer", IFERROR(CONCATENATEX(TOPN(1, ADDCOLUMNS(VALUES(Customers[Country]), "T", CALCULATE(SUM(Orders[Revenue]))), [T], DESC), Customers[Country], ">"), "ERROR")),
+    ROW("Case", "11 a-zero-on-the-dimension-is-a-value", "Answer", IFERROR(IF(ISBLANK(MIN(Customers[CreditLimit])), "BLANK", FORMAT(MIN(Customers[CreditLimit]), "0.##########")), "ERROR"))
+)

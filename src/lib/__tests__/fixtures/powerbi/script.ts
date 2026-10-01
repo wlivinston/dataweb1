@@ -3,6 +3,7 @@ import { GROUPING_CASES } from './grouping-expected';
 import { TABLE_CASES } from './table-expected';
 import { BLANK_CASES } from './blank-expected';
 import { FILTER_CASES } from './filter-expected';
+import { CROSSTABLE_CASES } from './crosstable-expected';
 import type { ResolvedMeasure } from '../../../measures';
 
 /**
@@ -228,6 +229,35 @@ export const buildFilterScript = (): string => {
       'Put Case and Answer into a Table visual and send the result back.',
       '',
       `Generated from filter-expected.ts - ${cases.length} cases.`,
+    ],
+    ['UNION(', rows.join(',\n'), ')']
+  );
+};
+
+export const buildCrossTableScript = (): string => {
+  const cases = CROSSTABLE_CASES.filter(entry => entry.compileError !== true);
+
+  const rows = cases.map((entry, index) => {
+    const position = String(index + 1).padStart(2, '0');
+    const answer = answerExpression(entry.dax, entry.returnsText === true);
+    return `    ROW("Case", "${position} ${entry.id}", "Answer", ${answer})`;
+  });
+
+  return assignTo(
+    'CrossTableResults',
+    [
+      'Paste into Power BI Desktop: Modeling > New table.',
+      '',
+      'Needs BOTH orders.csv and customers.csv loaded, joined on CustomerID.',
+      'Power BI usually detects the join; if it does not, create it as',
+      'Orders[CustomerID] -> Customers[CustomerID], many to one, single',
+      'cross-filter direction. The first case returns 1200 when the join is',
+      'there and 2100 when it is not - and 2100 looks just as much like an',
+      'answer, so check that row before reading any other.',
+      '',
+      'Put Case and Answer into a Table visual and send the result back.',
+      '',
+      `Generated from crosstable-expected.ts - ${cases.length} cases.`,
     ],
     ['UNION(', rows.join(',\n'), ')']
   );

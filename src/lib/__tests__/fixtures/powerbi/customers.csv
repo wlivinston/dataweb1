@@ -1,0 +1,5 @@
+CustomerID,Name,Country,Segment,CreditLimit
+C1,Ama,Ghana,Retail,1000
+C2,Kofi,Kenya,Retail,2000
+C3,Yaa,Ghana,Wholesale,0
+C4,Kwame,Kenya,Wholesale,500

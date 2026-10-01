@@ -37,6 +37,23 @@
  *     Target   1000, 2500, 0         SUM 3500  MIN 0   MAX 2500 MEAN 1166.666...
  *     Tamale's target is 0 on purpose: it is the one a blank would hide.
  *     Joins to Sales on Region.
+ *     Manager  Ama runs Accra and Tamale, Kwesi runs Kumasi.
+ *
+ * Cross-table questions, which need the join followed:
+ *
+ *     "total Amount by Manager"  Ama 2500 (Accra 1000 + Tamale 1500),
+ *                                Kwesi 2500 (Kumasi 2000 + 500)
+ *                                -> a tie, on purpose: a breakdown that
+ *                                   silently showed the grand total would
+ *                                   read 5000 against both names, and a
+ *                                   wrong answer that is ALSO a tie is the
+ *                                   one a reader is least likely to query.
+ *     "total Units by Manager"   Ama 10 (10 + 0), Kwesi 25 (5 + 20)
+ *
+ * And the one that must be refused, because the filter cannot travel that
+ * way and every product would show the same 3500:
+ *
+ *     "total Target by Product"  refused
  */
 
 import * as XLSX from 'xlsx';
@@ -62,9 +79,9 @@ const SALES = [
 ];
 
 const TARGETS = [
-  { region: 'Accra', target: 1000 },
-  { region: 'Kumasi', target: 2500 },
-  { region: 'Tamale', target: 0 },
+  { region: 'Accra', manager: 'Ama', target: 1000 },
+  { region: 'Kumasi', manager: 'Kwesi', target: 2500 },
+  { region: 'Tamale', manager: 'Ama', target: 0 },
 ];
 
 const text = value => ({ t: 's', v: value });
@@ -102,8 +119,8 @@ const sales = sheetOf([
 ]);
 
 const targets = sheetOf([
-  ['Region', 'Target'].map(text),
-  ...TARGETS.map(row => [text(row.region), number(row.target)]),
+  ['Region', 'Manager', 'Target'].map(text),
+  ...TARGETS.map(row => [text(row.region), text(row.manager), number(row.target)]),
 ]);
 
 const book = XLSX.utils.book_new();
