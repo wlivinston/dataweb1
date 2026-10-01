@@ -784,3 +784,38 @@
 .author-bio p {
   @apply text-gray-600 dark:text-gray-300 mb-0;
 }
+
+/*
+ * A horizontal scrollbar people can actually see.
+ *
+ * The statistics table is one column per data column, so it is wider than its
+ * panel for any real dataset - 990px for seven columns. It was always
+ * scrollable, but on Windows and macOS the scrollbar auto-hides until you are
+ * already dragging, so the columns past the edge read as missing rather than
+ * as off-screen. Reported by a user who thought the panel was broken.
+ *
+ * The scroller is the Table component's own wrapper, one level below the
+ * element this class sits on, hence the child selector.
+ */
+.show-scrollbar > div {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(215 16% 80%) transparent;
+}
+
+.show-scrollbar > div::-webkit-scrollbar {
+  height: 10px;
+}
+
+.show-scrollbar > div::-webkit-scrollbar-track {
+  background: hsl(210 40% 96%);
+  border-radius: 9999px;
+}
+
+.show-scrollbar > div::-webkit-scrollbar-thumb {
+  background: hsl(215 16% 80%);
+  border-radius: 9999px;
+}
+
+.show-scrollbar > div::-webkit-scrollbar-thumb:hover {
+  background: hsl(215 16% 65%);
+}
