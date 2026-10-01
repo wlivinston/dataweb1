@@ -520,8 +520,11 @@ describe('filtered questions', () => {
   });
 
   it('puts the filter inside the per-group CALCULATE, not around the ranking', () => {
-    // Outside, every group would be totalled over everything and only the
-    // returned rows filtered: the same groups, with the wrong numbers.
+    // Not for the reason first written here. Power BI returned the same
+    // numbers for both placements - CALCULATETABLE pushes its filter inward
+    // too. The real difference is which groups survive: outside, a group with
+    // no matching rows vanishes; inside, it stays with a blank total. A
+    // missing row reads as "no such region" rather than "sold none".
     const answer = grouped('Total Amount by Product for North', salesModel());
     expect(answer.dax).toContain('CALCULATE(SUM(Sales[Amount]), Sales[Region] = "North")');
 

@@ -456,9 +456,18 @@ const answerGrouped = (
 
   const label = labelFor(aggregation, measure.value, group.value);
   // The filter goes INSIDE the per-group CALCULATE, not around the TOPN.
-  // Outside, it would decide which groups come back after each one had
-  // already been totalled over everything - the same rows, with the wrong
-  // numbers in them, which is the hardest kind of wrong to notice.
+  //
+  // The reason is not the one first written here. That comment claimed the
+  // outer placement produces wrong NUMBERS; Power BI returned identical
+  // answers for both on 2026-09-30, because CALCULATETABLE pushes its filter
+  // into the inner CALCULATE as well, so the totals cannot disagree.
+  //
+  // What does differ is WHICH GROUPS EXIST. VALUES() inside CALCULATETABLE is
+  // evaluated under the filter, so a group with no surviving rows disappears;
+  // inside the per-group CALCULATE, that group stays and shows a blank. The
+  // inner placement is chosen because "Amount by Region for Gadget" should
+  // still show a region that sold no Gadgets - a missing row reads as "this
+  // region does not exist" rather than "this region sold none".
   const filterArg = filter ? `, ${filter.predicate}` : '';
   const grouped =
     `ADDCOLUMNS(VALUES(${columnRef(group.value.table, group.value.name)}), ` +

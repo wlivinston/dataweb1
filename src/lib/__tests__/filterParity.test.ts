@@ -70,20 +70,48 @@ describe('filter parity fixture', () => {
     }
   });
 
-  it('asks the placement question with two cases that can actually disagree', () => {
-    // If these two were equal here, the sheet could not tell the placements
-    // apart and case 8 would be wasted space.
-    const inside = FILTER_CASES.find(entry => entry.id.includes('INSIDE'));
-    const outside = FILTER_CASES.find(entry => entry.id.includes('OUTSIDE'));
-    expect(inside, 'the INSIDE case is missing').toBeTruthy();
-    expect(outside, 'the OUTSIDE case is missing').toBeTruthy();
-    expect(inside!.dax).not.toBe(outside!.dax);
+  it('keeps a placement pair whose two sides actually answer differently', () => {
+    // The first pair asked the placement question against data that could not
+    // answer it: both products appear in North, so the two placements agreed
+    // and the pair proved nothing. Power BI said so, no test here did.
+    //
+    // Comparing the DAX is not enough - that is what the original test did,
+    // and it passed on a vacuous pair. This compares the ANSWERS.
+    const inside = FILTER_CASES.find(entry =>
+      entry.id.startsWith('placement-INSIDE')
+    );
+    const outside = FILTER_CASES.find(entry =>
+      entry.id.startsWith('placement-OUTSIDE')
+    );
+    expect(inside, 'the distinguishing INSIDE case is missing').toBeTruthy();
+    expect(outside, 'the distinguishing OUTSIDE case is missing').toBeTruthy();
+    expect(
+      answerFor(inside!.dax),
+      'the placement pair no longer distinguishes anything'
+    ).not.toBe(answerFor(outside!.dax));
   });
 });
 
 describe('filter parity with Power BI', () => {
   for (const entry of FILTER_CASES) {
     const runner = entry.expected === null ? it.skip : it;
+
+    if (entry.divergence) {
+      const pinned = entry.divergence;
+      runner(`${entry.id} - DELIBERATE DIVERGENCE, pinned`, () => {
+        // Not a claim of agreement. This asserts the disagreement is still
+        // exactly what was recorded, so neither side can drift unnoticed.
+        const engine = answerFor(entry.dax);
+        expect(engine, `${entry.id}: this engine moved.\n  ${pinned.note}`).toBe(
+          pinned.engine
+        );
+        expect(
+          engine,
+          `${entry.id} now matches Power BI - unpin it.\n  ${pinned.note}`
+        ).not.toBe(String(entry.expected));
+      });
+      continue;
+    }
 
     runner(`${entry.id}`, () => {
       const engine = answerFor(entry.dax);
