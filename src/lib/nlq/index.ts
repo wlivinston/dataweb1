@@ -2,6 +2,8 @@ import { runDax, runDaxTable, formatDaxValue, DEFAULT_ROW_LIMIT as ROW_LIMIT } f
 import { columnRef, tableRef } from '../dax/printer';
 import { AGGREGATIONS, ROW_WORDS, normalise } from './vocabulary';
 import { meaningfulWords, resolveColumn, resolveTable, soleKeyOf } from './resolve';
+import { extractFilter, applyFilter, describeFilter } from './filter';
+import type { ResolvedFilter } from './filter';
 import type { AggregationWord } from './vocabulary';
 import type { NlqAnswer } from './types';
 import type { SemanticColumn, SemanticModel, SemanticTable } from '../semantic/types';
@@ -118,7 +120,17 @@ export const answerQuestion = (
   // before the scalar resolver sees them. "average Revenue by Region" would
   // otherwise match Revenue and Region equally and be reported as an
   // ambiguous column - a true statement about the wrong problem.
-  const text = normalise(question);
+  const rawText = normalise(question);
+
+  // The filter comes off first, so "revenue in 2024" does not try to resolve
+  // a column called "2024". A refused filter refuses the whole question: an
+  // unapplied filter returns the grand total, which is a real number and a
+  // wrong answer, and nothing on screen would say so.
+  const filter = extractFilter(rawText, model);
+  if (filter.kind === 'refused') return refuse(model, question, filter.reason);
+  const applied = filter.kind === 'found' ? filter.value : null;
+  const text = applied ? applied.rest : rawText;
+
   const ranked = RANKING.exec(text);
   const splitAt = text.search(SPLIT_WORD);
 
@@ -126,10 +138,10 @@ export const answerQuestion = (
   // "Highest Cost" ranks nothing - it is MAX of a column - and routing it
   // here on a ranking word alone refused a question that works.
   if (splitAt !== -1) {
-    return answerGrouped(question, text, model, ranked, splitAt);
+    return answerGrouped(question, text, model, ranked, splitAt, applied);
   }
 
-  const parsed = parse(question);
+  const parsed = parse(text);
   if (!parsed) {
     if (ranked) {
       return refuse(
@@ -165,7 +177,7 @@ export const answerQuestion = (
       );
     }
     const dax = `COUNTROWS(${tableRef(table.name)})`;
-    return finish(model, question, dax, `The number of rows in ${table.name}.`);
+    return finish(model, question, dax, `The number of rows in ${table.name}.`, undefined, applied);
   }
 
   if (subject.length === 0) {
@@ -191,7 +203,8 @@ export const answerQuestion = (
           dax,
           `The number of different ${describeColumn(key)} values. Rows can repeat a ` +
             `${key.name}, so this counts each one once.`,
-          key
+          key,
+          applied
         );
       }
       // No column identifies one of these on its own, so the question has
@@ -264,17 +277,22 @@ export const answerQuestion = (
     `${aggregation.describes.charAt(0).toUpperCase()}${aggregation.describes.slice(1)} ` +
     `${describeColumn(column)}.${blankNote(column, dax)}`;
 
-  return finish(model, question, dax, interpretation, column);
+  return finish(model, question, dax, interpretation, column, applied);
 };
 
 /** Run the compiled DAX and shape the result. */
 const finish = (
   model: SemanticModel,
   question: string,
-  dax: string,
+  bareDax: string,
   interpretation: string,
-  column?: SemanticColumn
+  column?: SemanticColumn,
+  filter?: ResolvedFilter | null
 ): NlqAnswer => {
+  // The filter is wrapped here rather than at each call site, so a new kind
+  // of question cannot be added that forgets to apply one and silently
+  // answers about the whole table.
+  const dax = filter ? applyFilter(bareDax, filter) : bareDax;
   const outcome = runDax(dax, model);
   if (!outcome.ok) {
     return {
@@ -293,7 +311,12 @@ const finish = (
     dax,
     value: outcome.value,
     formatted: formatDaxValue(outcome.value),
-    interpretation,
+    // The filter is stated here, not left to the DAX alone. A reader who
+    // takes the sentence at its word and skips the expression would
+    // otherwise read a filtered figure as the whole total.
+    interpretation: filter
+      ? `${interpretation.replace(/\.$/, '')}, ${describeFilter(filter)}.`
+      : interpretation,
     column,
   };
 };
@@ -344,7 +367,8 @@ const answerGrouped = (
   text: string,
   model: SemanticModel,
   ranked: RegExpExecArray | null,
-  splitAt: number
+  splitAt: number,
+  filter: ResolvedFilter | null
 ): NlqAnswer => {
   const before = text.slice(0, splitAt);
   const after = text.slice(splitAt).replace(SPLIT_WORD, ' ');
@@ -431,9 +455,14 @@ const answerGrouped = (
   }
 
   const label = labelFor(aggregation, measure.value, group.value);
+  // The filter goes INSIDE the per-group CALCULATE, not around the TOPN.
+  // Outside, it would decide which groups come back after each one had
+  // already been totalled over everything - the same rows, with the wrong
+  // numbers in them, which is the hardest kind of wrong to notice.
+  const filterArg = filter ? `, ${filter.predicate}` : '';
   const grouped =
     `ADDCOLUMNS(VALUES(${columnRef(group.value.table, group.value.name)}), ` +
-    `"${label}", CALCULATE(${aggregation.dax}(${columnRef(measure.value.table, measure.value.name)})))`;
+    `"${label}", CALCULATE(${aggregation.dax}(${columnRef(measure.value.table, measure.value.name)})${filterArg}))`;
 
   const descending = !ranked || DESCENDING_WORDS.includes(ranked[1]);
   const size = ranked && ranked[2] ? Number(ranked[2]) : rankingForm ? DEFAULT_RANK_SIZE : ROW_LIMIT;
@@ -466,7 +495,8 @@ const answerGrouped = (
     truncated: outcome.totalRows > shown,
     interpretation:
       `${aggregation.describes.charAt(0).toUpperCase()}${aggregation.describes.slice(1)} ` +
-      `${describeColumn(measure.value)} for each ${describeColumn(group.value)}, ${ordering}.` +
+      `${describeColumn(measure.value)} for each ${describeColumn(group.value)}` +
+      `${filter ? `, ${describeFilter(filter)}` : ''}, ${ordering}.` +
       capped,
     groupColumn: group.value,
     measureColumn: measure.value,

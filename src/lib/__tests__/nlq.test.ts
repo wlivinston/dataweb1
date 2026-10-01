@@ -420,3 +420,118 @@ describe('refusing a grouping that would mean nothing', () => {
     expect(refused('top 5 regions', regional()).reason).toMatch(/needs to say what to rank by/);
   });
 });
+
+/**
+ * Filters: the "in 2024" half of a question.
+ *
+ * A filter is resolved against the data rather than guessed from the words,
+ * and the rule throughout is that an unresolvable filter refuses the whole
+ * question. A filter that fails to apply returns the grand total - a real
+ * number, plausible on screen, and an answer to a question nobody asked.
+ */
+describe('filtered questions', () => {
+  const salesModel = (): SemanticModel =>
+    buildSemanticModel([
+      makeDataset(
+        [
+          { OrderID: 'S1', Region: 'North', Product: 'Widget', Amount: 100 },
+          { OrderID: 'S2', Region: 'North', Product: 'Gadget', Amount: 150 },
+          { OrderID: 'S3', Region: 'South', Product: 'Widget', Amount: 400 },
+          { OrderID: 'S4', Region: 'South', Product: 'Gadget', Amount: 350 },
+        ],
+        [
+          { name: 'OrderID', type: 'string' },
+          { name: 'Region', type: 'string' },
+          { name: 'Product', type: 'string' },
+          { name: 'Amount', type: 'number' },
+        ],
+        { id: 'ds-filter', name: 'Sales' }
+      ),
+    ]);
+
+  it('compiles a value filter into CALCULATE', () => {
+    const answer = answered('What is the total Amount for North?', salesModel());
+    expect(answer.dax).toBe('CALCULATE(SUM(Sales[Amount]), Sales[Region] = "North")');
+    expect(answer.value).toBe(250);
+  });
+
+  it('finds the column from the value, without being told which', () => {
+    // "Widget" is never named as a Product in the question.
+    const answer = answered('What is the total Amount for Widget?', salesModel());
+    expect(answer.dax).toBe('CALCULATE(SUM(Sales[Amount]), Sales[Product] = "Widget")');
+    expect(answer.value).toBe(500);
+  });
+
+  it('says in the sentence which filter it applied', () => {
+    // A reader who trusts the sentence and skips the DAX must not read a
+    // filtered figure as the whole total.
+    const answer = answered('What is the total Amount for North?', salesModel());
+    expect(answer.interpretation).toContain('Sales[Region]');
+    expect(answer.interpretation).toContain('North');
+  });
+
+  it('refuses a value that is in no column rather than ignoring it', () => {
+    // The important one. Answering 1000 here would be a true total and a
+    // false answer, with nothing on screen to say the filter was dropped.
+    const result = refused('What is the total Amount for Atlantis?', salesModel());
+    // Questions are lower-cased on the way in, so the reason quotes it back
+    // as it was read rather than as it was typed.
+    expect(result.reason.toLowerCase()).toContain('atlantis');
+  });
+
+  it('refuses a value that two columns both hold', () => {
+    const model = buildSemanticModel([
+      makeDataset(
+        [
+          { Region: 'North', Depot: 'North', Amount: 10 },
+          { Region: 'South', Depot: 'East', Amount: 20 },
+        ],
+        [
+          { name: 'Region', type: 'string' },
+          { name: 'Depot', type: 'string' },
+          { name: 'Amount', type: 'number' },
+        ],
+        { id: 'ds-ambig', name: 'Sales' }
+      ),
+    ]);
+    const result = refused('What is the total Amount for North?', model);
+    expect(result.reason).toContain('Region');
+    expect(result.reason).toContain('Depot');
+  });
+
+  it('refuses a period relative to today instead of inventing one', () => {
+    // There is no notion of today in this engine, and a period it worked out
+    // itself could quietly differ from the one the asker meant.
+    const result = refused('What is the total Amount in last year?', salesModel());
+    expect(result.reason.toLowerCase()).toContain('today');
+  });
+
+  it('never filters by a measure', () => {
+    // "Amount for 100" is not a question anyone asks, and matching it would
+    // make every number in the data a candidate filter value.
+    const result = refused('What is the total Amount for 100?', salesModel());
+    expect(result.reason).toContain('100');
+  });
+
+  it('does not read "for each" as a filter', () => {
+    const answer = grouped('Total Amount for each Region', salesModel());
+    expect(answer.dax).toContain('VALUES(Sales[Region])');
+    expect(answer.rows).toHaveLength(2);
+  });
+
+  it('puts the filter inside the per-group CALCULATE, not around the ranking', () => {
+    // Outside, every group would be totalled over everything and only the
+    // returned rows filtered: the same groups, with the wrong numbers.
+    const answer = grouped('Total Amount by Product for North', salesModel());
+    expect(answer.dax).toContain('CALCULATE(SUM(Sales[Amount]), Sales[Region] = "North")');
+
+    const widget = answer.rows.find(row => row[0] === 'Widget');
+    expect(widget?.[1]).toBe(100);
+  });
+
+  it('leaves an unfiltered question exactly as it was', () => {
+    const answer = answered('What is the total Amount?', salesModel());
+    expect(answer.dax).toBe('SUM(Sales[Amount])');
+    expect(answer.value).toBe(1000);
+  });
+});
