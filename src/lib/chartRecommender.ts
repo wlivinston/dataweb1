@@ -4,6 +4,7 @@
  */
 
 import { SHARED_CHART_PALETTE } from './chartColors';
+import { minOf, maxOf } from './dataUtils';
 
 // ── Data shape converters ──
 
@@ -12,8 +13,8 @@ export function toHistogramData(
   binCount: number = 15
 ): { category: string; value: number }[] {
   if (values.length === 0) return [];
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  const min = minOf(values);
+  const max = maxOf(values);
   if (min === max) return [{ category: String(min), value: values.length }];
 
   const binWidth = (max - min) / binCount;

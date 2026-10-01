@@ -1,6 +1,7 @@
 // Anomaly Fix Utilities - Actionable fixes for detected anomalies
 import { Dataset } from './types';
 import { AnomalyResult } from './aiInsightEngine';
+import { minOf, maxOf } from './dataUtils';
 
 export type AnomalyFixAction = 'removeRow' | 'capToBounds' | 'replaceWithMean' | 'replaceWithMedian';
 
@@ -35,8 +36,8 @@ const updateColumnStats = (dataset: Dataset, affectedColumns: string[]): Dataset
     if (values.length === 0) return col;
     return {
       ...col,
-      min: Math.min(...values),
-      max: Math.max(...values),
+      min: minOf(values),
+      max: maxOf(values),
       mean: values.reduce((a, b) => a + b, 0) / values.length
     };
   });

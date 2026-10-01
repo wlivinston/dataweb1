@@ -11,6 +11,7 @@ import {
   GrowthRate,
   AggregatedTimeSeries
 } from './types';
+import { minOf, maxOf } from './dataUtils';
 
 // ============================================================
 // Date Detection & Classification
@@ -486,8 +487,8 @@ export const aggregateByDatePeriod = (
       sum: values.reduce((a, b) => a + b, 0),
       avg: values.reduce((a, b) => a + b, 0) / values.length,
       count: values.length,
-      min: Math.min(...values),
-      max: Math.max(...values)
+      min: minOf(values),
+      max: maxOf(values)
     }));
 };
 

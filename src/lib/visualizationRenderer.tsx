@@ -14,6 +14,7 @@ import { Table } from '@/components/ui/table';
 import { optimizeVisualizationData, RENDERING_LIMITS } from './dataOptimization';
 import PaginatedTable from '@/components/PaginatedTable';
 import { SHARED_CHART_PALETTE } from './chartColors';
+import { minOf, maxOf } from './dataUtils';
 
 export type SupportedVisualizationType =
   | 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'table'
@@ -692,8 +693,8 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
       // Matrix-style: rows are categories, columns are numeric
       const rowLabels = heatData.map((r: any) => String(r.category || r.name || ''));
       const allValues = heatData.flatMap((r: any) => numericCols.map(c => Number(r[c]) || 0));
-      const minVal = Math.min(...allValues);
-      const maxVal = Math.max(...allValues);
+      const minVal = minOf(allValues);
+      const maxVal = maxOf(allValues);
       const range = maxVal - minVal || 1;
 
       const getCellColor = (val: number) => {

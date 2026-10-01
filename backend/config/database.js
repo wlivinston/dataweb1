@@ -99,5 +99,67 @@ async function query(sqlOrTable, paramsOrOp = []) {
   }
 }
 
-module.exports = { connectDB, query };
+/**
+ * Run several statements as one transaction, on ONE connection.
+ *
+ * query() cannot do this, for two separate reasons, and both are quiet:
+ *
+ *   1. isSqlStatement() does not recognise BEGIN, COMMIT or ROLLBACK, so those
+ *      calls fall through to the Supabase branch and throw.
+ *   2. Even if they matched, pgPool.query() takes whatever connection is free
+ *      for each call. BEGIN would run on one connection and the INSERT on
+ *      another, so the work would commit outside any transaction and a failure
+ *      halfway through would have nothing to roll back - while looking, from
+ *      the calling code, exactly like a working transaction.
+ *
+ * The callback is handed a run(sql, params) bound to the checked-out client.
+ * Using the module-level query() inside it silently escapes the transaction,
+ * which is why the callback receives its own runner rather than relying on
+ * the caller to remember.
+ */
+async function withTransaction(run) {
+  if (!pgPool) {
+    throw new Error('DATABASE_URL not configured for transactional work.');
+  }
+
+  const client = await pgPool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await run((sql, params = []) => client.query(sql, params));
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      logger.error({ err: rollbackError.message }, 'transaction rollback failed');
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Release every pooled connection.
+ *
+ * The pool is created at module load and nothing ever closed it, so a process
+ * that has touched Postgres will not exit on its own. Jest reports this as
+ * "did not exit one second after the test run" and then force-kills the
+ * worker, which is a warning that trains people to ignore warnings.
+ *
+ * Safe to call when no pool exists, and safe to call twice - pg's end() is
+ * idempotent after the first call resolves - so a caller does not have to
+ * know whether a database was configured.
+ */
+async function closePool() {
+  if (!pgPool) return;
+  try {
+    await pgPool.end();
+  } catch (err) {
+    logger.warn({ err: err.message }, 'closing the postgres pool failed');
+  }
+}
+
+module.exports = { connectDB, query, withTransaction, closePool };
 

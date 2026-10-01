@@ -1,5 +1,6 @@
 // Data Cleaning Utilities
 import { Dataset, ColumnInfo } from './types';
+import { minOf, maxOf } from './dataUtils';
 
 export type CleaningOperation =
   | 'removeDuplicates'
@@ -357,8 +358,8 @@ export const removeOutliers = (dataset: Dataset, columnName: string): CleaningRe
       if (values.length > 0) {
         return {
           ...col,
-          min: Math.min(...values),
-          max: Math.max(...values),
+          min: minOf(values),
+          max: maxOf(values),
           mean: values.reduce((a, b) => a + b, 0) / values.length
         };
       }
@@ -462,8 +463,8 @@ export const capOutliersToBounds = (
       if (values.length > 0) {
         return {
           ...col,
-          min: Math.min(...values),
-          max: Math.max(...values),
+          min: minOf(values),
+          max: maxOf(values),
           mean: values.reduce((a, b) => a + b, 0) / values.length
         };
       }
