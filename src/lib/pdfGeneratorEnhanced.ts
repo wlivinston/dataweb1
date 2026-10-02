@@ -230,6 +230,30 @@ const generateVisualizationInsight = (viz: Visualization, dataset?: Dataset): st
 };
 
 /**
+ * Whether a data URL is really a PNG jsPDF can decode.
+ *
+ * THE BUG THIS EXISTS FOR. html2canvas on an element with no layout - a chart
+ * sitting in a tab that is not open, which is most of them while the user is
+ * looking at one - produces a 0x0 canvas. `canvas.toDataURL('image/png')` on
+ * a 0x0 canvas does not fail and does not return null: it returns the string
+ * "data:,". That is TRUTHY, so it sailed through the `if (chartImage)` guard
+ * and reached jsPDF, which threw
+ *
+ *     Error: wrong PNG signature
+ *
+ * and took the whole report down with it - after the user had paid for it.
+ * The error was then reported to them as "the dataset may be too large",
+ * which is not true and sends them off sampling their data over a hidden div.
+ *
+ * Checked by prefix and by length rather than by decoding: a real capture of
+ * an empty white chart is still thousands of characters, and "data:," is six.
+ */
+export const PNG_DATA_URL = 'data:image/png;base64,';
+
+export const isUsablePng = (value: string | null | undefined): value is string =>
+  typeof value === 'string' && value.startsWith(PNG_DATA_URL) && value.length > PNG_DATA_URL.length + 100;
+
+/**
  * Capture a chart element as an image with retry
  */
 const captureWithRetry = async (element: HTMLElement, retries = 1): Promise<string | null> => {
@@ -253,7 +277,15 @@ const captureWithRetry = async (element: HTMLElement, retries = 1): Promise<stri
           });
         }
       });
-      return canvas.toDataURL('image/png', 0.9);
+      // A canvas with no area cannot be an image. Caught here as well as by
+      // isUsablePng below, because this is the case that actually happens and
+      // it is worth being obvious about.
+      if (!canvas.width || !canvas.height) {
+        continue;
+      }
+
+      const dataUrl = canvas.toDataURL('image/png', 0.9);
+      if (isUsablePng(dataUrl)) return dataUrl;
     } catch (error) {
       if (attempt < retries - 1) {
         await new Promise(r => setTimeout(r, 500));
@@ -786,8 +818,14 @@ export const generateEnhancedPDF = async (
         }
       }
 
-      // Add chart image if available
-      if (chartImage) {
+      // Add chart image if available.
+      //
+      // isUsablePng rather than a bare truthiness test, and the addImage
+      // wrapped: a single unreadable image used to throw out of here and lose
+      // the ENTIRE report, charts, tables, insights and all. This file already
+      // knows how to draw a simplified chart when there is no image, so one
+      // bad capture now costs a picture rather than the document.
+      if (isUsablePng(chartImage)) {
         const imgWidth = Math.min(contentWidth, 150);
         const imgHeight = (imgWidth / 2);
 
@@ -796,9 +834,16 @@ export const generateEnhancedPDF = async (
           yPosition = 20;
         }
 
-        doc.addImage(chartImage, 'PNG', margin, yPosition, imgWidth, imgHeight);
-        yPosition += imgHeight + 8;
-      } else {
+        try {
+          doc.addImage(chartImage, 'PNG', margin, yPosition, imgWidth, imgHeight);
+          yPosition += imgHeight + 8;
+        } catch (error) {
+          console.warn('Chart image was rejected by the PDF writer; drawing it instead:', error);
+          chartImage = null;
+        }
+      }
+
+      if (!isUsablePng(chartImage)) {
         // Fallback: Render simplified chart directly in PDF using drawing APIs
         const chartFallbackHeight = 60;
         if (yPosition + chartFallbackHeight > pageHeight - 40) {
