@@ -161,9 +161,27 @@ Fill the answers into `crosstable-expected.ts` and run:
 npx vitest run src/lib/__tests__/crossTableParity.test.ts
 ```
 
-Until then that test reports `0 of 11 answered`, and the cross-table grouping
-in the product is verified by hand-computation only — **not** against Power
-BI.
+### Answered, 2026-10-02 — and it agreed on everything
+
+All 11 cases came back from Power BI and **all 11 agree**. This is the only
+sheet in this folder with no divergence at all.
+
+That is not because it is an easy sheet. The one deliberate divergence this
+engine carries is about an empty **text** cell read from CSV, and nothing in
+this fixture has one — the blank in `a-group-with-no-rows-behind-it` is a
+blank *measure result* (Kwame bought nothing), which both engines treat
+identically. The two kinds of blank are distinguishable, which is worth
+knowing, because the notes on the Sales sheets read as though blanks are
+simply a problem area.
+
+The case that earned the sheet was
+`grouping-the-wrong-way-round-gives-every-group-the-same-figure`. It
+returned `P1=3500>P2=3500>P3=3500` — the same figure three times, exactly as
+this engine produces. Power BI does not follow the join in that direction
+either, so a question asked that way really does yield a table that looks
+like a breakdown and carries no information. The NLQ refusal built on it is
+correct rather than over-strict. Three *different* figures would have meant
+the refusal was wrong and had to go.
 
 ---
 

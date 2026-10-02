@@ -39,6 +39,32 @@ import type { ParityCase } from './expected';
  *                 total credit = 3500, over 4 rows
  *
  *   so Ghana 1200, Kenya 900; Retail 1600, Wholesale 500.
+ *
+ * ANSWERED 2026-10-02, all 11 cases, from Power BI Desktop.
+ *
+ * Every case AGREES. This is the first sheet in this folder with no
+ * divergence at all - the other five each carry at least the empty-cell one.
+ * That is not because this sheet is easy: it is because the one deliberate
+ * divergence this engine has concerns an empty TEXT cell read from CSV, and
+ * nothing here has one. The blank in `a-group-with-no-rows-behind-it` is a
+ * blank MEASURE RESULT - Kwame bought nothing - which both engines treat the
+ * same way. Worth knowing that the two kinds of blank are distinguishable,
+ * because the notes on the Sales sheets read as though blanks are simply a
+ * problem area, and they are not.
+ *
+ * THE FINDING. `grouping-the-wrong-way-round-...` came back as
+ * `P1=3500>P2=3500>P3=3500` - the same figure three times, exactly as this
+ * engine produces. That is the result the NLQ refusal is built on, and it is
+ * now established rather than assumed. Power BI does NOT follow the join in
+ * that direction either, so a question asked that way really does yield a
+ * table that looks like a breakdown and carries no information, and refusing
+ * it is correct rather than over-strict. Had Power BI returned three
+ * different figures, the refusal shipped in PR #7 would have been wrong and
+ * would have had to go.
+ *
+ * Numbers came back from FORMAT("0.##########") with a trailing "." in that
+ * locale - "1200." - which is the format string rather than the answer, so
+ * they are recorded here as numbers.
  */
 
 /** Revenue per country: the grouping the product now allows. */
@@ -61,7 +87,7 @@ export const CROSSTABLE_CASES: ParityCase[] = [
       'total - a number that looks like an answer. Nothing below this line ' +
       'means anything unless this is 1200.',
     dax: 'CALCULATE(SUM(Orders[Revenue]), Customers[Country] = "Ghana")',
-    expected: null,
+    expected: 1200,
   },
   {
     id: 'canary-both-tables-loaded',
@@ -69,7 +95,7 @@ export const CROSSTABLE_CASES: ParityCase[] = [
       'Six orders against four customers. A sheet read off a half-loaded ' +
       'model answers consistently and wrongly.',
     dax: 'COUNTROWS(Orders) * 10 + COUNTROWS(Customers)',
-    expected: null,
+    expected: 64,
   },
   {
     id: 'revenue-by-country',
@@ -79,7 +105,7 @@ export const CROSSTABLE_CASES: ParityCase[] = [
       'Ghana 1200 is two customers added together, which is the part a join ' +
       'that half works would get wrong.',
     dax: `CONCATENATEX(${BY_COUNTRY}, Customers[Country] & "=" & [T], ">")`,
-    expected: null,
+    expected: 'Ghana=1200>Kenya=900',
     returnsText: true,
     unorderedText: true,
   },
@@ -93,7 +119,7 @@ export const CROSSTABLE_CASES: ParityCase[] = [
     dax:
       'CONCATENATEX(ADDCOLUMNS(VALUES(Customers[Segment]), "T", ' +
       'CALCULATE(SUM(Orders[Revenue]))), Customers[Segment] & "=" & [T], ">")',
-    expected: null,
+    expected: 'Retail=1600>Wholesale=500',
     returnsText: true,
     unorderedText: true,
   },
@@ -108,7 +134,7 @@ export const CROSSTABLE_CASES: ParityCase[] = [
     dax:
       `CONCATENATEX(${BY_NAME}, Customers[Name] & "=" & ` +
       'IF(ISBLANK([T]), "(blank)", [T]), ">")',
-    expected: null,
+    expected: 'Ama=700>Kofi=900>Yaa=500>Kwame=(blank)',
     returnsText: true,
     unorderedText: true,
   },
@@ -119,7 +145,7 @@ export const CROSSTABLE_CASES: ParityCase[] = [
       'the count answers the vanishing question on its own, without ' +
       'depending on how a blank renders inside CONCATENATEX.',
     dax: `COUNTROWS(${BY_NAME})`,
-    expected: null,
+    expected: 4,
   },
   {
     id: 'grouping-the-wrong-way-round-gives-every-group-the-same-figure',
@@ -132,7 +158,7 @@ export const CROSSTABLE_CASES: ParityCase[] = [
       'than protective. Three identical numbers is the answer that confirms ' +
       'refusing is right.',
     dax: `CONCATENATEX(${BY_PRODUCT}, Orders[ProductID] & "=" & [T], ">")`,
-    expected: null,
+    expected: 'P1=3500>P2=3500>P3=3500',
     returnsText: true,
     unorderedText: true,
   },
@@ -148,7 +174,7 @@ export const CROSSTABLE_CASES: ParityCase[] = [
       'relationship is bidirectional after all, and then the wrong-way ' +
       'grouping above is meaningful and refusing it is wrong.',
     dax: 'CALCULATE(SUM(Customers[CreditLimit]), Orders[Revenue] > 400)',
-    expected: null,
+    expected: 3500,
   },
   {
     id: 'every-order-reaches-a-group',
@@ -159,7 +185,7 @@ export const CROSSTABLE_CASES: ParityCase[] = [
       'breakdown while the breakdown still looked complete. This is the ' +
       'figure the product reports to the reader when it is short.',
     dax: 'SUMX(VALUES(Customers[Country]), CALCULATE(COUNTROWS(Orders)))',
-    expected: null,
+    expected: 6,
   },
   {
     id: 'the-largest-country',
@@ -167,7 +193,7 @@ export const CROSSTABLE_CASES: ParityCase[] = [
       'A single row, so the answer cannot depend on how TOPN orders what it ' +
       'returns - the question that cost this repo a week on the table sheet.',
     dax: `CONCATENATEX(TOPN(1, ${BY_COUNTRY}, [T], DESC), Customers[Country], ">")`,
-    expected: null,
+    expected: 'Ghana',
     returnsText: true,
   },
   {
@@ -177,7 +203,7 @@ export const CROSSTABLE_CASES: ParityCase[] = [
       'and not 500. The same confusion on the Excel import path turned every ' +
       'zero in an uploaded workbook into a blank.',
     dax: 'MIN(Customers[CreditLimit])',
-    expected: null,
+    expected: 0,
   },
 ];
 

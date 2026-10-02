@@ -14,19 +14,24 @@ import { propagationPath, filterReaches } from '../semantic/propagation';
 /**
  * Figures that cross a relationship, checked against Power BI.
  *
- * Nothing on this sheet has a Power BI answer yet. That is deliberate and it
- * is stated rather than hidden: the engine answers below are asserted as
- * HAND-COMPUTED values - every one of them can be checked against the data
- * in crosstable-expected.ts with no engine involved - and the Power BI
- * column stays null until somebody runs crosstable-script.dax and reads it
- * off. Filling `expected` with whatever this engine returns would turn the
- * sheet from a test into a mirror.
+ * ANSWERED 2026-10-02. All 11 cases, from Power BI Desktop, and all 11
+ * AGREE - the first sheet in this folder with no divergence at all.
  *
- * So this file does two separate jobs, and keeps them separate:
+ * The file still does two separate jobs and still keeps them separate,
+ * because they fail for different reasons and a reader needs to know which:
  *
- *   1. The engine is right about arithmetic a person can do on paper. These
- *      run now.
- *   2. The engine agrees with Power BI. These skip until answered.
+ *   1. The engine is right about arithmetic a person can do on paper. Every
+ *      value in that half is hand-computed from the four customers and six
+ *      orders described in crosstable-expected.ts, with no engine involved.
+ *      These would have run, and failed, even with the sheet unanswered.
+ *   2. The engine agrees with Power BI. That half was skipped until the
+ *      numbers came back, rather than being filled in with whatever this
+ *      engine returned - which would have turned the sheet from a test into
+ *      a mirror.
+ *
+ * The case that mattered most was the wrong-way-round grouping. Power BI
+ * returned the same figure three times, which is what the NLQ refusal is
+ * built on; three different figures would have meant the refusal was wrong.
  */
 
 const model = buildSemanticModel([loadOrders(), loadCustomers()]);
