@@ -88,6 +88,19 @@ import {
 } from '@/lib/chartRecommender';
 
 const PDF_ACCESS_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * The answer to "may this user download the report".
+ *
+ * `serviceUnavailable` distinguishes the two ways of hearing no: this user
+ * has not paid, or we could not find out. They need different sentences -
+ * one is "here is how to buy it", the other is "this is our fault, nothing
+ * is wrong with your account".
+ */
+interface PdfAccess {
+  hasAccess: boolean;
+  serviceUnavailable: boolean;
+}
 const PAID_SUBSCRIPTION_STATUSES = new Set([
   'professional',
   'enterprise',
@@ -133,11 +146,20 @@ const FunctionalDataUpload: React.FC = () => {
   const [timeSeriesResults, setTimeSeriesResults] = useState<TimeSeriesResult[]>([]);
   const [advancedStatsResults, setAdvancedStatsResults] = useState<any>(null);
   const [dateTableInfos, setDateTableInfos] = useState<DateTableInfo[]>([]);
-  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
+  /**
+   * What the PDF button is doing, if anything.
+   *
+   * It used to be a plain isGeneratingPDF, set AFTER the subscription check.
+   * That check makes up to two requests with 7 and 12 second timeouts, so a
+   * click could spend nineteen seconds doing nothing visible at all before
+   * the paywall appeared - during which the button looked untouched and
+   * clicking it again started the whole thing over.
+   */
+  const [pdfStep, setPdfStep] = useState<'checking' | 'generating' | null>(null);
+  const isGeneratingPDF = pdfStep !== null;
   const [showPaywall, setShowPaywall] = useState(false);
   const [checkoutLoadingProvider, setCheckoutLoadingProvider] = useState<'stripe' | 'paystack' | null>(null);
   const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
-  const [paymentServiceUnavailable, setPaymentServiceUnavailable] = useState(false);
   const [paidPdfAccessCache, setPaidPdfAccessCache] = useState<{
     hasAccess: boolean;
     checkedAt: number;
@@ -370,16 +392,26 @@ const FunctionalDataUpload: React.FC = () => {
     );
   };
 
-  const hasPaidPDFAccess = async (): Promise<boolean> => {
+  /**
+   * Whether this user may download the report, and why not when they may not.
+   *
+   * The reason is RETURNED rather than only put in state. The caller used to
+   * read `paymentServiceUnavailable` straight after awaiting this, which is
+   * the value from the render the click started in - set() during the await
+   * does not change it. So the first click after the backend went down always
+   * showed the paywall instead of saying the payment service was unreachable,
+   * and a paying customer was asked to pay again.
+   */
+  const hasPaidPDFAccess = async (): Promise<PdfAccess> => {
     if (paidPdfAccessCache?.hasAccess) {
       const cacheAge = Date.now() - paidPdfAccessCache.checkedAt;
       if (cacheAge <= PDF_ACCESS_CACHE_TTL_MS) {
-        return true;
+        return { hasAccess: true, serviceUnavailable: false };
       }
     }
 
     const token = await getAccessToken();
-    if (!token) return false;
+    if (!token) return { hasAccess: false, serviceUnavailable: false };
     let backendUnreachable = false;
 
     const fetchAccessFromBackend = async (timeoutMs: number): Promise<boolean | null> => {
@@ -397,7 +429,6 @@ const FunctionalDataUpload: React.FC = () => {
 
         const payload = await response.json().catch(() => null);
         if (response.ok && typeof payload?.data?.has_access === 'boolean') {
-          setPaymentServiceUnavailable(false);
           return payload.data.has_access;
         }
 
@@ -424,16 +455,17 @@ const FunctionalDataUpload: React.FC = () => {
       }
 
       if (backendAccess !== null) {
-        setPaymentServiceUnavailable(false);
         setPaidPdfAccessCache({ hasAccess: backendAccess, checkedAt: Date.now() });
-        return backendAccess;
+        return { hasAccess: backendAccess, serviceUnavailable: false };
       }
     } catch (apiRetryError) {
       console.error('PDF access check retry failed:', apiRetryError);
     }
 
     // Fallback to direct Supabase lookup if backend access check is unavailable.
-    if (!user?.email || !isSupabaseConfigured || !supabase) return false;
+    if (!user?.email || !isSupabaseConfigured || !supabase) {
+      return { hasAccess: false, serviceUnavailable: backendUnreachable };
+    }
 
     try {
       const { data, error } = await supabase
@@ -443,31 +475,24 @@ const FunctionalDataUpload: React.FC = () => {
         .limit(5);
 
       if (error || !data || data.length === 0) {
-        if (backendUnreachable) {
-          setPaymentServiceUnavailable(true);
-        }
         if (paidPdfAccessCache?.hasAccess) {
-          return true;
+          return { hasAccess: true, serviceUnavailable: false };
         }
-        return false;
+        return { hasAccess: false, serviceUnavailable: backendUnreachable };
       }
 
       const hasAccess = data.some((row: any) => {
         const status = String(row.subscription_status || '').toLowerCase().trim();
         return PAID_SUBSCRIPTION_STATUSES.has(status);
       });
-      setPaymentServiceUnavailable(false);
       setPaidPdfAccessCache({ hasAccess, checkedAt: Date.now() });
-      return hasAccess;
+      return { hasAccess, serviceUnavailable: false };
     } catch (fallbackError) {
       console.error('Subscription status fallback lookup failed:', fallbackError);
-      if (backendUnreachable) {
-        setPaymentServiceUnavailable(true);
-      }
       if (paidPdfAccessCache?.hasAccess) {
-        return true;
+        return { hasAccess: true, serviceUnavailable: false };
       }
-      return false;
+      return { hasAccess: false, serviceUnavailable: backendUnreachable };
     }
   };
 
@@ -526,7 +551,6 @@ const FunctionalDataUpload: React.FC = () => {
     } catch (error: any) {
       console.error('Checkout initialization error:', error);
       if (isPaymentConnectionError(error)) {
-        setPaymentServiceUnavailable(true);
         showPaymentServiceUnavailableToast();
       } else {
         toast.error(error?.message || 'Could not start payment checkout.');
@@ -2632,9 +2656,17 @@ const FunctionalDataUpload: React.FC = () => {
                     return;
                   }
 
-                  const hasAccess = await hasPaidPDFAccess();
-                  if (!hasAccess) {
-                    if (paymentServiceUnavailable) {
+                  // Say so before the waiting starts, not after it.
+                  setPdfStep('checking');
+                  let access: PdfAccess;
+                  try {
+                    access = await hasPaidPDFAccess();
+                  } finally {
+                    setPdfStep(null);
+                  }
+
+                  if (!access.hasAccess) {
+                    if (access.serviceUnavailable) {
                       showPaymentServiceUnavailableToast();
                       return;
                     }
@@ -2654,7 +2686,7 @@ const FunctionalDataUpload: React.FC = () => {
                     return;
                   }
                   
-                  setIsGeneratingPDF(true);
+                  setPdfStep('generating');
                   try {
                     const kpis = activeDs ? [
                       { title: 'Total Records', value: activeDs.rowCount.toLocaleString() },
@@ -2749,17 +2781,17 @@ const FunctionalDataUpload: React.FC = () => {
                     const detail = error instanceof Error ? error.message : String(error);
                     toast.error(`Could not generate the PDF: ${detail}`);
                   } finally {
-                    setIsGeneratingPDF(false);
+                    setPdfStep(null);
                   }
                 }}
                 variant="outline"
                 className="ml-4"
                 disabled={isGeneratingPDF}
               >
-                {isGeneratingPDF ? (
+                {pdfStep ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Generating PDF...
+                    {pdfStep === 'checking' ? 'Checking access...' : 'Generating PDF...'}
                   </>
                 ) : (
                   <>
