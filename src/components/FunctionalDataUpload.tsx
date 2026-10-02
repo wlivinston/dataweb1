@@ -39,6 +39,7 @@ import { Download } from 'lucide-react';
 import PDFPaywallDialog from './PDFPaywallDialog';
 import RequestReportCTA from './RequestReportCTA';
 import { useAuth } from '@/hooks/useAuth';
+import { useStoredDatasets } from '@/hooks/useStoredDatasets';
 import { getApiUrl } from '@/lib/publicConfig';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 // New AI-powered components
@@ -136,6 +137,102 @@ const FunctionalDataUpload: React.FC = () => {
     checkedAt: number;
   } | null>(null);
   const { user, session } = useAuth();
+
+  /**
+   * Uploads that survive a refresh.
+   *
+   * Storing is best-effort and never fails an upload: the dataset is already
+   * parsed and usable by the time this runs, and losing the analysis because
+   * the network hiccuped would be a worse trade than losing the persistence.
+   * What the user is never allowed to be is UNSURE - every outcome says
+   * plainly whether the data will still be here tomorrow.
+   */
+  const storedDatasets = useStoredDatasets(session?.access_token ?? null);
+  const announcedRestore = useRef(false);
+  const announcedSignedOut = useRef(false);
+
+  useEffect(() => {
+    if (storedDatasets.status === 'restoring' || announcedRestore.current) return;
+
+    if (storedDatasets.status === 'failed') {
+      announcedRestore.current = true;
+      toast.error(`Stored datasets could not be loaded: ${storedDatasets.error}`);
+      return;
+    }
+    if (storedDatasets.status !== 'done') return;
+    announcedRestore.current = true;
+
+    if (storedDatasets.restored.length === 0 && storedDatasets.skipped.length === 0) return;
+
+    // Restored datasets go UNDERNEATH anything uploaded in this session, so a
+    // file the user just dropped stays the active one.
+    setDatasets(prev => {
+      const known = new Set(prev.map(entry => entry.id));
+      const added = storedDatasets.restored.filter(entry => !known.has(entry.id));
+      if (added.length === 0) return prev;
+      return [...prev, ...added];
+    });
+    setActiveDataset(current => current ?? storedDatasets.restored[0]?.id ?? null);
+
+    const parts: string[] = [];
+    if (storedDatasets.restored.length > 0) {
+      parts.push(
+        `Restored ${storedDatasets.restored.length} saved dataset` +
+          `${storedDatasets.restored.length === 1 ? '' : 's'}`
+      );
+    }
+    if (storedDatasets.skipped.length > 0) {
+      parts.push(
+        `${storedDatasets.skipped.length} more ${storedDatasets.skipped.length === 1 ? 'is' : 'are'} ` +
+          'saved but too large to load automatically'
+      );
+    }
+    toast.success(`${parts.join('. ')}.`);
+  }, [storedDatasets.status, storedDatasets.restored, storedDatasets.skipped, storedDatasets.error]);
+
+  /**
+   * Store what was just uploaded, and say what happened either way.
+   *
+   * Signed out, this says so ONCE per page load. Repeating it on every upload
+   * would be nagging, and a message that appears every time is a message
+   * nobody reads.
+   */
+  const rememberDatasets = useCallback(
+    async (uploaded: Dataset[]) => {
+      if (uploaded.length === 0) return;
+
+      if (!session?.access_token) {
+        if (!announcedSignedOut.current) {
+          announcedSignedOut.current = true;
+          toast('Sign in to keep this data - it is only in this browser tab for now.', {
+            icon: 'ℹ️',
+          });
+        }
+        return;
+      }
+
+      const failures: string[] = [];
+      for (const dataset of uploaded) {
+        const outcome = await storedDatasets.save(dataset);
+        if (!outcome.stored) failures.push(`${dataset.name} (${outcome.reason})`);
+      }
+
+      if (failures.length === 0) {
+        toast.success(
+          uploaded.length === 1
+            ? 'Saved. It will still be here next time.'
+            : `Saved ${uploaded.length} datasets. They will still be here next time.`
+        );
+        return;
+      }
+      toast.error(
+        `Could not save ${failures.join(', ')}. The data still works now, but it will not ` +
+          'be here after a refresh.'
+      );
+    },
+    [session?.access_token, storedDatasets]
+  );
+
   // Loading states for file processing
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -844,6 +941,9 @@ const FunctionalDataUpload: React.FC = () => {
           
           setDatasets(prev => [...prev, ...newDatasets]);
           setActiveDataset(newDatasets[0].id);
+          // Deliberately not awaited: the sheets are parsed and usable now,
+          // and storing them is about tomorrow, not about this upload.
+          void rememberDatasets(newDatasets);
           
           // Stage 4: Complete
           setUploadStage('complete');
@@ -967,6 +1067,7 @@ const FunctionalDataUpload: React.FC = () => {
       
       setDatasets(prev => [...prev, newDataset]);
       setActiveDataset(newDataset.id);
+      void rememberDatasets([newDataset]);
       
       // Stage 4: Complete
       setUploadStage('complete');
