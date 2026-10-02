@@ -164,12 +164,17 @@ export const useStoredDatasets = (token: string | null) => {
    * will still be there next time.
    */
   const save = useCallback(
-    async (dataset: Dataset): Promise<{ stored: boolean; reason?: string }> => {
+    async (
+      dataset: Dataset
+    ): Promise<{ stored: boolean; storedId?: string; reason?: string }> => {
       if (!token) return { stored: false, reason: 'not signed in' };
       setState(current => ({ ...current, saving: dataset.name }));
       try {
-        await saveDataset(dataset, token);
-        return { stored: true };
+        // The id the SERVER chose, returned so the caller can later delete
+        // this dataset from the server as well as from the screen. Without it
+        // a removed dataset would come back at the next refresh.
+        const stored = await saveDataset(dataset, token);
+        return { stored: true, storedId: stored.id };
       } catch (error) {
         return {
           stored: false,

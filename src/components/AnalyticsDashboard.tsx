@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
   Upload, FileText, BarChart3, TrendingUp, Database, GripVertical,
-  FileSpreadsheet, FileCode, X, Activity, AlertCircle, Star, Snowflake
+  FileSpreadsheet, FileCode, X, Activity, AlertCircle, Star, Snowflake, Trash2
 } from 'lucide-react';
 import { Dataset, Visualization, SchemaDetectionResult } from '@/lib/types';
 import { renderVisualization } from '@/lib/visualizationRenderer';
@@ -28,6 +28,10 @@ interface AnalyticsDashboardProps {
   onAnalyze?: () => void;
   isProcessing?: boolean;
   schemaInfo?: SchemaDetectionResult | null;
+  /** Ask to remove a dataset. Omitted, no remove control is drawn. */
+  onDatasetRemove?: (dataset: Dataset) => void;
+  /** Ids of datasets that are stored on the server, so the card can say so. */
+  storedDatasetIds?: Set<string>;
 }
 
 const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
@@ -38,7 +42,9 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   activeDatasetId,
   onAnalyze,
   isProcessing = false,
-  schemaInfo
+  schemaInfo,
+  onDatasetRemove,
+  storedDatasetIds
 }) => {
   const activeDataset = datasets.find(d => d.id === activeDatasetId);
 
@@ -262,9 +268,37 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
                               </p>
                             </div>
                           </div>
-                          {activeDatasetId === dataset.id && (
-                            <Badge variant="default" className="ml-2">Active</Badge>
-                          )}
+                          <div className="flex items-center gap-1 ml-2 shrink-0">
+                            {storedDatasetIds?.has(dataset.id) && (
+                              <Badge
+                                variant="secondary"
+                                title="Saved - this will still be here after a refresh"
+                              >
+                                Saved
+                              </Badge>
+                            )}
+                            {activeDatasetId === dataset.id && (
+                              <Badge variant="default">Active</Badge>
+                            )}
+                            {onDatasetRemove && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                aria-label={`Remove ${dataset.name}`}
+                                title={`Remove ${dataset.name}`}
+                                onClick={event => {
+                                  // The card itself selects on click. Without
+                                  // this, removing a dataset would first make
+                                  // it the active one.
+                                  event.stopPropagation();
+                                  onDatasetRemove(dataset);
+                                }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5 text-gray-400 hover:text-red-500" />
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       </Card>
                     ))}

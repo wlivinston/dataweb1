@@ -10,12 +10,16 @@ import {
   Upload, FileText, BarChart3, TrendingUp, Users, DollarSign, 
   CheckCircle, Plus, Link, Palette, Zap, Database, 
   PieChart as PieChartIcon, LineChart as LineChartIcon, ChartScatter, AreaChart as AreaChartIcon, Table, Gauge,
-  AlertCircle, Loader2, FileSpreadsheet, FileCode, Edit, Columns, Eye
+  AlertCircle, Loader2, FileSpreadsheet, FileCode, Edit, Columns, Eye, Trash2
 } from 'lucide-react';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, AreaChart, Area } from 'recharts';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 // Import shared types and utilities
 // Visualization and DAXCalculation were re-declared locally with a narrower
 // chart-type union than the canonical ones, so every chart type added since
@@ -40,6 +44,7 @@ import PDFPaywallDialog from './PDFPaywallDialog';
 import RequestReportCTA from './RequestReportCTA';
 import { useAuth } from '@/hooks/useAuth';
 import { useStoredDatasets } from '@/hooks/useStoredDatasets';
+import { deleteStoredDataset } from '@/lib/datasetStore';
 import { getApiUrl } from '@/lib/publicConfig';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 // New AI-powered components
@@ -55,7 +60,8 @@ import { SchemaDetectionResult, TimeSeriesResult, DateTableInfo } from '@/lib/ty
 import { autoDetectTimeSeries, detectDateColumns } from '@/lib/timeSeriesEngine';
 import { autoAdvancedAnalysis } from '@/lib/advancedStatistics';
 import { assertExcelBufferIsSafe, assertWorkbookHasNoMacros } from '@/lib/excelSecurity';
-import { sheetToObjects, EXCEL_READ_OPTIONS } from '@/lib/excelRows';
+import { readSheet, sheetToObjects, planHeaders, describeHeaderChanges, EXCEL_READ_OPTIONS } from '@/lib/excelRows';
+import type { HeaderChange } from '@/lib/excelRows';
 import {
   isDatasetTooLarge,
   getPerformanceWarning,
@@ -148,6 +154,18 @@ const FunctionalDataUpload: React.FC = () => {
    * plainly whether the data will still be here tomorrow.
    */
   const storedDatasets = useStoredDatasets(session?.access_token ?? null);
+  /**
+   * Local dataset id -> the id the server stored it under.
+   *
+   * An upload keeps the id this component generated, while the server assigns
+   * its own, so without this map a delete could remove the dataset from the
+   * screen and leave it on the server - where it would reappear at the next
+   * refresh, which is a baffling thing to watch happen. A restored dataset
+   * already carries the server's id, so it maps to itself.
+   */
+  const storedIds = useRef<Map<string, string>>(new Map());
+  const [pendingDelete, setPendingDelete] = useState<Dataset | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const announcedRestore = useRef(false);
   const announcedSignedOut = useRef(false);
 
@@ -173,6 +191,8 @@ const FunctionalDataUpload: React.FC = () => {
       return [...prev, ...added];
     });
     setActiveDataset(current => current ?? storedDatasets.restored[0]?.id ?? null);
+    // A restored dataset already carries the server's id.
+    for (const entry of storedDatasets.restored) storedIds.current.set(entry.id, entry.id);
 
     const parts: string[] = [];
     if (storedDatasets.restored.length > 0) {
@@ -214,6 +234,9 @@ const FunctionalDataUpload: React.FC = () => {
       const failures: string[] = [];
       for (const dataset of uploaded) {
         const outcome = await storedDatasets.save(dataset);
+        if (outcome.stored && outcome.storedId) {
+          storedIds.current.set(dataset.id, outcome.storedId);
+        }
         if (!outcome.stored) failures.push(`${dataset.name} (${outcome.reason})`);
       }
 
@@ -232,6 +255,58 @@ const FunctionalDataUpload: React.FC = () => {
     },
     [session?.access_token, storedDatasets]
   );
+
+  /**
+   * Remove a dataset from the session, and from the server if it is stored.
+   *
+   * Both, deliberately. Removing it from the screen alone would leave the
+   * stored copy to reappear at the next refresh, and watching a dataset you
+   * deleted come back is worse than not being able to delete it at all.
+   *
+   * The server delete is attempted FIRST. If it fails the dataset stays on
+   * screen and the user is told, because the alternative - removing it
+   * locally and reporting success - would be a lie that only shows itself
+   * tomorrow.
+   */
+  const removeDataset = useCallback(async (dataset: Dataset) => {
+    const storedId = storedIds.current.get(dataset.id);
+    const token = session?.access_token;
+
+    setIsDeleting(true);
+    try {
+      if (storedId && token) {
+        await deleteStoredDataset(storedId, token);
+      }
+    } catch (error) {
+      setIsDeleting(false);
+      setPendingDelete(null);
+      toast.error(
+        `Could not delete "${dataset.name}" from the server: ` +
+          `${error instanceof Error ? error.message : 'unknown error'}. ` +
+          'It has been left in place rather than removed here and not there.'
+      );
+      return;
+    }
+
+    storedIds.current.delete(dataset.id);
+    setDatasets(prev => prev.filter(entry => entry.id !== dataset.id));
+    // Anything computed FROM this dataset goes with it. A chart left pointing
+    // at a dataset that no longer exists renders stale numbers with a live
+    // look, which is the failure this whole engine was rebuilt to remove.
+    setVisualizations(prev => prev.filter(viz => viz.datasetId !== dataset.id));
+    setRelationships(prev =>
+      prev.filter(rel => rel.fromDataset !== dataset.id && rel.toDataset !== dataset.id)
+    );
+    setActiveDataset(current => (current === dataset.id ? null : current));
+
+    setIsDeleting(false);
+    setPendingDelete(null);
+    toast.success(
+      storedId
+        ? `Removed "${dataset.name}", here and from your saved datasets.`
+        : `Removed "${dataset.name}".`
+    );
+  }, [session?.access_token]);
 
   // Loading states for file processing
   const [isUploading, setIsUploading] = useState(false);
@@ -531,6 +606,12 @@ const FunctionalDataUpload: React.FC = () => {
   };
 
   // CSV Parser Function
+  // parseCSV returns rows only and is called from more than one place, so the
+  // header changes are left here for whichever caller wants to report them. A
+  // ref rather than state: it is read immediately after the parse, and state
+  // would re-render the upload panel mid-parse for no benefit.
+  const csvHeaderChanges = useRef<HeaderChange[]>([]);
+
   const parseCSV = (csvText: string): any[] => {
     if (!csvText || csvText.trim().length === 0) {
       throw new Error('CSV file is empty');
@@ -595,11 +676,19 @@ const FunctionalDataUpload: React.FC = () => {
       throw new Error('CSV file has no column headers');
     }
 
-    // Check for duplicate headers
-    const uniqueHeaders = new Set(headers);
-    if (uniqueHeaders.size !== headers.length) {
-      console.warn('CSV has duplicate column headers. Some columns may be overwritten.');
-    }
+    // Blank and repeated headings, handled rather than warned about.
+    //
+    // This used to write "Some columns may be overwritten" to the console and
+    // then overwrite them. Keying a row object by header means a second
+    // `Amount` REPLACES the first, so a file with two columns of that name
+    // silently lost one - and every figure computed from the lost column
+    // became the surviving column's figure instead. A console warning is not
+    // a defence; nobody has the console open.
+    //
+    // planHeaders is shared with the Excel path so both importers name
+    // columns the same way. See src/lib/excelRows.ts.
+    const plan = planHeaders(headers);
+    csvHeaderChanges.current = plan.changes;
 
     // Process data rows
     const data: any[] = [];
@@ -609,7 +698,7 @@ const FunctionalDataUpload: React.FC = () => {
       // Only add rows that have at least one non-empty value
       if (values.some((v: any) => v.length > 0)) {
         const row: any = {};
-        headers.forEach((header: string, index: number) => {
+        plan.names.forEach((header: string, index: number) => {
           // Handle rows with fewer columns than headers
           row[header] = values[index] !== undefined ? values[index] : '';
         });
@@ -641,13 +730,15 @@ const FunctionalDataUpload: React.FC = () => {
   };
 
   // Excel Parser Function - Returns all sheets as separate datasets
-  const parseExcelAllSheets = async (file: File): Promise<Array<{ sheetName: string; data: any[] }>> => {
+  const parseExcelAllSheets = async (
+    file: File
+  ): Promise<Array<{ sheetName: string; data: any[]; headerChanges: HeaderChange[] }>> => {
     const buffer = await file.arrayBuffer();
     assertExcelBufferIsSafe(file.name, buffer);
     const workbook = XLSX.read(buffer, EXCEL_READ_OPTIONS);
     assertWorkbookHasNoMacros(file.name, workbook);
 
-    const allSheets: Array<{ sheetName: string; data: any[] }> = [];
+    const allSheets: Array<{ sheetName: string; data: any[]; headerChanges: HeaderChange[] }> = [];
 
     // Process each sheet
     workbook.SheetNames.forEach(sheetName => {
@@ -657,12 +748,18 @@ const FunctionalDataUpload: React.FC = () => {
       // inline version here had the same zero-swallowing bug, so fixing one
       // copy would have left the multi-sheet path - the path this component
       // actually uses - still wrong. See src/lib/excelRows.ts.
-      const result = sheetToObjects(worksheet);
+      //
+      // readSheet rather than sheetToObjects so header changes travel back: a
+      // blank or repeated column heading is renamed rather than dropped, and
+      // the person who uploaded the file has to be told which name to look
+      // for.
+      const { rows, changes } = readSheet(worksheet);
 
-      if (result.length > 0) {
+      if (rows.length > 0) {
         allSheets.push({
           sheetName: sheetName,
-          data: result
+          data: rows,
+          headerChanges: changes
         });
       }
     });
@@ -961,6 +1058,17 @@ const FunctionalDataUpload: React.FC = () => {
             `Total rows: ${newDatasets.reduce((sum, d) => sum + d.rowCount, 0).toLocaleString()}`
           );
 
+          // A renamed column has to be reported, or somebody goes looking for
+          // a heading that is no longer there. Separate from the success
+          // message so it is not lost in the middle of a sentence about row
+          // counts.
+          for (const sheet of allSheets) {
+            const note = describeHeaderChanges(sheet.headerChanges);
+            if (note) {
+              toast(`"${sheet.sheetName}": ${note}.`, { icon: '🏷️', duration: 8000 });
+            }
+          }
+
           // Return early since we've already processed everything
           return;
 
@@ -1080,6 +1188,11 @@ const FunctionalDataUpload: React.FC = () => {
       setIsUploading(false);
       console.log('[Upload] Complete:', file.name, data.length, 'rows');
       toast.success(`Successfully uploaded ${file.name} (${fileFormat.toUpperCase()}) with ${data.length.toLocaleString()} rows`);
+
+      const headerNote = describeHeaderChanges(csvHeaderChanges.current);
+      if (headerNote) {
+        toast(`${file.name}: ${headerNote}.`, { icon: '🏷️', duration: 8000 });
+      }
     } catch (error) {
       clearTimeout(safetyTimeout);
       setIsUploading(false);
@@ -2413,6 +2526,8 @@ const FunctionalDataUpload: React.FC = () => {
 
         {/* Analytics Dashboard Layout - Matching Wireframe */}
         <AnalyticsDashboard
+          onDatasetRemove={setPendingDelete}
+          storedDatasetIds={new Set(storedIds.current.keys())}
           datasets={datasets}
           visualizations={visualizations}
           onFileUpload={handleFileUpload}
@@ -2422,6 +2537,59 @@ const FunctionalDataUpload: React.FC = () => {
           isProcessing={isProcessing}
           schemaInfo={autoDetectedSchema}
         />
+
+        {/*
+          * Mounted here, beside the dataset list, rather than inside the
+          * upload panel. It lived in that panel first, which does not render
+          * on this view - so the remove button set the state and nothing
+          * appeared. A confirmation dialog has to be mounted wherever the
+          * thing it confirms can be clicked.
+          */}
+        {/*
+          * Confirmed, because deleting a stored dataset cannot be
+          * undone and the user's own data is the thing being removed.
+          * The wording says which of the two cases this is - removing
+          * a session-only dataset costs them a re-upload, removing a
+          * saved one costs them the copy on the server.
+          */}
+        <AlertDialog
+          open={pendingDelete !== null}
+          onOpenChange={open => { if (!open && !isDeleting) setPendingDelete(null); }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Remove "{pendingDelete?.name}"?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {pendingDelete && storedIds.current.has(pendingDelete.id)
+                  ? 'This deletes the saved copy as well, so it will not come back ' +
+                    'after a refresh. It cannot be undone — you would need to upload ' +
+                    'the file again.'
+                  : 'This dataset is only in this browser tab, so removing it just ' +
+                    'means uploading the file again if you want it back.'}
+                {pendingDelete &&
+                  visualizations.some(viz => viz.datasetId === pendingDelete.id) &&
+                  ' Its charts go with it.'}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isDeleting}>Keep it</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={isDeleting}
+                onClick={event => {
+                  // The dialog would close itself on click; the delete
+                  // is async and can fail, and a dialog that has
+                  // already vanished cannot report that.
+                  event.preventDefault();
+                  if (pendingDelete) void removeDataset(pendingDelete);
+                }}
+              >
+                {isDeleting ? 'Removing…' : 'Remove'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {/* Keep tabs for advanced features */}
         <Tabs defaultValue="ai-insights" className="space-y-6 mt-6">
@@ -3107,9 +3275,25 @@ const FunctionalDataUpload: React.FC = () => {
                                 </p>
                               </div>
                             </div>
-                            <Badge variant="outline">
-                              {dataset.columns.filter(col => col.type === 'number').length} numeric
-                            </Badge>
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline">
+                                {dataset.columns.filter(col => col.type === 'number').length} numeric
+                              </Badge>
+                              {storedIds.current.has(dataset.id) && (
+                                <Badge variant="secondary" title="Saved — this will still be here after a refresh">
+                                  Saved
+                                </Badge>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                aria-label={`Remove ${dataset.name}`}
+                                title={`Remove ${dataset.name}`}
+                                onClick={() => setPendingDelete(dataset)}
+                              >
+                                <Trash2 className="h-4 w-4 text-gray-400 hover:text-red-500" />
+                              </Button>
+                            </div>
                           </div>
                         </Card>
                       );
@@ -3117,9 +3301,46 @@ const FunctionalDataUpload: React.FC = () => {
                   </div>
                 )}
 
+                {/*
+                  * Saved datasets the restore budget did not load.
+                  *
+                  * They exist on the server and are not on screen, which is
+                  * the one state a user cannot work out for themselves - the
+                  * app would simply look as though the data were gone. Named
+                  * and sized so the omission is a fact rather than a mystery.
+                  */}
+                {storedDatasets.skipped.length > 0 && (
+                  <div className="space-y-2">
+                    <h3 className="text-sm font-medium text-gray-600">
+                      Saved, not loaded
+                    </h3>
+                    <p className="text-xs text-gray-500">
+                      These are stored and safe. They were not loaded automatically because
+                      of their size — upload the file again to work with one now.
+                    </p>
+                    {storedDatasets.skipped.map(entry => (
+                      <Card key={entry.id} className="p-3 bg-gray-50">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <Database className="h-4 w-4 text-gray-400" />
+                            <div>
+                              <h4 className="text-sm font-medium text-gray-700">{entry.name}</h4>
+                              <p className="text-xs text-gray-500">
+                                {entry.rowCount.toLocaleString()} rows • {entry.columns.length} columns
+                              </p>
+                            </div>
+                          </div>
+                          <Badge variant="outline" className="text-xs">Saved</Badge>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+
+
                 {datasets.length > 0 && (
-                  <Button 
-                    onClick={processData} 
+                  <Button
+                    onClick={processData}
                     disabled={isProcessing}
                     className="w-full"
                     size="lg"
