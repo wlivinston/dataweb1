@@ -2525,7 +2525,10 @@ const FunctionalDataUpload: React.FC = () => {
                         rowCount: ds.rowCount,
                         columns: ds.columns.map(c => c.name),
                         sampleData: ds.data.slice(0, Math.min(50, ds.rowCount)).map(row => 
-                          ds.columns.map(col => String(row[col.name] || ''))
+                          // `?? ''`, not `|| ''`: a genuine 0 is falsy, and the
+                          // report is the version of this that gets forwarded
+                          // to somebody who cannot check it against the data.
+                          ds.columns.map(col => String(row[col.name] ?? ''))
                         )
                       })),
                       kpis,
@@ -2569,8 +2572,14 @@ const FunctionalDataUpload: React.FC = () => {
                     
                     toast.success('PDF report generated successfully with visualizations and insights!');
                   } catch (error) {
+                    // Say what actually failed. This used to report "the
+                    // dataset may be too large" for EVERY failure, which sends
+                    // someone off filtering their data over a font that would
+                    // not load - and the size case is already caught above, by
+                    // shouldCancelOperation, before any of this runs.
                     console.error('PDF generation error:', error);
-                    toast.error('Failed to generate PDF. The dataset may be too large. Try filtering or sampling the data first.');
+                    const detail = error instanceof Error ? error.message : String(error);
+                    toast.error(`Could not generate the PDF: ${detail}`);
                   } finally {
                     setIsGeneratingPDF(false);
                   }
@@ -3017,7 +3026,7 @@ const FunctionalDataUpload: React.FC = () => {
                           <tr key={i} className="hover:bg-gray-50">
                             {compositeColumns.slice(0, 8).map((col, j) => (
                               <td key={j} className="border px-3 py-2">
-                                {String(row[col.name] || '')}
+                                {String(row[col.name] ?? '')}
                               </td>
                             ))}
                             {compositeColumns.length > 8 && <td className="border px-3 py-2">...</td>}
