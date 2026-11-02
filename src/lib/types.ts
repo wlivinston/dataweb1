@@ -231,6 +231,11 @@ export interface TimeSeriesResult {
   growthRates: GrowthRate[];
   seasonalityStrength: number;
   decompositionDates: string[];
+  /**
+   * How rows sharing a period were combined. Adding up ages or scores per
+   * day gives a number that only measures how many rows fell on that day.
+   */
+  aggregation?: 'sum' | 'average';
 }
 
 export interface DateTableInfo {
