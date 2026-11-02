@@ -338,6 +338,8 @@ export interface ConfidenceIntervalResult {
   confidenceLevel: number;
   sampleSize: number;
   standardError: number;
+  /** The column this interval describes. The table showed "Column 1" without it. */
+  column?: string;
 }
 
 // Enhanced DAX types

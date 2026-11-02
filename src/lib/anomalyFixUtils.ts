@@ -2,6 +2,7 @@
 import { Dataset } from './types';
 import { AnomalyResult } from './aiInsightEngine';
 import { minOf, maxOf } from './dataUtils';
+import { cellNumber } from '@/lib/dax/value';
 
 export type AnomalyFixAction = 'removeRow' | 'capToBounds' | 'replaceWithMean' | 'replaceWithMedian';
 
@@ -15,13 +16,13 @@ export interface AnomalyFixResult {
 // --- Helpers ---
 
 const computeColumnMean = (data: Record<string, any>[], columnName: string): number => {
-  const values = data.map(r => Number(r[columnName])).filter(v => !isNaN(v));
+  const values = data.map(r => cellNumber(r[columnName])).filter(v => !isNaN(v));
   if (values.length === 0) return 0;
   return values.reduce((a, b) => a + b, 0) / values.length;
 };
 
 const computeColumnMedian = (data: Record<string, any>[], columnName: string): number => {
-  const values = data.map(r => Number(r[columnName])).filter(v => !isNaN(v)).sort((a, b) => a - b);
+  const values = data.map(r => cellNumber(r[columnName])).filter(v => !isNaN(v)).sort((a, b) => a - b);
   if (values.length === 0) return 0;
   const mid = Math.floor(values.length / 2);
   return values.length % 2 === 0
@@ -32,7 +33,7 @@ const computeColumnMedian = (data: Record<string, any>[], columnName: string): n
 const updateColumnStats = (dataset: Dataset, affectedColumns: string[]): Dataset => {
   const updatedColumns = dataset.columns.map(col => {
     if (!affectedColumns.includes(col.name) || col.type !== 'number') return col;
-    const values = dataset.data.map(r => Number(r[col.name])).filter(v => !isNaN(v));
+    const values = dataset.data.map(r => cellNumber(r[col.name])).filter(v => !isNaN(v));
     if (values.length === 0) return col;
     return {
       ...col,
@@ -160,7 +161,7 @@ export const fixAnomaliesInColumn = (
         if (!rowIndices.has(idx)) return row;
         const anomaly = anomalies.find(a => a.rowIndex === idx);
         if (!anomaly) return row;
-        const val = Number(row[column]);
+        const val = cellNumber(row[column]);
         if (isNaN(val)) return row;
         const capped = val < anomaly.expectedRange.min
           ? anomaly.expectedRange.min

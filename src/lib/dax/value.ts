@@ -270,3 +270,14 @@ export const cellAsNumber = (value: unknown): number | null => {
   const parsed = Number(scalar.trim());
   return Number.isFinite(parsed) ? parsed : null;
 };
+
+/**
+ * A cell as a number for code that filters with `isNaN`: NaN when the cell is
+ * blank or not a number.
+ *
+ * Not `Number(cell)`. `Number('')` and `Number(null)` are 0, not NaN, so the
+ * familiar `Number(cell)` then `.filter(v => !isNaN(v))` keeps every blank as
+ * a real zero - 10 empty followup scores read as zeros moved a correlation
+ * from 0.77 to 0.47 and an average from 65.25 to 62.62 in the analysis panels.
+ */
+export const cellNumber = (value: unknown): number => cellAsNumber(value) ?? NaN;

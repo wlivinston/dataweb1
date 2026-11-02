@@ -12,6 +12,7 @@ import {
   AggregatedTimeSeries
 } from './types';
 import { minOf, maxOf } from './dataUtils';
+import { cellNumber } from '@/lib/dax/value';
 
 // ============================================================
 // Date Detection & Classification
@@ -445,7 +446,7 @@ export const aggregateByDatePeriod = (
 
   for (const row of data) {
     const date = tryParseDate(row[dateColumn]);
-    const value = Number(row[valueColumn]);
+    const value = cellNumber(row[valueColumn]);
     if (!date || isNaN(value)) continue;
 
     let key: string;
@@ -615,7 +616,7 @@ export const runTimeSeriesAnalysis = (
 
   for (const row of dataset.data) {
     const date = tryParseDate(row[dateColumnName]);
-    const value = Number(row[valueColumnName]);
+    const value = cellNumber(row[valueColumnName]);
     if (date && !isNaN(value)) {
       pairs.push({ date, value });
     }

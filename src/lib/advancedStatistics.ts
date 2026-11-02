@@ -13,6 +13,7 @@ import {
   ConfidenceIntervalResult,
   SpearmanCorrelationResult
 } from './types';
+import { cellNumber } from '@/lib/dax/value';
 
 // ============================================================
 // Statistical Distribution Approximations
@@ -676,7 +677,7 @@ export const kMeansClustering = (
     const point: number[] = [];
     let valid = true;
     for (const col of columnNames) {
-      const val = Number(row[col]);
+      const val = cellNumber(row[col]);
       if (isNaN(val)) { valid = false; break; }
       point.push(val);
     }
@@ -932,13 +933,13 @@ export const multipleRegression = (
   const y: number[] = [];
 
   for (const row of dataset.data) {
-    const targetVal = Number(row[targetColumn]);
+    const targetVal = cellNumber(row[targetColumn]);
     if (isNaN(targetVal)) continue;
 
     const predictors: number[] = [1]; // intercept
     let valid = true;
     for (const col of predictorColumns) {
-      const val = Number(row[col]);
+      const val = cellNumber(row[col]);
       if (isNaN(val)) { valid = false; break; }
       predictors.push(val);
     }
@@ -1137,7 +1138,7 @@ export const paretoAnalysis = (
   const aggregated: Record<string, number> = {};
   for (const row of dataset.data) {
     const category = String(row[categoryColumn] || 'Unknown');
-    const value = Math.abs(Number(row[valueColumn]) || 0);
+    const value = Math.abs(cellNumber(row[valueColumn]) || 0);
     aggregated[category] = (aggregated[category] || 0) + value;
   }
 
@@ -1267,8 +1268,8 @@ export const detectNonLinearCorrelations = (dataset: Dataset): SpearmanCorrelati
 
       const pairs: { v1: number; v2: number }[] = [];
       for (const row of dataset.data) {
-        const v1 = Number(row[col1.name]);
-        const v2 = Number(row[col2.name]);
+        const v1 = cellNumber(row[col1.name]);
+        const v2 = cellNumber(row[col2.name]);
         if (!isNaN(v1) && !isNaN(v2)) {
           pairs.push({ v1, v2 });
         }
@@ -1394,7 +1395,7 @@ export const autoAdvancedAnalysis = (dataset: Dataset): {
   // Percentiles for numeric columns
   const percentiles: PercentileResult[] = [];
   for (const col of numericColumns.slice(0, 5)) {
-    const values = dataset.data.map(r => Number(r[col.name])).filter(v => !isNaN(v));
+    const values = dataset.data.map(r => cellNumber(r[col.name])).filter(v => !isNaN(v));
     if (values.length >= 5) {
       percentiles.push(percentileAnalysis(values, col.name));
     }
@@ -1403,10 +1404,10 @@ export const autoAdvancedAnalysis = (dataset: Dataset): {
   // Confidence intervals
   const confidenceIntervals: ConfidenceIntervalResult[] = [];
   for (const col of numericColumns.slice(0, 5)) {
-    const values = dataset.data.map(r => Number(r[col.name])).filter(v => !isNaN(v));
+    const values = dataset.data.map(r => cellNumber(r[col.name])).filter(v => !isNaN(v));
     if (values.length >= 3) {
       const ci = confidenceInterval(values, 0.95);
-      confidenceIntervals.push(ci);
+      confidenceIntervals.push({ ...ci, column: col.name });
     }
   }
 

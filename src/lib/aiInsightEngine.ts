@@ -4,6 +4,7 @@
 import { Dataset, ColumnInfo, DataInsight, Relationship, SpearmanCorrelationResult, LagCorrelationResult, CohortResult } from './types';
 import { spearmanCorrelation, correlationPValue, benjaminiHochberg } from './advancedStatistics';
 import { detectDateColumns } from './timeSeriesEngine';
+import { cellNumber } from '@/lib/dax/value';
 
 export interface CorrelationResult {
   column1: string;
@@ -143,8 +144,8 @@ export const detectCorrelations = (dataset: Dataset): CorrelationResult[] => {
       const alignedX: number[] = [];
       const alignedY: number[] = [];
       for (const row of dataset.data) {
-        const v1 = Number(row[col1.name]);
-        const v2 = Number(row[col2.name]);
+        const v1 = cellNumber(row[col1.name]);
+        const v2 = cellNumber(row[col2.name]);
         if (!isNaN(v1) && !isNaN(v2)) {
           alignedX.push(v1);
           alignedY.push(v2);
@@ -220,7 +221,7 @@ export const detectTrends = (dataset: Dataset): TrendResult[] => {
   const numericColumns = dataset.columns.filter(col => col.type === 'number');
   
   numericColumns.forEach(col => {
-    const values = dataset.data.map(row => Number(row[col.name])).filter(v => !isNaN(v));
+    const values = dataset.data.map(row => cellNumber(row[col.name])).filter(v => !isNaN(v));
     
     if (values.length < 5) return;
     
@@ -282,7 +283,7 @@ export const detectAnomalies = (dataset: Dataset): AnomalyResult[] => {
   
   numericColumns.forEach(col => {
     const values = dataset.data.map((row, idx) => ({
-      value: Number(row[col.name]),
+      value: cellNumber(row[col.name]),
       index: idx
     })).filter(v => !isNaN(v.value));
     
@@ -373,7 +374,7 @@ export const detectPatterns = (dataset: Dataset): PatternResult[] => {
   // 2. Distribution skew pattern
   const numericColumns = dataset.columns.filter(col => col.type === 'number');
   numericColumns.forEach(col => {
-    const values = dataset.data.map(row => Number(row[col.name])).filter(v => !isNaN(v));
+    const values = dataset.data.map(row => cellNumber(row[col.name])).filter(v => !isNaN(v));
     if (values.length < 10) return;
     
     const mean = values.reduce((a, b) => a + b, 0) / values.length;
@@ -400,7 +401,7 @@ export const detectPatterns = (dataset: Dataset): PatternResult[] => {
   
   // 3. Outlier cluster detection
   numericColumns.forEach(col => {
-    const values = dataset.data.map(row => Number(row[col.name])).filter(v => !isNaN(v));
+    const values = dataset.data.map(row => cellNumber(row[col.name])).filter(v => !isNaN(v));
     if (values.length < 20) return;
     
     const sorted = [...values].sort((a, b) => a - b);
@@ -674,8 +675,8 @@ export const detectNonLinearCorrelations = (dataset: Dataset): SpearmanCorrelati
 
       const pairs: { v1: number; v2: number }[] = [];
       dataset.data.forEach(row => {
-        const v1 = Number(row[col1.name]);
-        const v2 = Number(row[col2.name]);
+        const v1 = cellNumber(row[col1.name]);
+        const v2 = cellNumber(row[col2.name]);
         if (!isNaN(v1) && !isNaN(v2)) {
           pairs.push({ v1, v2 });
         }
@@ -746,8 +747,8 @@ export const detectLagCorrelations = (dataset: Dataset, dateColumn?: string): La
       const col1 = colsToCheck[i];
       const col2 = colsToCheck[j];
 
-      const values1 = sortedData.map(row => Number(row[col1.name])).filter(v => !isNaN(v));
-      const values2 = sortedData.map(row => Number(row[col2.name])).filter(v => !isNaN(v));
+      const values1 = sortedData.map(row => cellNumber(row[col1.name])).filter(v => !isNaN(v));
+      const values2 = sortedData.map(row => cellNumber(row[col2.name])).filter(v => !isNaN(v));
 
       const minLen = Math.min(values1.length, values2.length);
       if (minLen < maxLag + 10) continue;
@@ -817,7 +818,7 @@ export const detectCohorts = (
     if (!entityActivity[entity]) entityActivity[entity] = [];
     entityActivity[entity].push({
       date: dateVal,
-      value: valueColumn ? Number(row[valueColumn]) || 1 : 1
+      value: valueColumn ? cellNumber(row[valueColumn]) || 1 : 1
     });
   });
 
@@ -898,7 +899,7 @@ export const detectEnhancedPatterns = (dataset: Dataset): PatternResult[] => {
       const aggregated: Record<string, number> = {};
       dataset.data.forEach(row => {
         const cat = String(row[catCol.name] || '');
-        const val = Number(row[numCol.name]);
+        const val = cellNumber(row[numCol.name]);
         if (cat && !isNaN(val)) {
           aggregated[cat] = (aggregated[cat] || 0) + val;
         }
@@ -933,7 +934,7 @@ export const detectEnhancedPatterns = (dataset: Dataset): PatternResult[] => {
 
   // 2. Bimodal distribution detection
   numericColumns.forEach(col => {
-    const values = dataset.data.map(row => Number(row[col.name])).filter(v => !isNaN(v));
+    const values = dataset.data.map(row => cellNumber(row[col.name])).filter(v => !isNaN(v));
     if (values.length < 30) return;
 
     const sorted = [...values].sort((a, b) => a - b);
@@ -983,7 +984,7 @@ export const detectEnhancedPatterns = (dataset: Dataset): PatternResult[] => {
       const timeValues: { date: Date; value: number }[] = [];
       dataset.data.forEach(row => {
         const d = new Date(row[dateCol.name]);
-        const v = Number(row[numCol.name]);
+        const v = cellNumber(row[numCol.name]);
         if (!isNaN(d.getTime()) && !isNaN(v)) {
           timeValues.push({ date: d, value: v });
         }
@@ -1079,7 +1080,7 @@ export const generateCrossDatasetInsights = (
         const categoryTotals: Record<string, { sum: number; count: number }> = {};
         fromDataset.data.forEach(row => {
           const key = String(row[rel.fromColumn] || '');
-          const val = Number(row[numCol.name]);
+          const val = cellNumber(row[numCol.name]);
           if (isNaN(val)) return;
 
           const category = dimLookup[key];
