@@ -707,7 +707,9 @@ const RelationshipModelView: React.FC<RelationshipModelViewProps> = ({
                 const isDragging = draggedNodeId === node.id;
                 const isExpanded = expandedNodes.has(node.id);
                 const isDragOver = dragOverNodeId === node.id;
-                const nodeHeight = isExpanded ? 60 + Math.min(node.dataset.columns.length, 8) * 18 : 120;
+                // A collapsed Fact/Dimension card is taller, to hold its badge inside the border.
+                const hasBadge = !isExpanded && (node.isFact || node.isDimension);
+                const nodeHeight = isExpanded ? 60 + Math.min(node.dataset.columns.length, 8) * 18 : hasBadge ? 136 : 120;
                 const showColumns = isExpanded && node.dataset.columns.length > 0;
                 
                 return (
@@ -893,12 +895,13 @@ const RelationshipModelView: React.FC<RelationshipModelViewProps> = ({
                       </>
                     )}
 
-                    {/* Schema type badge */}
+                    {/* Schema type badge, inside the card (which is 136 tall when it
+                        has one): it used to sit on the bottom edge, cut in half. */}
                     {(node.isFact || node.isDimension) && !showColumns && (
-                      <foreignObject x="-25" y="45" width="50" height="16">
+                      <foreignObject x="-40" y="42" width="80" height="19">
                         <Badge 
                           variant={node.isFact ? 'default' : 'secondary'} 
-                          className="text-xs w-full justify-center pointer-events-none"
+                          className="text-xs leading-4 py-0 w-full justify-center pointer-events-none"
                         >
                           {node.isFact ? 'Fact' : 'Dimension'}
                         </Badge>

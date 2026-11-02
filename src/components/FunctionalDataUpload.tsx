@@ -71,6 +71,7 @@ import { CHART_COLOR_SCHEMES, SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATI
 // from a genuine BLANK. Every number shown below now comes from a parsed,
 // validated, evaluated expression, or is replaced by the reason it could not.
 import { createModelCache } from '@/lib/semantic/liveModel';
+import { diagramRelationships, lookupJoin } from '@/lib/semantic/diagramRelationships';
 import { orderForActiveDataset } from '@/lib/visualizationDisplay';
 import { CategoryGroups, chartNumber, sumByCategory, numbersIn, coverageNote, BLANK_LABEL } from '@/lib/chartValues';
 import type { SemanticModel } from '@/lib/semantic/types';
@@ -2038,27 +2039,8 @@ const FunctionalDataUpload: React.FC = () => {
       if (rel.fromDataset === baseDataset.id) {
         const relatedDataset = datasets.find(d => d.id === rel.toDataset);
         if (relatedDataset) {
-          const lookup = new Map();
-          relatedDataset.data.forEach(row => {
-            const key = String(row[rel.toColumn]).toLowerCase();
-            if (!lookup.has(key)) {
-              lookup.set(key, []);
-            }
-            lookup.get(key).push(row);
-          });
-
-          joinedData = joinedData.map(baseRow => {
-            const key = String(baseRow[rel.fromColumn]).toLowerCase();
-            const relatedRows = lookup.get(key) || [];
-            
-            if (relatedRows.length === 1) {
-              return { ...baseRow, ...relatedRows[0] };
-            } else if (relatedRows.length > 1) {
-              // For one-to-many, create multiple rows
-              return relatedRows.map((relatedRow: any) => ({ ...baseRow, ...relatedRow }));
-            }
-            return baseRow;
-          }).flat();
+          // A lookup, never a fan-out: each base row comes out once.
+          joinedData = lookupJoin(joinedData, relatedDataset.data, rel);
         }
       }
     });
@@ -2096,30 +2078,22 @@ const FunctionalDataUpload: React.FC = () => {
           : detectedSchema.schemaType;
         setSchemaType(newSchemaType);
 
-        // Auto-create relationships from high-confidence detections
-        if (detectedSchema.relationships.length > 0) {
-          const autoRelationships: Relationship[] = detectedSchema.relationships
-            .filter((r: any) => r.autoJoinRecommended || r.matchScore > 0.5)
-            .map((r: any, i: number) => ({
-              id: `auto-rel-${Date.now()}-${i}`,
-              fromDataset: r.fromDataset,
-              toDataset: r.toDataset,
-              fromColumn: r.fromColumn,
-              toColumn: r.toColumn,
-              type: r.type,
-              confidence: r.confidence,
-              schemaType: newSchemaType === 'none' ? undefined : newSchemaType as 'star' | 'snowflake',
-              isFactTable: detectedSchema!.factTables.some(f => f.datasetId === r.fromDataset),
-              isDimensionTable: detectedSchema!.dimensionTables.some(d => d.datasetId === r.toDataset)
-            }));
-
-          if (autoRelationships.length > 0) {
-            setRelationships(prev => {
-              const manualRels = prev.filter(r => !r.id.startsWith('auto-rel-'));
-              return [...manualRels, ...autoRelationships];
-            });
-          }
-        }
+        // Auto-create relationships: exactly the ones the engine keeps.
+        // The detector's raw candidates include any two columns that share
+        // values (followup_score and minutes both contain 30, 45, 60, 90);
+        // the engine rejects those, and the diagram and the joins must agree
+        // with the numbers.
+        const autoRelationships: Relationship[] = diagramRelationships(
+          modelFor(allDatasets),
+          `auto-rel-${Date.now()}`
+        ).map(r => ({
+          ...r,
+          schemaType: newSchemaType === 'none' ? undefined : newSchemaType as 'star' | 'snowflake',
+        }));
+        setRelationships(prev => {
+          const manualRels = prev.filter(r => !r.id.startsWith('auto-rel-'));
+          return [...manualRels, ...autoRelationships];
+        });
 
         if (detectedSchema.schemaType !== 'none' && detectedSchema.schemaType !== 'flat') {
           toast.success(
