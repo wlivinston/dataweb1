@@ -4,6 +4,7 @@
 import { Dataset } from './types';
 import { multipleRegression, kMeansClustering } from './advancedStatistics';
 import { minOf, maxOf } from './dataUtils';
+import { cellNumber } from '@/lib/dax/value';
 
 // ============================================================
 // Types
@@ -355,7 +356,7 @@ export const detectMLProblem = (dataset: Dataset): MLProblemDetection => {
 
     if (!bestTarget) {
       const numCols = columns.filter(c => {
-        const vals = rows.slice(0, 10).map(r => Number(r[c.name])).filter(v => !isNaN(v));
+        const vals = rows.slice(0, 10).map(r => cellNumber(r[c.name])).filter(v => !isNaN(v));
         return vals.length >= 5;
       });
       return {
@@ -372,7 +373,7 @@ export const detectMLProblem = (dataset: Dataset): MLProblemDetection => {
 
     const numericCols = columns.filter(c => {
       if (c.name === bestTarget) return false;
-      const vals = rows.slice(0, 20).map(r => Number(r[c.name])).filter(v => !isNaN(v));
+      const vals = rows.slice(0, 20).map(r => cellNumber(r[c.name])).filter(v => !isNaN(v));
       return vals.length >= 10;
     });
     const categoricalCols = columns.filter(c => c.name !== bestTarget && !numericCols.includes(c));
@@ -463,7 +464,7 @@ export const preprocessDataset = (
   const targetIsNumeric = numericTargetValues.length >= targetValues.length * 0.85;
 
   const validRows = (targetIsNumeric
-    ? nonMissingTargetRows.filter(r => !isNaN(Number(r[targetColumn])))
+    ? nonMissingTargetRows.filter(r => !isNaN(cellNumber(r[targetColumn])))
     : nonMissingTargetRows
   ).map(r => ({ ...r }));
 
@@ -576,7 +577,7 @@ export const preprocessDataset = (
 
   const numericValueOf = (row: Record<string, unknown>, col: string): number => {
     if (labelMappings[col]) return labelMappings[col][String(row[col])] ?? 0;
-    return Number(row[col]);
+    return cellNumber(row[col]);
   };
 
   for (const col of allNumericCols) {
@@ -597,7 +598,7 @@ export const preprocessDataset = (
   // across every retained row.
   for (const col of validFeatures) {
     if (labelMappings[col]) continue;
-    const vals = validRows.map(r => Number(r[col])).filter(v => !isNaN(v)).sort((a, b) => a - b);
+    const vals = validRows.map(r => cellNumber(r[col])).filter(v => !isNaN(v)).sort((a, b) => a - b);
     if (vals.length === 0) continue;
     const q1 = vals[Math.floor(vals.length * 0.25)];
     const q3 = vals[Math.floor(vals.length * 0.75)];
@@ -683,17 +684,17 @@ export const analyzeFeatures = (
   processedDataset?: ProcessedDataset
 ): FeatureEngineeringResult => {
   const rows = (processedDataset?.data ?? dataset.data) as Record<string, number>[];
-  const targetVals = rows.map(r => Number(r[targetColumn])).filter(v => !isNaN(v));
+  const targetVals = rows.map(r => cellNumber(r[targetColumn])).filter(v => !isNaN(v));
 
   const featureImportance: FeatureImportanceItem[] = [];
   const correlationMatrix: { col1: string; col2: string; r: number }[] = [];
 
   for (const col of featureColumns) {
-    const colVals = rows.map(r => Number(r[col])).filter((_, i) => !isNaN(Number(rows[i]?.[col])));
+    const colVals = rows.map(r => cellNumber(r[col])).filter((_, i) => !isNaN(cellNumber(rows[i]?.[col])));
     const paired: [number, number][] = [];
     for (const row of rows) {
-      const tv = Number(row[targetColumn]);
-      const cv = Number(row[col]);
+      const tv = cellNumber(row[targetColumn]);
+      const cv = cellNumber(row[col]);
       if (!isNaN(tv) && !isNaN(cv)) paired.push([cv, tv]);
     }
     const r = paired.length >= 2 ? pearsonR(paired.map(p => p[0]), paired.map(p => p[1])) : 0;
@@ -714,8 +715,8 @@ export const analyzeFeatures = (
       const col2 = featureColumns[j];
       const paired: [number, number][] = [];
       for (const row of rows) {
-        const v1 = Number(row[col1]);
-        const v2 = Number(row[col2]);
+        const v1 = cellNumber(row[col1]);
+        const v2 = cellNumber(row[col2]);
         if (!isNaN(v1) && !isNaN(v2)) paired.push([v1, v2]);
       }
       const r = paired.length >= 2 ? pearsonR(paired.map(p => p[0]), paired.map(p => p[1])) : 0;
@@ -727,7 +728,7 @@ export const analyzeFeatures = (
   // Recommend drops
   const droppedFeatures: string[] = [];
   for (const fi of featureImportance) {
-    const colVals = rows.map(r => Number(r[fi.feature])).filter(v => !isNaN(v));
+    const colVals = rows.map(r => cellNumber(r[fi.feature])).filter(v => !isNaN(v));
     const s = stdDev(colVals);
     if (s < 0.001) droppedFeatures.push(fi.feature);
   }

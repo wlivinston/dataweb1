@@ -12,6 +12,7 @@ import {
   AggregatedTimeSeries
 } from './types';
 import { minOf, maxOf } from './dataUtils';
+import { cellNumber } from '@/lib/dax/value';
 
 // ============================================================
 // Date Detection & Classification
@@ -20,7 +21,7 @@ import { minOf, maxOf } from './dataUtils';
 /**
  * Try to parse a value as a Date. Returns null if not parseable.
  */
-const tryParseDate = (value: any): Date | null => {
+const parseLocalDate = (value: any): Date | null => {
   if (value == null || value === '') return null;
   if (value instanceof Date && !isNaN(value.getTime())) return value;
 
@@ -45,6 +46,25 @@ const tryParseDate = (value: any): Date | null => {
 
   return null;
 };
+/**
+ * A value as a calendar date: midnight UTC, read back with UTC getters.
+ *
+ * The engine's convention (semantic/dates.ts). This file used to mix local
+ * and UTC readings: `new Date('2026-02-01')` is UTC midnight, but months were
+ * bucketed with local getters, so anywhere behind UTC 1 February landed in
+ * January; days were keyed with toISOString (UTC), so a locally-parsed date
+ * landed on the previous day anywhere ahead of UTC.
+ */
+const tryParseDate = (value: any): Date | null => {
+  const local = parseLocalDate(value);
+  if (!local) return null;
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+    // Date-only ISO text is already parsed as UTC midnight.
+    return local;
+  }
+  return new Date(Date.UTC(local.getFullYear(), local.getMonth(), local.getDate()));
+};
+
 
 /**
  * Detect date columns in a dataset and classify them
@@ -177,18 +197,18 @@ const calculateCoverage = (dates: Date[], frequency: DateTableInfo['frequency'])
 export const buildDateHierarchy = (dates: Date[]): DateHierarchy[] => {
   return dates.map(date => {
     const d = new Date(date);
-    const month = d.getMonth() + 1;
+    const month = d.getUTCMonth() + 1;
     const dayOfYear = Math.floor(
-      (d.getTime() - new Date(d.getFullYear(), 0, 0).getTime()) / (1000 * 60 * 60 * 24)
+      (d.getTime() - Date.UTC(d.getUTCFullYear(), 0, 0)) / (1000 * 60 * 60 * 24)
     );
 
     return {
-      year: d.getFullYear(),
+      year: d.getUTCFullYear(),
       quarter: Math.ceil(month / 3),
       month,
       week: Math.ceil(dayOfYear / 7),
-      dayOfWeek: d.getDay(),
-      dayOfMonth: d.getDate(),
+      dayOfWeek: d.getUTCDay(),
+      dayOfMonth: d.getUTCDate(),
       date: d
     };
   });
@@ -402,17 +422,19 @@ export const calculateGrowthRates = (
   data: any[],
   dateColumn: string,
   valueColumn: string,
-  frequency: DateTableInfo['frequency']
+  frequency: DateTableInfo['frequency'],
+  aggregation: 'sum' | 'average' = 'sum'
 ): GrowthRate[] => {
   if (data.length < 2) return [];
 
   // Aggregate by period
   const aggregated = aggregateByDatePeriod(data, dateColumn, valueColumn, frequency);
+  const pick = (period: { sum: number; avg: number }) => (aggregation === 'sum' ? period.sum : period.avg);
 
   const rates: GrowthRate[] = [];
   for (let i = 1; i < aggregated.length; i++) {
-    const current = aggregated[i].sum;
-    const previous = aggregated[i - 1].sum;
+    const current = pick(aggregated[i]);
+    const previous = pick(aggregated[i - 1]);
     const absoluteChange = current - previous;
     const percentageChange = previous !== 0 ? (absoluteChange / Math.abs(previous)) * 100 : 0;
 
@@ -427,6 +449,9 @@ export const calculateGrowthRates = (
 
   return rates;
 };
+
+export { isAdditiveColumn } from './columnMeaning';
+import { isAdditiveColumn } from './columnMeaning';
 
 // ============================================================
 // Aggregation by Date Period
@@ -445,12 +470,12 @@ export const aggregateByDatePeriod = (
 
   for (const row of data) {
     const date = tryParseDate(row[dateColumn]);
-    const value = Number(row[valueColumn]);
+    const value = cellNumber(row[valueColumn]);
     if (!date || isNaN(value)) continue;
 
     let key: string;
-    const y = date.getFullYear();
-    const m = date.getMonth() + 1;
+    const y = date.getUTCFullYear();
+    const m = date.getUTCMonth() + 1;
 
     switch (period) {
       case 'yearly':
@@ -464,7 +489,7 @@ export const aggregateByDatePeriod = (
         break;
       case 'weekly': {
         const dayOfYear = Math.floor(
-          (date.getTime() - new Date(y, 0, 0).getTime()) / (1000 * 60 * 60 * 24)
+          (date.getTime() - Date.UTC(y, 0, 0)) / (1000 * 60 * 60 * 24)
         );
         const week = Math.ceil(dayOfYear / 7);
         key = `${y}-W${String(week).padStart(2, '0')}`;
@@ -615,7 +640,7 @@ export const runTimeSeriesAnalysis = (
 
   for (const row of dataset.data) {
     const date = tryParseDate(row[dateColumnName]);
-    const value = Number(row[valueColumnName]);
+    const value = cellNumber(row[valueColumnName]);
     if (date && !isNaN(value)) {
       pairs.push({ date, value });
     }
@@ -637,7 +662,11 @@ export const runTimeSeriesAnalysis = (
   }
 
   const sortedKeys = [...aggregated.keys()].sort();
-  const values = sortedKeys.map(k => aggregated.get(k)!.sum);
+  const aggregation: 'sum' | 'average' = isAdditiveColumn(valueColumnName) ? 'sum' : 'average';
+  const values = sortedKeys.map(k => {
+    const bucket = aggregated.get(k)!;
+    return aggregation === 'sum' ? bucket.sum : bucket.sum / bucket.count;
+  });
   const dates = sortedKeys;
 
   if (values.length < 5) return null;
@@ -671,23 +700,31 @@ export const runTimeSeriesAnalysis = (
     dataset.data,
     dateColumnName,
     valueColumnName,
-    detectedFreq
+    detectedFreq,
+    aggregation
   );
 
   // Forecast
   const forecastPeriods = Math.min(6, Math.floor(values.length / 3));
-  const forecastResult = forecast(values, forecastPeriods, 'exponential');
+  // A series that has never gone below zero (ages, scores, sales) cannot be
+  // forecast to: the interval used to reach -700 for an age.
+  const nonNegative = values.every(v => v >= 0);
+  const forecastResult = forecast(values, forecastPeriods, 'exponential').map(point =>
+    nonNegative
+      ? { ...point, value: Math.max(0, point.value), lower: point.lower === undefined ? undefined : Math.max(0, point.lower) }
+      : point
+  );
 
   // Label forecast dates based on last actual date
   const lastDate = new Date(sortedKeys[sortedKeys.length - 1]);
   const labeledForecast = forecastResult.map((f, i) => {
     const futureDate = new Date(lastDate);
     switch (detectedFreq) {
-      case 'daily': futureDate.setDate(futureDate.getDate() + (i + 1)); break;
-      case 'weekly': futureDate.setDate(futureDate.getDate() + (i + 1) * 7); break;
-      case 'monthly': futureDate.setMonth(futureDate.getMonth() + (i + 1)); break;
-      case 'quarterly': futureDate.setMonth(futureDate.getMonth() + (i + 1) * 3); break;
-      case 'yearly': futureDate.setFullYear(futureDate.getFullYear() + (i + 1)); break;
+      case 'daily': futureDate.setUTCDate(futureDate.getUTCDate() + (i + 1)); break;
+      case 'weekly': futureDate.setUTCDate(futureDate.getUTCDate() + (i + 1) * 7); break;
+      case 'monthly': futureDate.setUTCMonth(futureDate.getUTCMonth() + (i + 1)); break;
+      case 'quarterly': futureDate.setUTCMonth(futureDate.getUTCMonth() + (i + 1) * 3); break;
+      case 'yearly': futureDate.setUTCFullYear(futureDate.getUTCFullYear() + (i + 1)); break;
     }
     return { ...f, date: futureDate.toISOString().split('T')[0] };
   });
@@ -703,7 +740,8 @@ export const runTimeSeriesAnalysis = (
     forecast: labeledForecast,
     growthRates,
     seasonalityStrength,
-    decompositionDates: dates
+    decompositionDates: dates,
+    aggregation,
   };
 };
 

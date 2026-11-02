@@ -2705,6 +2705,12 @@ const FunctionalDataUpload: React.FC = () => {
                         {ts.column} — Time Series Analysis
                         <Badge variant="outline" className="ml-2">{ts.frequency}</Badge>
                       </CardTitle>
+                      <p className="text-xs text-gray-600">
+                        {ts.aggregation === 'average'
+                          ? `Average ${ts.column} per ${ts.frequency === 'daily' ? 'day' : 'period'} by ${ts.dateColumn}. Averaged, not added up: a total of ${ts.column} would only count how many rows fell on each date.`
+                          : `Total ${ts.column} per ${ts.frequency === 'daily' ? 'day' : 'period'} by ${ts.dateColumn}.`}
+                        {' '}Blank values are left out.
+                      </p>
                     </CardHeader>
                     <CardContent>
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -2713,7 +2719,8 @@ const FunctionalDataUpload: React.FC = () => {
                           <h4 className="text-sm font-medium mb-3">Trend & Moving Average</h4>
                           <ResponsiveContainer width="100%" height={250}>
                             <LineChart data={ts.trend.slice(0, 100).map((val, i) => ({
-                              idx: i,
+                              // The date, not the row position: the axis read 1, 3, 5...
+                              idx: ts.decompositionDates[i] ?? String(i + 1),
                               trend: Math.round(val * 100) / 100,
                               movingAvg: ts.movingAverage[i] ? Math.round(ts.movingAverage[i] * 100) / 100 : null
                             }))}>
@@ -2734,10 +2741,11 @@ const FunctionalDataUpload: React.FC = () => {
                             <h4 className="text-sm font-medium mb-3">Forecast ({ts.forecast.length} periods)</h4>
                             <ResponsiveContainer width="100%" height={250}>
                               <AreaChart data={ts.forecast.map((fp, i) => ({
-                                period: `+${i + 1}`,
+                                period: fp.date || `+${i + 1}`,
                                 forecast: Math.round(fp.value * 100) / 100,
-                                lower: Math.round((fp.lower || fp.value * 0.9) * 100) / 100,
-                                upper: Math.round((fp.upper || fp.value * 1.1) * 100) / 100
+                                // `??`, not `||`: a lower bound of 0 is a bound, not a missing one.
+                                lower: Math.round((fp.lower ?? fp.value * 0.9) * 100) / 100,
+                                upper: Math.round((fp.upper ?? fp.value * 1.1) * 100) / 100
                               }))}>
                                 <CartesianGrid strokeDasharray="3 3" />
                                 <XAxis dataKey="period" tick={{ fontSize: 10 }} />

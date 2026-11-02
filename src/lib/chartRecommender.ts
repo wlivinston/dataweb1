@@ -5,7 +5,7 @@
 
 import { SHARED_CHART_PALETTE } from './chartColors';
 import { minOf, maxOf } from './dataUtils';
-import { CategoryGroups, chartNumber, sumByCategory } from './chartValues';
+import { CategoryGroups, chartNumber, sumByCategory, pairwiseCorrelation } from './chartValues';
 
 // ── Data shape converters ──
 
@@ -142,29 +142,11 @@ export function toHeatmapCorrelation(
   // cell and dragged each correlation toward the column with fewer blanks.
   const data: (number | null)[][] = cols.map(col => rows.map(r => chartNumber(r[col])));
 
-  // Pairwise-complete Pearson: each pair over the rows where both are present.
-  const pearson = (a: (number | null)[], b: (number | null)[]): number => {
-    let count = 0, sumA = 0, sumB = 0;
-    for (let k = 0; k < n; k++) {
-      if (a[k] === null || b[k] === null) continue;
-      count++; sumA += a[k] as number; sumB += b[k] as number;
-    }
-    if (count < 3) return 0;
-    const meanA = sumA / count, meanB = sumB / count;
-    let cov = 0, varA = 0, varB = 0;
-    for (let k = 0; k < n; k++) {
-      if (a[k] === null || b[k] === null) continue;
-      const da = (a[k] as number) - meanA, db = (b[k] as number) - meanB;
-      cov += da * db; varA += da * da; varB += db * db;
-    }
-    return varA === 0 || varB === 0 ? 0 : cov / Math.sqrt(varA * varB);
-  };
-
   const result: { category: string; [col: string]: any }[] = [];
   for (let i = 0; i < cols.length; i++) {
     const entry: { [col: string]: any; category: string } = { category: cols[i] };
     for (let j = 0; j < cols.length; j++) {
-      entry[cols[j]] = Number(pearson(data[i], data[j]).toFixed(3));
+      entry[cols[j]] = Number(pairwiseCorrelation(data[i], data[j]).toFixed(3));
     }
     result.push(entry);
   }

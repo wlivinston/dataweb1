@@ -1,6 +1,7 @@
 // Data Cleaning Utilities
 import { Dataset, ColumnInfo } from './types';
 import { minOf, maxOf } from './dataUtils';
+import { cellNumber } from '@/lib/dax/value';
 
 export type CleaningOperation =
   | 'removeDuplicates'
@@ -209,7 +210,7 @@ export const fillMissingWithMean = (dataset: Dataset, columnName: string): Clean
   }
 
   const numericValues = dataset.data
-    .map(row => Number(row[columnName]))
+    .map(row => cellNumber(row[columnName]))
     .filter(val => !isNaN(val) && val !== null && val !== undefined);
   
   const mean = numericValues.reduce((a, b) => a + b, 0) / numericValues.length;
@@ -227,7 +228,7 @@ export const fillMissingWithMedian = (dataset: Dataset, columnName: string): Cle
   }
 
   const numericValues = dataset.data
-    .map(row => Number(row[columnName]))
+    .map(row => cellNumber(row[columnName]))
     .filter(val => !isNaN(val) && val !== null && val !== undefined)
     .sort((a, b) => a - b);
   
@@ -308,7 +309,7 @@ export const removeOutliers = (dataset: Dataset, columnName: string): CleaningRe
   }
 
   const numericValues = dataset.data
-    .map((row, index) => ({ value: Number(row[columnName]), index, row }))
+    .map((row, index) => ({ value: cellNumber(row[columnName]), index, row }))
     .filter(item => !isNaN(item.value) && item.value !== null && item.value !== undefined)
     .sort((a, b) => a.value - b.value);
 
@@ -354,7 +355,7 @@ export const removeOutliers = (dataset: Dataset, columnName: string): CleaningRe
   // Update column statistics
   const updatedColumns = dataset.columns.map(col => {
     if (col.name === columnName) {
-      const values = cleanedData.map(row => Number(row[col.name])).filter(v => !isNaN(v));
+      const values = cleanedData.map(row => cellNumber(row[col.name])).filter(v => !isNaN(v));
       if (values.length > 0) {
         return {
           ...col,
@@ -407,7 +408,7 @@ export const capOutliersToBounds = (
   }
 
   const numericValues = dataset.data
-    .map(row => Number(row[columnName]))
+    .map(row => cellNumber(row[columnName]))
     .filter(v => !isNaN(v) && v !== null && v !== undefined)
     .sort((a, b) => a - b);
 
@@ -442,7 +443,7 @@ export const capOutliersToBounds = (
 
   let cappedCount = 0;
   const cappedData = dataset.data.map(row => {
-    const val = Number(row[columnName]);
+    const val = cellNumber(row[columnName]);
     if (!isNaN(val)) {
       if (val < lowerBound) {
         cappedCount++;
@@ -459,7 +460,7 @@ export const capOutliersToBounds = (
   // Update column statistics
   const updatedColumns = dataset.columns.map(col => {
     if (col.name === columnName) {
-      const values = cappedData.map(r => Number(r[col.name])).filter(v => !isNaN(v));
+      const values = cappedData.map(r => cellNumber(r[col.name])).filter(v => !isNaN(v));
       if (values.length > 0) {
         return {
           ...col,

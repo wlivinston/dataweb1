@@ -21,11 +21,17 @@ import type { MeasureSlot, MeasureTemplate } from './types';
 const MONEY_WORDS = ['amount', 'revenue', 'sales', 'total', 'value', 'price', 'turnover'];
 const COST_WORDS = ['cost', 'cogs', 'expense', 'spend', 'purchase'];
 
-const amountSlot = (describes = 'amount being measured'): MeasureSlot => ({
+/**
+ * `requiresNameMatch` is on for the money meanings (revenue, cost...) and off
+ * for the generic ones (rows counted, completeness), which apply to any
+ * numeric column.
+ */
+const amountSlot = (describes = 'amount being measured', requiresNameMatch = true): MeasureSlot => ({
   name: 'amount',
   role: 'measure',
   dataType: 'number',
   prefers: MONEY_WORDS,
+  requiresNameMatch,
   // A cost column summed as revenue would read as a healthy total.
   avoids: [...COST_WORDS, 'discount', 'tax', 'qty', 'quantity'],
   describes,
@@ -33,6 +39,7 @@ const amountSlot = (describes = 'amount being measured'): MeasureSlot => ({
 
 const costSlot: MeasureSlot = {
   name: 'cost',
+  requiresNameMatch: true,
   role: 'measure',
   dataType: 'number',
   prefers: COST_WORDS,
@@ -42,6 +49,7 @@ const costSlot: MeasureSlot = {
 
 const quantitySlot: MeasureSlot = {
   name: 'quantity',
+  requiresNameMatch: true,
   role: 'measure',
   dataType: 'number',
   prefers: ['quantity', 'qty', 'units', 'count', 'volume', 'pieces'],
@@ -51,6 +59,7 @@ const quantitySlot: MeasureSlot = {
 
 const customerSlot: MeasureSlot = {
   name: 'customer',
+  requiresNameMatch: true,
   role: ['key', 'foreignKey'],
   prefers: ['customer', 'client', 'account', 'buyer', 'member'],
   describes: 'column identifying the customer',
@@ -58,6 +67,7 @@ const customerSlot: MeasureSlot = {
 
 const orderSlot: MeasureSlot = {
   name: 'order',
+  requiresNameMatch: true,
   role: ['key', 'foreignKey'],
   prefers: ['order', 'invoice', 'transaction', 'receipt', 'sale', 'ticket'],
   avoids: ['customer', 'product', 'line'],
@@ -66,6 +76,7 @@ const orderSlot: MeasureSlot = {
 
 const productSlot: MeasureSlot = {
   name: 'product',
+  requiresNameMatch: true,
   role: ['key', 'foreignKey', 'dimension'],
   prefers: ['product', 'item', 'sku', 'article', 'part'],
   describes: 'column identifying the product',
@@ -357,7 +368,7 @@ const OPERATIONS: MeasureTemplate[] = [
     pack: 'operations',
     description: 'How many rows are in scope.',
     dax: 'COUNTROWS({amount:table})',
-    slots: [amountSlot('table being counted')],
+    slots: [amountSlot('table being counted', false)],
     format: 'integer',
     interpret: (value, context) =>
       value === null
@@ -370,7 +381,7 @@ const OPERATIONS: MeasureTemplate[] = [
     pack: 'operations',
     description: 'What share of rows actually carry a value.',
     dax: 'DIVIDE(COUNT({amount}), COUNTROWS({amount:table}))',
-    slots: [amountSlot('column being checked')],
+    slots: [amountSlot('column being checked', false)],
     format: 'percent',
     interpret: (value, context) => {
       if (value === null) return 'There are no rows to check.';

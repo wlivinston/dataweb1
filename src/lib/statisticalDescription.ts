@@ -1,5 +1,6 @@
 // Statistical Description Utilities (similar to pandas .describe())
 import { Dataset, ColumnInfo } from './types';
+import { cellNumber } from '@/lib/dax/value';
 
 export interface ColumnStatistics {
   columnName: string;
@@ -48,24 +49,35 @@ const calculateStdDev = (values: number[], mean: number): number => {
   return Math.sqrt(variance);
 };
 
+/** Blank: missing, empty, or only spaces. */
+const isBlank = (value: unknown): boolean =>
+  value === null || value === undefined || String(value).trim() === '';
+
+/** How the engine compares values (semantic keyOf): trimmed, case-insensitive. */
+const valueKey = (value: unknown): string => String(value).trim().toLowerCase();
+
 /**
  * Get most frequent value and its frequency
  */
 const getMostFrequent = (values: any[]): { value: any; frequency: number } => {
-  const frequencyMap = new Map<any, number>();
-  
+  // Counted per value as the engine groups them (trimmed, case-insensitive),
+  // shown in the first spelling seen.
+  const frequencyMap = new Map<string, number>();
+  const labels = new Map<string, string>();
+
   values.forEach(val => {
-    const key = String(val);
+    const key = valueKey(val);
+    if (!labels.has(key)) labels.set(key, String(val).trim());
     frequencyMap.set(key, (frequencyMap.get(key) || 0) + 1);
   });
-  
+
   let maxFreq = 0;
   let mostFrequent: any = null;
-  
-  frequencyMap.forEach((freq, value) => {
+
+  frequencyMap.forEach((freq, key) => {
     if (freq > maxFreq) {
       maxFreq = freq;
-      mostFrequent = value;
+      mostFrequent = labels.get(key);
     }
   });
   
@@ -80,14 +92,16 @@ const calculateNumericStatistics = (
   values: any[],
   type: 'number' | 'string' | 'date' | 'boolean'
 ): ColumnStatistics => {
-  const nonNullValues = values.filter(v => v !== null && v !== undefined && v !== '');
-  const numericValues = nonNullValues
-    .map(v => Number(v))
+  // In a numeric column, a cell that is not a number ("NA", "-") is missing:
+  // it is left out of every statistic below, so it is counted as missing too.
+  // It used to be counted as present - "0 nulls" beside a mean of fewer rows.
+  const numericValues = values
+    .map(v => cellNumber(v))
     .filter(v => !isNaN(v))
     .sort((a, b) => a - b);
-  
+
   const count = values.length;
-  const nonNullCount = nonNullValues.length;
+  const nonNullCount = numericValues.length;
   const nullCount = count - nonNullCount;
   
   if (numericValues.length === 0) {
@@ -132,8 +146,9 @@ const calculateCategoricalStatistics = (
   values: any[],
   type: 'number' | 'string' | 'date' | 'boolean'
 ): ColumnStatistics => {
-  const nonNullValues = values.filter(v => v !== null && v !== undefined && v !== '');
-  const uniqueValues = new Set(nonNullValues.map(v => String(v)));
+  const nonNullValues = values.filter(v => !isBlank(v));
+  // " student " and "Student" are one value, as the engine and Ask Data see it.
+  const uniqueValues = new Set(nonNullValues.map(valueKey));
   const { value: top, frequency: freq } = getMostFrequent(nonNullValues);
   
   return {

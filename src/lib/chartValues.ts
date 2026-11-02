@@ -126,3 +126,31 @@ export const coverageNote = (
   const names = columns.join(' or ');
   return `${base} ${plural(missing, 'row')} with a blank or non-numeric ${names} ${missing === 1 ? 'is' : 'are'} left out.`;
 };
+
+/**
+ * Pearson correlation over the rows where both values are present
+ * (pairwise-complete), or 0 with fewer than 3 such rows or no variation.
+ *
+ * Shared by every correlation on screen - the chart heatmap and the AI
+ * Insights matrix - so they cannot disagree. The matrix used to read a blank
+ * as 0, and reported 0.47 for a pair whose true correlation is 0.77.
+ */
+export const pairwiseCorrelation = (
+  a: readonly (number | null)[],
+  b: readonly (number | null)[]
+): number => {
+  let count = 0, sumA = 0, sumB = 0;
+  for (let k = 0; k < a.length; k++) {
+    if (a[k] === null || b[k] === null) continue;
+    count++; sumA += a[k] as number; sumB += b[k] as number;
+  }
+  if (count < 3) return 0;
+  const meanA = sumA / count, meanB = sumB / count;
+  let cov = 0, varA = 0, varB = 0;
+  for (let k = 0; k < a.length; k++) {
+    if (a[k] === null || b[k] === null) continue;
+    const da = (a[k] as number) - meanA, db = (b[k] as number) - meanB;
+    cov += da * db; varA += da * da; varB += db * db;
+  }
+  return varA === 0 || varB === 0 ? 0 : cov / Math.sqrt(varA * varB);
+};

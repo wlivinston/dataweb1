@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Grid3X3, Info, Download, ZoomIn, ZoomOut } from 'lucide-react';
 import { Dataset } from '@/lib/types';
+import { chartNumber, pairwiseCorrelation } from '@/lib/chartValues';
 
 interface CorrelationMatrixProps {
   dataset: Dataset | null;
@@ -31,32 +32,14 @@ const CorrelationMatrix: React.FC<CorrelationMatrixProps> = ({ dataset }) => {
 
     const columnNames = numericColumns.map(c => c.name);
     
-    // Get numeric values for each column
-    const columnValues: Record<string, number[]> = {};
+    // Blank stays blank: each pair is correlated over the rows where both
+    // values are present. Reading a blank as 0 reported 0.47 for a pair whose
+    // correlation is 0.77. Same function as the chart heatmap.
+    const columnValues: Record<string, (number | null)[]> = {};
     columnNames.forEach(colName => {
-      columnValues[colName] = dataset.data.map(row => {
-        const val = Number(row[colName]);
-        return isNaN(val) ? 0 : val;
-      });
+      columnValues[colName] = dataset.data.map(row => chartNumber(row[colName]));
     });
-
-    // Calculate correlation for each pair
-    const calculateCorrelation = (x: number[], y: number[]): number => {
-      const n = x.length;
-      if (n === 0) return 0;
-
-      const sumX = x.reduce((a, b) => a + b, 0);
-      const sumY = y.reduce((a, b) => a + b, 0);
-      const sumXY = x.reduce((sum, xi, i) => sum + xi * y[i], 0);
-      const sumX2 = x.reduce((a, b) => a + b * b, 0);
-      const sumY2 = y.reduce((a, b) => a + b * b, 0);
-
-      const numerator = n * sumXY - sumX * sumY;
-      const denominator = Math.sqrt((n * sumX2 - sumX ** 2) * (n * sumY2 - sumY ** 2));
-
-      if (denominator === 0) return 0;
-      return numerator / denominator;
-    };
+    const calculateCorrelation = pairwiseCorrelation;
 
     // Build correlation matrix
     const correlationMatrix: number[][] = [];

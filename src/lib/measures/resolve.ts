@@ -37,6 +37,10 @@ const rolesOf = (slot: MeasureSlot): string[] =>
 const qualifies = (slot: MeasureSlot, column: SemanticColumn): boolean => {
   if (!rolesOf(slot).includes(column.role)) return false;
   if (slot.dataType && column.dataType !== slot.dataType) return false;
+  if (slot.requiresNameMatch) {
+    const tokens = new Set(tokeniseColumnName(column.name));
+    if (!(slot.prefers ?? []).some(word => tokens.has(word.toLowerCase()))) return false;
+  }
   return true;
 };
 
