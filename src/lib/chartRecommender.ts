@@ -5,6 +5,7 @@
 
 import { SHARED_CHART_PALETTE } from './chartColors';
 import { minOf, maxOf } from './dataUtils';
+import { CategoryGroups, chartNumber, sumByCategory } from './chartValues';
 
 // ── Data shape converters ──
 
@@ -76,12 +77,18 @@ export function toRadarData(
     }
   }
 
+  // `categories` are labels from CategoryGroups; rows are matched by the same
+  // trimmed, case-insensitive key, so " adult " lands in "Adult".
+  const groups = new CategoryGroups();
+  const labelFor = new Map<string, string>();
+  for (const cat of categories) labelFor.set(groups.key(cat), cat);
+
   for (const row of rows) {
-    const cat = String(row[catCol] || '');
-    if (!means[cat]) continue;
+    const cat = labelFor.get(groups.key(row[catCol]));
+    if (cat === undefined) continue;
     for (const col of numericCols) {
-      const val = Number(row[col]);
-      if (Number.isFinite(val)) {
+      const val = chartNumber(row[col]);
+      if (val !== null) {
         means[cat][col] += val;
         counts[cat][col]++;
       }
@@ -112,18 +119,10 @@ export function toTreemapData(
   catCol: string,
   numCol: string
 ): { name: string; size: number; fill: string }[] {
-  const agg: Record<string, number> = {};
-  for (const row of rows) {
-    const cat = String(row[catCol] || 'Unknown');
-    const val = Number(row[numCol]);
-    if (Number.isFinite(val)) {
-      agg[cat] = (agg[cat] || 0) + Math.abs(val);
-    }
-  }
-  return Object.entries(agg)
-    .sort((a, b) => b[1] - a[1])
+  return sumByCategory(rows, catCol, numCol, Math.abs)
+    .filter(entry => entry.count > 0)
     .slice(0, 40)
-    .map(([name, size], idx) => ({
+    .map(({ category: name, value: size }, idx) => ({
       name,
       size,
       fill: SHARED_CHART_PALETTE[idx % SHARED_CHART_PALETTE.length],
@@ -139,30 +138,33 @@ export function toHeatmapCorrelation(
   if (n < 3) return [];
 
   const cols = numericCols.slice(0, 15); // limit
-  const data: number[][] = cols.map(col =>
-    rows.map(r => Number(r[col]) || 0)
-  );
+  // Blank stays blank. Reading it as 0 invented a value for every missing
+  // cell and dragged each correlation toward the column with fewer blanks.
+  const data: (number | null)[][] = cols.map(col => rows.map(r => chartNumber(r[col])));
 
-  const means = data.map(d => d.reduce((s, v) => s + v, 0) / n);
-  const stds = data.map((d, i) => {
-    const variance = d.reduce((s, v) => s + (v - means[i]) ** 2, 0) / n;
-    return Math.sqrt(variance);
-  });
+  // Pairwise-complete Pearson: each pair over the rows where both are present.
+  const pearson = (a: (number | null)[], b: (number | null)[]): number => {
+    let count = 0, sumA = 0, sumB = 0;
+    for (let k = 0; k < n; k++) {
+      if (a[k] === null || b[k] === null) continue;
+      count++; sumA += a[k] as number; sumB += b[k] as number;
+    }
+    if (count < 3) return 0;
+    const meanA = sumA / count, meanB = sumB / count;
+    let cov = 0, varA = 0, varB = 0;
+    for (let k = 0; k < n; k++) {
+      if (a[k] === null || b[k] === null) continue;
+      const da = (a[k] as number) - meanA, db = (b[k] as number) - meanB;
+      cov += da * db; varA += da * da; varB += db * db;
+    }
+    return varA === 0 || varB === 0 ? 0 : cov / Math.sqrt(varA * varB);
+  };
 
   const result: { category: string; [col: string]: any }[] = [];
   for (let i = 0; i < cols.length; i++) {
     const entry: { [col: string]: any; category: string } = { category: cols[i] };
     for (let j = 0; j < cols.length; j++) {
-      if (stds[i] === 0 || stds[j] === 0) {
-        entry[cols[j]] = 0;
-      } else {
-        let corr = 0;
-        for (let k = 0; k < n; k++) {
-          corr += (data[i][k] - means[i]) * (data[j][k] - means[j]);
-        }
-        corr /= n * stds[i] * stds[j];
-        entry[cols[j]] = Number(corr.toFixed(3));
-      }
+      entry[cols[j]] = Number(pearson(data[i], data[j]).toFixed(3));
     }
     result.push(entry);
   }
@@ -174,18 +176,10 @@ export function toFunnelData(
   catCol: string,
   numCol: string
 ): { name: string; value: number; fill: string }[] {
-  const agg: Record<string, number> = {};
-  for (const row of rows) {
-    const cat = String(row[catCol] || '');
-    const val = Number(row[numCol]);
-    if (Number.isFinite(val)) {
-      agg[cat] = (agg[cat] || 0) + Math.abs(val);
-    }
-  }
-  return Object.entries(agg)
-    .sort((a, b) => b[1] - a[1])
+  return sumByCategory(rows, catCol, numCol, Math.abs)
+    .filter(entry => entry.count > 0)
     .slice(0, 10)
-    .map(([name, value], idx) => ({
+    .map(({ category: name, value }, idx) => ({
       name,
       value,
       fill: SHARED_CHART_PALETTE[idx % SHARED_CHART_PALETTE.length],
@@ -199,14 +193,18 @@ export function toStackedBarData(
   numCol: string
 ): { category: string; [series: string]: any }[] {
   // Cross-tabulate: primary on X axis, secondary as stacked series
+  // Keyed by label from CategoryGroups: a blank secondary is a series called
+  // "(Blank)", not a series with no name and an unlabelled legend swatch.
   const grid: Record<string, Record<string, number>> = {};
   const allSecondary = new Set<string>();
+  const primaryGroups = new CategoryGroups();
+  const secondaryGroups = new CategoryGroups();
 
   for (const row of rows) {
-    const p = String(row[primaryCat] || '');
-    const s = String(row[secondaryCat] || '');
-    const v = Number(row[numCol]);
-    if (!Number.isFinite(v)) continue;
+    const p = primaryGroups.label(primaryGroups.key(row[primaryCat]));
+    const s = secondaryGroups.label(secondaryGroups.key(row[secondaryCat]));
+    const v = chartNumber(row[numCol]);
+    if (v === null) continue;
     allSecondary.add(s);
     if (!grid[p]) grid[p] = {};
     grid[p][s] = (grid[p][s] || 0) + v;
@@ -230,12 +228,13 @@ export function toTopBottomData(
   numCol: string,
   n: number = 10
 ): { category: string; value: number }[] {
+  const groups = new CategoryGroups();
   const sorted = rows
     .map(r => ({
-      category: String(r[catCol] || ''),
-      value: Number(r[numCol]) || 0,
+      category: groups.label(groups.key(r[catCol])),
+      value: chartNumber(r[numCol]),
     }))
-    .filter(d => Number.isFinite(d.value))
+    .filter((d): d is { category: string; value: number } => d.value !== null)
     .sort((a, b) => b.value - a.value);
 
   const top = sorted.slice(0, n);
@@ -323,17 +322,10 @@ export function toParetoData(
   catCol: string,
   numCol: string
 ): { category: string; value: number; cumulative: number }[] {
-  const agg: Record<string, number> = {};
-  for (const row of rows) {
-    const cat = String(row[catCol] || 'Unknown');
-    const val = Number(row[numCol]);
-    if (Number.isFinite(val)) {
-      agg[cat] = (agg[cat] || 0) + Math.abs(val);
-    }
-  }
-  const sorted = Object.entries(agg)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 30);
+  const sorted = sumByCategory(rows, catCol, numCol, Math.abs)
+    .filter(entry => entry.count > 0)
+    .slice(0, 30)
+    .map(({ category, value }) => [category, value] as [string, number]);
   const total = sorted.reduce((s, [, v]) => s + v, 0);
   let running = 0;
   return sorted.map(([category, value]) => {
@@ -350,8 +342,8 @@ export function toCumulativeLineData(
   numCol: string
 ): { category: string; value: number; cumulative: number }[] {
   const sorted = rows
-    .map(r => ({ date: String(r[dateCol] || ''), value: Number(r[numCol]) || 0 }))
-    .filter(r => r.date && Number.isFinite(r.value))
+    .map(r => ({ date: String(r[dateCol] ?? '').trim(), value: chartNumber(r[numCol]) }))
+    .filter((r): r is { date: string; value: number } => r.date !== '' && r.value !== null)
     .sort((a, b) => a.date.localeCompare(b.date));
 
   let cumulative = 0;
@@ -369,8 +361,8 @@ export function toStatsSummaryTable(
 ): Record<string, any>[] {
   return numericCols.slice(0, 20).map(col => {
     const values = rows
-      .map(r => Number(r[col]))
-      .filter(v => Number.isFinite(v))
+      .map(r => chartNumber(r[col]))
+      .filter((v): v is number => v !== null)
       .sort((a, b) => a - b);
     const n = values.length;
     if (n === 0) return { Metric: col, Count: 0 };
@@ -439,15 +431,17 @@ export function toBubbleData(
   sizeCol: string,
   labelCol?: string
 ): { x: number; y: number; z: number; label: string }[] {
-  return rows
-    .map(r => ({
-      x: Number(r[xCol]) || 0,
-      y: Number(r[yCol]) || 0,
-      z: Math.abs(Number(r[sizeCol]) || 0),
-      label: labelCol ? String(r[labelCol] || '') : '',
-    }))
-    .filter(d => Number.isFinite(d.x) && Number.isFinite(d.y) && Number.isFinite(d.z))
-    .slice(0, 300);
+  // A row missing x, y or size has no position: it is left out, not drawn at 0.
+  const points: { x: number; y: number; z: number; label: string }[] = [];
+  for (const r of rows) {
+    const x = chartNumber(r[xCol]);
+    const y = chartNumber(r[yCol]);
+    const z = chartNumber(r[sizeCol]);
+    if (x === null || y === null || z === null) continue;
+    points.push({ x, y, z: Math.abs(z), label: labelCol ? String(r[labelCol] ?? '').trim() : '' });
+    if (points.length === 300) break;
+  }
+  return points;
 }
 
 // ── Year-over-Year comparison ──
@@ -466,8 +460,8 @@ export function toYoYData(
     if (!match) continue;
     const year = match[1];
     const month = match[2].padStart(2, '0');
-    const val = Number(row[numCol]);
-    if (!Number.isFinite(val)) continue;
+    const val = chartNumber(row[numCol]);
+    if (val === null) continue;
     years.add(year);
     if (!yearMonth[month]) yearMonth[month] = {};
     yearMonth[month][year] = (yearMonth[month][year] || 0) + val;

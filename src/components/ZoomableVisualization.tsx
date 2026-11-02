@@ -127,6 +127,9 @@ const ZoomableVisualization: React.FC<ZoomableVisualizationProps> = ({
               {datasetName && (
                 <p className="text-xs text-gray-400 truncate" title={datasetName}>From: {datasetName}</p>
               )}
+              {visualization.description && (
+                <p className="mt-1 text-xs leading-snug text-gray-600">{visualization.description}</p>
+              )}
               <div className="mt-1 flex items-center gap-2">
                 <p className="text-sm text-gray-500">{VISUALIZATION_TYPE_LABEL[selectedVisualizationType]} Chart</p>
                 <Select

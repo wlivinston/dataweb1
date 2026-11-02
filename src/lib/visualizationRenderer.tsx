@@ -101,6 +101,25 @@ const getStableColorStart = (viz: Visualization, paletteLength: number): number 
   return Math.abs(hash) % paletteLength;
 };
 
+/**
+ * Radar rows for rendering. Each row is one axis (a measure); each series
+ * (a category such as "Adult") is a key on the row. This used to rebuild every
+ * row as just { subject, value, fullMark }, which threw the series keys away -
+ * so every <Radar dataKey="Adult"> found nothing and the chart drew an empty
+ * web with the legend beside it.
+ */
+type RadarRow = Record<string, unknown>;
+
+export const toRadarRenderData = (data: readonly RadarRow[]): RadarRow[] =>
+  data.map(entry => ({
+    ...entry,
+    subject: String(entry.subject ?? entry.category ?? entry.name ?? ''),
+  }));
+
+/** The series a radar draws: every numeric key except the axis label. */
+export const radarSeriesKeys = (data: RadarRow[]): string[] =>
+  getSeriesKeys(data as Parameters<typeof getSeriesKeys>[0]).filter(key => key !== 'subject' && key !== 'fullMark');
+
 const getSeriesKeys = (data: Record<string, any>[]): string[] => {
   if (!Array.isArray(data) || data.length === 0) return ['value'];
 
@@ -321,15 +340,20 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
             All records have the same value: <strong>{chartData[0]?.category || chartData[0]?.name || 'N/A'}</strong> ({total.toLocaleString()} records, 100%)
           </div>
         )}
-        <ResponsiveContainer width="100%" height={hasManyCats ? 280 : 220}>
-          <PieChart margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
+        {/* Labels sit outside the slices, so the chart needs room above and
+            below the circle: with a 5px margin a label over the top slice
+            ("Adult 71.8%") was drawn outside the SVG and cut off. */}
+        <ResponsiveContainer width="100%" height={hasManyCats ? 310 : 270}>
+          <PieChart margin={{ top: 28, right: 24, bottom: 8, left: 24 }}>
             <Pie
               data={chartData}
               cx="50%"
-              cy={hasManyCats ? '40%' : '45%'}
+              cy={hasManyCats ? '44%' : '50%'}
               labelLine={chartData.length <= 8}
               label={chartData.length <= 8 ? renderCustomLabel : false}
-              outerRadius={typeof window !== 'undefined' && window.innerWidth > 768 ? 70 : 55}
+              // Relative to the space left after the legend, so the labels
+              // outside the circle always fit inside it.
+              outerRadius="62%"
               innerRadius={0}
               fill={getColor(0)}
               dataKey="value"
@@ -363,7 +387,7 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
           />
           <Legend
             verticalAlign="bottom"
-            height={hasManyCats ? 60 : 40}
+            height={hasManyCats ? 76 : 56}
             iconType="circle"
             iconSize={8}
             formatter={(value: any, entry: any) => {
@@ -379,7 +403,7 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
             }}
             wrapperStyle={{
               fontSize: '9px',
-              paddingTop: '4px',
+              paddingTop: '16px',
               lineHeight: '14px',
               maxWidth: '100%',
               overflow: 'hidden'
@@ -494,7 +518,7 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
     return (
       <div className="space-y-1">
         <ResponsiveContainer width="100%" height={260}>
-          <PieChart margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
+          <PieChart margin={{ top: 24, right: 24, bottom: 24, left: 24 }}>
             <Pie
               data={chartData}
               cx="50%"
@@ -537,14 +561,8 @@ export const renderVisualization = (viz: Visualization, overrideType?: Supported
 
   // ── Radar chart ──
   if (effectiveType === 'radar') {
-    const radarData = chartData.map((entry: any) => ({
-      subject: String(entry.category || entry.subject || entry.name || ''),
-      value: Number(entry.value) || 0,
-      fullMark: Number(entry.fullMark || entry.max || entry.value) || 100,
-    }));
-
-    // Detect multi-series radar data
-    const seriesKeys = getSeriesKeys(chartData as Record<string, any>[]);
+    const radarData = toRadarRenderData(chartData);
+    const seriesKeys = radarSeriesKeys(radarData);
 
     return (
       <ResponsiveContainer width="100%" height={280}>

@@ -79,6 +79,12 @@ export interface Visualization {
   gradient: string;
   daxCalculations: DAXCalculation[];
   datasetId: string;
+  /**
+   * What the chart shows, in words: which column, how it was aggregated,
+   * over what, and how many rows went into it. A title like "Days Held by
+   * Cart Type" does not say whether that is a total or an average.
+   */
+  description?: string;
 }
 
 export interface Relationship {
