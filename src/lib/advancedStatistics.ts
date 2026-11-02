@@ -14,6 +14,8 @@ import {
   SpearmanCorrelationResult
 } from './types';
 import { cellNumber } from '@/lib/dax/value';
+import { chartNumber, pairwiseCorrelation, sumByCategory } from '@/lib/chartValues';
+import { isAdditiveColumn, isIdentifierLike } from '@/lib/columnMeaning';
 
 // ============================================================
 // Statistical Distribution Approximations
@@ -1134,17 +1136,11 @@ export const paretoAnalysis = (
   categoryColumn: string,
   valueColumn: string
 ): ParetoResult => {
-  // Aggregate values by category
-  const aggregated: Record<string, number> = {};
-  for (const row of dataset.data) {
-    const category = String(row[categoryColumn] || 'Unknown');
-    const value = Math.abs(cellNumber(row[valueColumn]) || 0);
-    aggregated[category] = (aggregated[category] || 0) + value;
-  }
-
-  // Sort descending
-  const sorted = Object.entries(aggregated)
-    .sort((a, b) => b[1] - a[1]);
+  // Grouped as the engine groups (trimmed, case-insensitive; blank is
+  // "(Blank)", not "Unknown"); blank values add nothing.
+  const sorted = sumByCategory(dataset.data, categoryColumn, valueColumn, Math.abs)
+    .filter(entry => entry.count > 0)
+    .map(entry => [entry.category, entry.value] as [string, number]);
 
   const total = sorted.reduce((sum, [, val]) => sum + val, 0);
   if (total === 0) {
@@ -1367,11 +1363,19 @@ export const autoAdvancedAnalysis = (dataset: Dataset): {
     }
   }
 
-  // Pareto (for each categorical + numeric pair, limit to first 2)
+  // Pareto: which few groups make up most of a total. Only meaningful when
+  // the value adds up (revenue, units, minutes - not ages or scores) and the
+  // groups repeat (a category, not an id). The first text and first numeric
+  // columns used to be taken as given: "162 of 240 participant ids account
+  // for 80% of total age".
   const pareto: ParetoResult[] = [];
-  if (categoricalColumns.length > 0 && numericColumns.length > 0) {
-    const catCol = categoricalColumns[0];
-    for (const numCol of numericColumns.slice(0, 2)) {
+  const paretoCategory = categoricalColumns.find(
+    column => !isIdentifierLike(column.name, dataset.data.map(row => row[column.name]))
+  );
+  const paretoValues = numericColumns.filter(column => isAdditiveColumn(column.name));
+  if (paretoCategory && paretoValues.length > 0) {
+    const catCol = paretoCategory;
+    for (const numCol of paretoValues.slice(0, 2)) {
       try {
         pareto.push(paretoAnalysis(dataset, catCol.name, numCol.name));
       } catch (e) {
@@ -1380,11 +1384,22 @@ export const autoAdvancedAnalysis = (dataset: Dataset): {
     }
   }
 
-  // Regression (pick target as first numeric column, predictors as rest)
+  // Regression: predict the measure the others explain best - the one with
+  // the strongest correlations to them - rather than whichever column came
+  // first (which made "age" the outcome of a participants study). Id-like
+  // numeric columns are neither outcome nor predictor.
   let regression: RegressionResult | null = null;
-  if (numericColumns.length >= 2 && dataset.rowCount >= 10) {
-    const target = numericColumns[0].name;
-    const predictors = numericColumns.slice(1, 6).map(c => c.name);
+  const regressionColumns = numericColumns
+    .filter(column => !isIdentifierLike(column.name, dataset.data.map(row => row[column.name])))
+    .map(column => column.name);
+  if (regressionColumns.length >= 2 && dataset.rowCount >= 10) {
+    const series = new Map(regressionColumns.map(name => [name, dataset.data.map(row => chartNumber(row[name]))]));
+    const explained = (name: string) =>
+      regressionColumns
+        .filter(other => other !== name)
+        .reduce((sum, other) => sum + Math.abs(pairwiseCorrelation(series.get(name)!, series.get(other)!)), 0);
+    const target = [...regressionColumns].sort((a, b) => explained(b) - explained(a))[0];
+    const predictors = regressionColumns.filter(name => name !== target).slice(0, 5);
     try {
       regression = multipleRegression(dataset, target, predictors);
     } catch (e) {

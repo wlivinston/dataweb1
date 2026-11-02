@@ -450,25 +450,8 @@ export const calculateGrowthRates = (
   return rates;
 };
 
-/**
- * Whether a column's values add up to something meaningful over a period.
- *
- * Money, quantities, counts and durations do: a day's revenue is the sum of
- * its sales. Ages, scores, ratings, rates and prices do not: the "total age"
- * of a day's enrolments only measures how many people enrolled. Those are
- * averaged instead. Decided from the name, and stated on screen, so a wrong
- * guess is visible rather than silent.
- */
-const ADDITIVE_WORDS = [
-  'amount', 'revenue', 'sales', 'sale', 'total', 'turnover', 'cost', 'costs', 'expense', 'expenses',
-  'spend', 'profit', 'income', 'quantity', 'qty', 'units', 'count', 'volume', 'orders', 'visits',
-  'minutes', 'hours', 'seconds', 'duration', 'days', 'held', 'pieces', 'calls', 'tickets',
-];
-
-export const isAdditiveColumn = (name: string): boolean => {
-  const tokens = name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-  return tokens.some(token => ADDITIVE_WORDS.includes(token));
-};
+export { isAdditiveColumn } from './columnMeaning';
+import { isAdditiveColumn } from './columnMeaning';
 
 // ============================================================
 // Aggregation by Date Period
