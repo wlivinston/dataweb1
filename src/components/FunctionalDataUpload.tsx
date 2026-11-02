@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -70,7 +70,7 @@ import { CHART_COLOR_SCHEMES, SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATI
 // filtered it, and anything unrecognised returned null - indistinguishable
 // from a genuine BLANK. Every number shown below now comes from a parsed,
 // validated, evaluated expression, or is replaced by the reason it could not.
-import { buildSemanticModel } from '@/lib/semantic/model';
+import { createModelCache } from '@/lib/semantic/liveModel';
 import type { SemanticModel } from '@/lib/semantic/types';
 import { runDax, formatDaxValue } from '@/lib/dax/run';
 import { suggestCalculations } from '@/lib/dax/suggest';
@@ -92,17 +92,6 @@ const PAID_SUBSCRIPTION_STATUSES = new Set([
   'monthly',
   'annual',
 ]);
-
-/**
- * Identifies the data a semantic model was built from.
- *
- * Row count catches inserts and deletes; updatedAt catches an edit in place,
- * which leaves the count unchanged. Cheap enough to compute on every check.
- */
-const signatureOf = (datasets: Dataset[]): string =>
-  datasets
-    .map(d => `${d.id}:${d.rowCount}:${d.columns.length}:${d.updatedAt?.getTime() ?? 0}`)
-    .join('|');
 
 const FunctionalDataUpload: React.FC = () => {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -244,9 +233,14 @@ const FunctionalDataUpload: React.FC = () => {
   // The semantic model every DAX expression resolves against. Built from all
   // datasets at once, because a measure names its own table and may reach
   // across a relationship to another one.
-  const [semanticModel, setSemanticModel] = useState<SemanticModel | null>(null);
-  /** What `semanticModel` was built from, to detect that it has gone stale. */
-  const modelSignature = useRef<string>('');
+  //
+  // Derived from `datasets`, not held as separate state. It used to be set
+  // only by the analysis pipelines, so a cell edit, a deleted row, a cleaning
+  // step or a removed dataset left Ask Data answering from the old rows. The
+  // cache builds once per change and is shared with the pipelines, so they
+  // reuse this build rather than repeating it.
+  const [modelFor] = useState(createModelCache);
+  const semanticModel = useMemo(() => modelFor(datasets), [modelFor, datasets]);
 
   const colorSchemes = CHART_COLOR_SCHEMES;
 
@@ -1104,39 +1098,23 @@ const FunctionalDataUpload: React.FC = () => {
    * across a relationship into another, so a model built per-dataset could
    * not express the joins that make the numbers right.
    *
-   * Kept out of render deliberately. Relationship orientation is measured
-   * from the data rather than guessed from column names, which costs a pass
-   * over the rows, so callers run this inside the analysis pipeline between
-   * yields rather than on every keystroke.
+   * Relationship orientation is measured from the data rather than guessed
+   * from column names, which costs a pass over the rows. `modelFor` builds
+   * once per change to the datasets and every caller shares that build:
+   * the render that shows the new data, and the pipeline that runs after it.
+   * Nothing updates `datasets` per keystroke, so this is once per action.
    */
-  const rebuildSemanticModel = (source: Dataset[]): SemanticModel | null => {
-    if (source.length === 0) {
-      modelSignature.current = '';
-      setSemanticModel(null);
-      return null;
-    }
-    const model = buildSemanticModel(source);
-    modelSignature.current = signatureOf(source);
-    setSemanticModel(model);
-    return model;
-  };
+  const rebuildSemanticModel = (source: Dataset[]): SemanticModel | null => modelFor(source);
 
   /**
-   * The model for the data as it stands right now, building one if the
-   * datasets have changed since the last build.
+   * The model for the data as it stands right now.
    *
-   * Rows can be edited and deleted without the analysis pipeline running, so
-   * a model held in state can describe data that no longer exists. Serving a
-   * number from a stale model is the same class of failure as serving one
-   * from a substring match: it looks right and is not.
+   * Rows can be edited and deleted without the analysis pipeline running.
+   * Serving a number from a model built before that is the same class of
+   * failure as serving one from a substring match: it looks right and is not.
+   * `modelFor` rebuilds whenever any dataset's rows, columns or name change.
    */
-  const ensureSemanticModel = (): SemanticModel | null => {
-    if (datasets.length === 0) return null;
-    if (semanticModel && modelSignature.current === signatureOf(datasets)) {
-      return semanticModel;
-    }
-    return rebuildSemanticModel(datasets);
-  };
+  const ensureSemanticModel = (): SemanticModel | null => modelFor(datasets);
 
   /**
    * Anything about the model that changes what a number means.
