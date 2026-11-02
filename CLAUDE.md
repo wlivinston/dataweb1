@@ -74,6 +74,32 @@ and NLQ call that same function, so they cannot drift. NLQ *refuses* a cross-tab
 the filter cannot reach; that refusal is confirmed correct against Power BI (see the
 cross-table sheet) — do not relax it without re-running that case.
 
+### Everything that shows a number uses the engine's rules
+
+The panels around the engine (charts, AI Insights, Advanced Stats, Time Series,
+the column profile, Data Cleaning, the relationship diagram) used to do their own
+arithmetic, and each drifted from the engine in a way that put a confident wrong
+number on screen. They now share the engine's rules; keep it that way:
+
+- **Reading a cell as a number**: `cellAsNumber` / `cellNumber` (`lib/dax/value.ts`,
+  NaN for blank and non-numbers) or `chartNumber` (`lib/chartValues.ts`, null).
+  Never `Number(cell)` — see the trap below.
+- **Grouping by a category**: `CategoryGroups` / `sumByCategory` (`lib/chartValues.ts`),
+  which use the model's `keyOf` (trimmed, case-insensitive; blank is `(Blank)`).
+  `" workshop "` and `"Workshop"` are one group, as in Ask Data.
+- **Correlations**: `pairwiseCorrelation` (rows where both values are present).
+- **Relationships shown or joined on**: `diagramRelationships(model)` — the model's
+  active relationships, never the detector's raw candidates (which link any two
+  columns that share values). Joins for charts use `lookupJoin`, which never
+  repeats a row.
+- **Which columns an auto-analysis picks**: `lib/columnMeaning.ts`
+  (`isAdditiveColumn` — sum money/quantities/durations, average ages/scores;
+  `isIdentifierLike`). Business measures need a matching column name
+  (`requiresNameMatch` in `measures/`).
+- **The model the UI answers from** is derived from `datasets`
+  (`lib/semantic/liveModel.ts`), so an edit, a cleaning step or a deletion can never
+  leave Ask Data answering from old rows.
+
 ### Upload path
 
 `components/FunctionalDataUpload.tsx` is the hub: file → `lib/excelRows.ts` (shared by the
@@ -170,6 +196,16 @@ engines — the two are distinguishable.
   value was 10 — while the panel beside it answered correctly. Route cell values through
   `cellAsNumber` (`lib/dax/value.ts`), which is the DAX engine's own conversion, so the tiles
   and the engine cannot disagree.
+- `Number('')` and `Number(null)` are **0, not NaN**, so `Number(cell)` followed by
+  `.filter(v => !isNaN(v))` keeps every blank as a real zero. That pattern sat in ~50
+  places and moved a correlation from 0.77 to 0.47 and an average from 65.25 to
+  62.62 on a workbook with 10 blank cells. Use `cellNumber` / `chartNumber`.
+- Dates are calendar dates at **midnight UTC, read with UTC getters** (the engine's
+  convention). `new Date('2026-02-01')` is UTC; reading it with `getMonth()` puts it in
+  January anywhere behind UTC. Keying a locally-parsed date with `toISOString()`
+  moves it a day back anywhere ahead of UTC.
+- In the relationship diagram (an SVG), do not size HTML in a `foreignObject`: its
+  height depends on the browser's fonts and it gets cropped. Draw in SVG.
 - `Math.min(...values)` throws `RangeError` between 125,000 and 150,000 elements. Use
   `minOf`/`maxOf` in `lib/dataUtils.ts`, which match `Math.min`/`Math.max` exactly
   (`Infinity` on empty, NaN propagation).
@@ -190,15 +226,26 @@ engines — the two are distinguishable.
 - Never write a NUL separator into a `.ts` source file for composite map keys — the file then
   reads as binary. Use nested maps.
 
-## Where things stand (2026-11-02)
+## Where things stand (2026-11-02, evening)
 
-All five phases of the engine roadmap are merged and deployed (PRs #1–#11): semantic layer,
-DAX engine, measure library, NLQ rearchitecture, dataset persistence. ~1105 frontend tests
-and 66 backend tests, no skips.
+The engine roadmap (PRs #1–#11) and an audit of everything around it (#15–#19) are
+merged and deployed:
 
-Open on top of `master`: PR #12 (`deliberate-gaps` — duplicate/blank header handling, dataset
-delete UI, a jest open handle) and PR #13 (`pdf-chart-capture`, stacked on #12 — the chart
-capture rewrite above). Check `gh pr list` rather than trusting this paragraph.
+- #15 Ask Data follows the data (model derived from `datasets`).
+- #16 charts: type picker, active dataset first, engine-consistent values, a
+  description under every chart.
+- #17/#18 relationship diagram draws the engine's links; chart joins no longer fan
+  out; Fact/Dimension badge drawn in SVG.
+- #19 analysis panels: blanks are missing not zero, business measures need a
+  matching column, Time Series averages what does not add up, Advanced Stats picks
+  meaningful columns, profile counts match the engine.
+
+~1145 frontend tests and 66 backend tests. Open: #12 (`deliberate-gaps` — header
+handling, dataset delete, a jest open handle) and #13 (`pdf-chart-capture`, stacked on
+#12 — chart capture without html2canvas). Check `gh pr list` rather than trusting
+this paragraph.
+
+Not yet audited: PDF export (paid), the Finance and ML Engine pages, the backend.
 
 Phase 5's server-side compute half is **decided but not built** —
 `docs/server-side-compute-decision.md`: keep *one* DAX implementation, run this engine
