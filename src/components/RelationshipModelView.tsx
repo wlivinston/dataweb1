@@ -896,17 +896,38 @@ const RelationshipModelView: React.FC<RelationshipModelViewProps> = ({
                     )}
 
                     {/* Schema type badge, inside the card (which is 136 tall when it
-                        has one): it used to sit on the bottom edge, cut in half. */}
-                    {(node.isFact || node.isDimension) && !showColumns && (
-                      <foreignObject x="-40" y="42" width="80" height="19">
-                        <Badge 
-                          variant={node.isFact ? 'default' : 'secondary'} 
-                          className="text-xs leading-4 py-0 w-full justify-center pointer-events-none"
-                        >
-                          {node.isFact ? 'Fact' : 'Dimension'}
-                        </Badge>
-                      </foreignObject>
-                    )}
+                        has one). Drawn in SVG, not as an HTML badge in a
+                        foreignObject: the HTML pill's height depends on the
+                        browser's fonts, so in some browsers it overflowed its
+                        fixed box and "Fact" was cropped at the bottom. */}
+                    {(node.isFact || node.isDimension) && !showColumns && (() => {
+                      const label = node.isFact ? 'Fact' : 'Dimension';
+                      const width = node.isFact ? 56 : 84;
+                      return (
+                        <g pointerEvents="none">
+                          <rect
+                            x={-width / 2}
+                            y={41}
+                            width={width}
+                            height={20}
+                            rx={10}
+                            fill={node.isFact ? '#2563EB' : '#FFFFFF'}
+                            stroke={node.isFact ? '#2563EB' : '#10B981'}
+                            strokeWidth={1}
+                          />
+                          <text
+                            x={0}
+                            y={55}
+                            textAnchor="middle"
+                            fontSize={11}
+                            fontWeight={600}
+                            fill={node.isFact ? '#FFFFFF' : '#065F46'}
+                          >
+                            {label}
+                          </text>
+                        </g>
+                      );
+                    })()}
 
                     {/* Drop indicator */}
                     {isDragOver && draggedColumn && (
