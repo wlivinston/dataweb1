@@ -71,6 +71,7 @@ import { CHART_COLOR_SCHEMES, SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATI
 // from a genuine BLANK. Every number shown below now comes from a parsed,
 // validated, evaluated expression, or is replaced by the reason it could not.
 import { createModelCache } from '@/lib/semantic/liveModel';
+import { orderForActiveDataset } from '@/lib/visualizationDisplay';
 import type { SemanticModel } from '@/lib/semantic/types';
 import { runDax, formatDaxValue } from '@/lib/dax/run';
 import { suggestCalculations } from '@/lib/dax/suggest';
@@ -3373,7 +3374,7 @@ const FunctionalDataUpload: React.FC = () => {
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    {visualizations.slice(0, 20).map(viz => (
+                    {orderForActiveDataset(visualizations, activeDataset).slice(0, 20).map(viz => (
                       <ErrorBoundary
                         key={viz.id}
                         fallback={
@@ -3387,12 +3388,14 @@ const FunctionalDataUpload: React.FC = () => {
                         <ZoomableVisualization
                           visualization={viz}
                           getVisualizationIcon={getVisualizationIcon}
+                          datasetName={datasets.length > 1 ? datasets.find(d => d.id === viz.datasetId)?.name : undefined}
                         />
                       </ErrorBoundary>
                     ))}
                     {visualizations.length > 20 && (
                       <div className="col-span-2 text-center py-4 text-gray-500 text-sm">
                         Showing first 20 of {visualizations.length} visualizations for performance
+                        {datasets.length > 1 && ' - the active dataset\'s charts come first; select another dataset to see its charts'}
                       </div>
                     )}
                   </div>
