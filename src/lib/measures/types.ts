@@ -41,6 +41,16 @@ export interface MeasureSlot {
   prefers?: string[];
   /** Words that make a qualifying column a worse fit. */
   avoids?: string[];
+  /**
+   * When true, a column qualifies only if its name contains one of `prefers`.
+   *
+   * For business meanings a column's role cannot establish. Any number is a
+   * measure, so without this "Total Revenue" bound to whatever numeric column
+   * ranked first - on a study of participants it summed `age` and reported
+   * "Total Revenue 10,308", and counted participant ids as "Orders". A
+   * confident wrong label is worse than no measure.
+   */
+  requiresNameMatch?: boolean;
   /** When true the measure is still offered if nothing fills this. */
   optional?: boolean;
   /** Shown when explaining which column was chosen and why. */
