@@ -3,7 +3,7 @@
 
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import html2canvas from 'html2canvas';
+import { captureChartElement, fitWithin, isUsableImage, type CapturedChart } from './chartCapture';
 import { Visualization, Dataset, AIInsightSummary } from './types';
 import { RENDERING_LIMITS } from './dataOptimization';
 import type { DaxScalar } from './dax/value';
@@ -52,8 +52,24 @@ export interface EnhancedPDFExportData {
 }
 
 const MAX_VISUALIZATIONS_IN_PDF = 6;
-const MAX_CAPTURED_VISUALIZATIONS = 3;
-const CHART_CAPTURE_TIMEOUT_MS = 3500;
+
+/**
+ * Every chart in the report is photographed, not just the first few.
+ *
+ * It used to be three of six, because each capture cost about nine seconds
+ * and froze the tab while it ran. Capturing one now costs about fifty
+ * milliseconds (see chartCapture.ts), so the whole set is cheaper than one
+ * old capture and the report stops being half pictures and half sketches.
+ */
+const MAX_CAPTURED_VISUALIZATIONS = MAX_VISUALIZATIONS_IN_PDF;
+
+/**
+ * Above this many rows the charts are drawn rather than photographed.
+ *
+ * Kept, though capture is no longer the slow part: an SVG holds a node per
+ * data point, and a scatter plot of a hundred thousand rows is a large
+ * document to serialise.
+ */
 const CHART_CAPTURE_ROW_THRESHOLD = 25000;
 
 /**
@@ -227,72 +243,6 @@ const generateVisualizationInsight = (viz: Visualization, dataset?: Dataset): st
   }
   
   return insights.join(' ');
-};
-
-/**
- * Whether a data URL is really a PNG jsPDF can decode.
- *
- * THE BUG THIS EXISTS FOR. html2canvas on an element with no layout - a chart
- * sitting in a tab that is not open, which is most of them while the user is
- * looking at one - produces a 0x0 canvas. `canvas.toDataURL('image/png')` on
- * a 0x0 canvas does not fail and does not return null: it returns the string
- * "data:,". That is TRUTHY, so it sailed through the `if (chartImage)` guard
- * and reached jsPDF, which threw
- *
- *     Error: wrong PNG signature
- *
- * and took the whole report down with it - after the user had paid for it.
- * The error was then reported to them as "the dataset may be too large",
- * which is not true and sends them off sampling their data over a hidden div.
- *
- * Checked by prefix and by length rather than by decoding: a real capture of
- * an empty white chart is still thousands of characters, and "data:," is six.
- */
-export const PNG_DATA_URL = 'data:image/png;base64,';
-
-export const isUsablePng = (value: string | null | undefined): value is string =>
-  typeof value === 'string' && value.startsWith(PNG_DATA_URL) && value.length > PNG_DATA_URL.length + 100;
-
-/**
- * Capture a chart element as an image with retry
- */
-const captureWithRetry = async (element: HTMLElement, retries = 1): Promise<string | null> => {
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      const canvas = await html2canvas(element, {
-        backgroundColor: '#ffffff',
-        scale: 1,
-        logging: false,
-        useCORS: true,
-        allowTaint: true,
-        windowWidth: Math.min(element.scrollWidth || 800, 1000),
-        windowHeight: Math.min(element.scrollHeight || 400, 700),
-        onclone: (clonedDoc) => {
-          const svgs = clonedDoc.querySelectorAll('svg');
-          svgs.forEach(svg => {
-            if (!svg.getAttribute('width')) {
-              svg.setAttribute('width', String(element.offsetWidth || 600));
-              svg.setAttribute('height', String(element.offsetHeight || 300));
-            }
-          });
-        }
-      });
-      // A canvas with no area cannot be an image. Caught here as well as by
-      // isUsablePng below, because this is the case that actually happens and
-      // it is worth being obvious about.
-      if (!canvas.width || !canvas.height) {
-        continue;
-      }
-
-      const dataUrl = canvas.toDataURL('image/png', 0.9);
-      if (isUsablePng(dataUrl)) return dataUrl;
-    } catch (error) {
-      if (attempt < retries - 1) {
-        await new Promise(r => setTimeout(r, 500));
-      }
-    }
-  }
-  return null;
 };
 
 /**
@@ -570,30 +520,67 @@ const renderSchemaDiagram = (
 };
 
 /**
- * Capture a chart element as an image
+ * The element on the page showing a given visualization.
+ *
+ * Charts are mounted by several components under several id schemes, and the
+ * caller may also hand over a map it built itself. Every scheme is searched
+ * and the largest match wins - see below.
  */
-const captureChartImage = async (elementId: string): Promise<string | null> => {
-  try {
-    const element = document.getElementById(elementId);
-    if (!element) {
-      console.warn(`Element with id ${elementId} not found`);
-      return null;
-    }
+const findChartElement = (
+  vizId: string,
+  index: number,
+  provided?: Map<string, HTMLElement>
+): HTMLElement | null => {
+  const selectors = [
+    `#viz-${vizId}`,
+    `[data-viz-id="${vizId}"]`,
+    `#chart-${vizId}`,
+    `#visualization-${index}`,
+  ];
 
-    const canvas = await html2canvas(element, {
-      backgroundColor: '#ffffff',
-      scale: 2, // Higher quality
-      logging: false,
-      useCORS: true,
-      allowTaint: true
-    });
-
-    return canvas.toDataURL('image/png');
-  } catch (error) {
-    console.error('Error capturing chart:', error);
-    return null;
+  const candidates: HTMLElement[] = [];
+  for (const selector of selectors) {
+    candidates.push(...(Array.from(document.querySelectorAll(selector)) as HTMLElement[]));
   }
+
+  const supplied = Array.from(provided?.entries() ?? []).find(
+    ([id]) => id.includes(vizId) || id === `viz-${vizId}`
+  );
+  if (supplied) candidates.push(supplied[1]);
+
+  // The same chart is on the page more than once - a small card on the
+  // dashboard and a large one on the Visualizations tab, which share an id.
+  // Taking the first in document order means always photographing the small
+  // one, at about half the resolution, even while the user is looking at the
+  // big one. Take the biggest thing on the screen instead.
+  return largestOnScreen(candidates);
 };
+
+/** The candidate with the most area, ignoring any that are not laid out. */
+const largestOnScreen = (elements: HTMLElement[]): HTMLElement | null => {
+  let best: HTMLElement | null = null;
+  let bestArea = 0;
+
+  for (const element of elements) {
+    const rect = element.getBoundingClientRect();
+    const area = rect.width * rect.height;
+    if (area > bestArea) {
+      best = element;
+      bestArea = area;
+    }
+  }
+
+  return best;
+};
+
+/**
+ * The tallest a chart image may be printed, in PDF units.
+ *
+ * An A4 page is 297 tall; this leaves room for the heading above the chart
+ * and the insight paragraph below it without pushing one of them onto its
+ * own page.
+ */
+const CHART_IMAGE_MAX_HEIGHT = 110;
 
 /**
  * Generate enhanced PDF with visualizations and insights
@@ -759,62 +746,20 @@ export const generateEnhancedPDF = async (
       doc.setTextColor(0, 0, 0);
       yPosition += 8;
 
-      // Try to capture only the first few charts and fall back for the rest.
-      let chartImage: string | null = null;
+      // Photograph the chart if it is on the screen. If it is not - a tab
+      // nobody opened, a card scrolled out of a virtualised list - it gets
+      // drawn from its data below instead.
+      let chart: CapturedChart | null = null;
       if (shouldAttemptChartCapture && i < MAX_CAPTURED_VISUALIZATIONS) {
-        try {
-          const capturePromise = new Promise<string | null>((resolve) => {
-            const timeout = setTimeout(() => {
-              console.warn('Chart capture timeout');
-              resolve(null);
-            }, CHART_CAPTURE_TIMEOUT_MS);
-
-            (async () => {
-              try {
-                const possibleSelectors = [
-                  `#viz-${viz.id}`,
-                  `[data-viz-id="${viz.id}"]`,
-                  `#chart-${viz.id}`,
-                  `#visualization-${i}`
-                ];
-
-                let chartElement: HTMLElement | null = null;
-
-                for (const selector of possibleSelectors) {
-                  chartElement = document.querySelector(selector) as HTMLElement;
-                  if (chartElement) break;
-                }
-
-                if (!chartElement) {
-                  const found = Array.from(chartElements?.entries() ?? []).find(([id]) =>
-                    id.includes(viz.id) || id === `viz-${viz.id}`
-                  );
-                  if (found) {
-                    chartElement = found[1];
-                  }
-                }
-
-                if (chartElement) {
-                  // Use retry-enabled capture
-                  const result = await captureWithRetry(chartElement, 1);
-                  clearTimeout(timeout);
-                  resolve(result);
-                } else {
-                  clearTimeout(timeout);
-                  resolve(null);
-                }
-              } catch (error) {
-                clearTimeout(timeout);
-                console.warn('Could not capture chart image:', error);
-                resolve(null);
-              }
-            })();
-          });
-
-          chartImage = await capturePromise;
-        } catch (error) {
-          console.warn('Chart capture failed:', error);
-          chartImage = null;
+        const element = findChartElement(viz.id, i, chartElements);
+        if (element) {
+          try {
+            chart = await captureChartElement(element);
+          } catch (error) {
+            // One chart is not worth the report.
+            console.warn('Could not capture chart image:', error);
+            chart = null;
+          }
         }
       }
 
@@ -825,25 +770,27 @@ export const generateEnhancedPDF = async (
       // the ENTIRE report, charts, tables, insights and all. This file already
       // knows how to draw a simplified chart when there is no image, so one
       // bad capture now costs a picture rather than the document.
-      if (isUsablePng(chartImage)) {
-        const imgWidth = Math.min(contentWidth, 150);
-        const imgHeight = (imgWidth / 2);
+      if (chart && isUsableImage(chart.dataUrl, chart.format)) {
+        // At the chart's own shape. This used to be `imgWidth / 2` whatever
+        // had been captured, so a square chart - which is most of them, and
+        // every pie - was printed squashed to half its height.
+        const size = fitWithin(chart, Math.min(contentWidth, 150), CHART_IMAGE_MAX_HEIGHT);
 
-        if (yPosition + imgHeight > pageHeight - 40) {
+        if (yPosition + size.height > pageHeight - 40) {
           doc.addPage();
           yPosition = 20;
         }
 
         try {
-          doc.addImage(chartImage, 'PNG', margin, yPosition, imgWidth, imgHeight);
-          yPosition += imgHeight + 8;
+          doc.addImage(chart.dataUrl, chart.format, margin, yPosition, size.width, size.height);
+          yPosition += size.height + 8;
         } catch (error) {
           console.warn('Chart image was rejected by the PDF writer; drawing it instead:', error);
-          chartImage = null;
+          chart = null;
         }
       }
 
-      if (!isUsablePng(chartImage)) {
+      if (!chart) {
         // Fallback: Render simplified chart directly in PDF using drawing APIs
         const chartFallbackHeight = 60;
         if (yPosition + chartFallbackHeight > pageHeight - 40) {
