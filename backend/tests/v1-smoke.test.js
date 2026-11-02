@@ -1,5 +1,23 @@
 const request = require('supertest');
 const app = require('../server');
+const { closePool } = require('../config/database');
+
+/**
+ * Requiring ../server creates the Postgres pool at module load, and nothing
+ * ever closed it - so this suite passed and then jest reported
+ *
+ *   A worker process has failed to exit gracefully and has been force exited.
+ *   This is likely caused by tests leaking due to improper teardown.
+ *
+ * on every single run. A warning that appears every time is a warning nobody
+ * reads, and it would have hidden a real leak introduced later.
+ *
+ * Note it does NOT appear under --detectOpenHandles, which runs in band and
+ * changes the timing - so the obvious way to investigate it makes it vanish.
+ */
+afterAll(async () => {
+  await closePool();
+});
 
 describe('api v1 smoke', () => {
   // ── Existing tests ────────────────────────────────────────────────
