@@ -916,6 +916,10 @@ const FunctionalDataUpload: React.FC = () => {
 
     try {
       let data: any[] = [];
+      // Header renames describe the file being loaded and nothing else. Only
+      // the CSV reader sets them, so without this a CSV's renames were
+      // announced again - under the next file's name - after a JSON upload.
+      csvHeaderChanges.current = [];
 
       // Stage 1: Reading file
       setUploadStage('uploading');
