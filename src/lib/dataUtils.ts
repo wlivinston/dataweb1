@@ -1,5 +1,6 @@
 // Shared data utilities for parsing, analyzing, and manipulating data
 import { ColumnInfo, DataType, Dataset } from './types';
+import { cellNumber } from '@/lib/dax/value';
 
 /**
  * Detect data type from a value
@@ -30,20 +31,28 @@ export const detectDataType = (value: any): DataType => {
  * Analyze a column from dataset values
  */
 export const analyzeColumn = (columnName: string, values: any[]): ColumnInfo => {
-  const nonNullValues = values.filter(v => v !== null && v !== undefined && v !== '');
+  // Blank includes a cell of only spaces.
+  const nonNullValues = values.filter(v => v !== null && v !== undefined && String(v).trim() !== '');
   const dataType = detectDataTypeFromValues(values);
-  
+
+  // In a numeric column a non-number ("NA") is missing - every statistic
+  // leaves it out - so Data Cleaning's null count and quality score do too.
+  const presentCount = dataType === 'number'
+    ? values.filter(v => !isNaN(cellNumber(v))).length
+    : nonNullValues.length;
+
   const columnInfo: ColumnInfo = {
     name: columnName,
     type: dataType,
     sampleValues: nonNullValues.slice(0, 5),
-    nullCount: values.length - nonNullValues.length,
-    uniqueCount: new Set(nonNullValues.map(v => String(v))).size
+    nullCount: values.length - presentCount,
+    // Compared as the engine compares (trimmed, case-insensitive).
+    uniqueCount: new Set(nonNullValues.map(v => String(v).trim().toLowerCase())).size
   };
 
   // Add statistical info for numeric columns
   if (dataType === 'number') {
-    const numericValues = nonNullValues.map(v => Number(v)).filter(v => !isNaN(v));
+    const numericValues = nonNullValues.map(v => cellNumber(v)).filter(v => !isNaN(v));
     if (numericValues.length > 0) {
       columnInfo.min = numericValues.reduce((min, val) => val < min ? val : min, numericValues[0]);
       columnInfo.max = numericValues.reduce((max, val) => val > max ? val : max, numericValues[0]);
