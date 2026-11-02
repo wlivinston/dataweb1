@@ -12,24 +12,17 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ZoomIn, ZoomOut, RotateCcw, Move } from 'lucide-react';
+import { chartTypeOptions } from '@/lib/visualizationDisplay';
 
 interface ZoomableVisualizationProps {
   visualization: Visualization;
   getVisualizationIcon?: (type: string) => React.ReactNode;
+  /** Shown under the title, so a chart can be traced to the dataset it was drawn from. */
+  datasetName?: string;
 }
 
-const VISUALIZATION_TYPE_OPTIONS: SupportedVisualizationType[] = [
-  'bar',
-  'line',
-  'area',
-  'pie',
-  'scatter',
-  'table',
-];
-
-// Every SupportedVisualizationType needs a label. The map previously covered
-// only the six types the picker offers, so the Record was structurally invalid
-// and any chart of another type had no display name to fall back on.
+// Every SupportedVisualizationType needs a label: the picker lists the
+// chart's own type (a heatmap, a histogram...) alongside the switchable ones.
 const VISUALIZATION_TYPE_LABEL: Record<SupportedVisualizationType, string> = {
   bar: 'Bar',
   line: 'Line',
@@ -61,7 +54,8 @@ const toDefaultType = (type: Visualization['type']): SupportedVisualizationType 
 
 const ZoomableVisualization: React.FC<ZoomableVisualizationProps> = ({
   visualization,
-  getVisualizationIcon
+  getVisualizationIcon,
+  datasetName
 }) => {
   const [selectedVisualizationType, setSelectedVisualizationType] = useState<SupportedVisualizationType>(
     () => toDefaultType(visualization.type)
@@ -120,6 +114,8 @@ const ZoomableVisualization: React.FC<ZoomableVisualizationProps> = ({
     setSelectedVisualizationType(toDefaultType(visualization.type));
   }, [visualization.id, visualization.type]);
 
+  const typeOptions = chartTypeOptions(toDefaultType(visualization.type));
+
   return (
     <Card className="p-6 h-full flex flex-col">
       <CardHeader className="pb-4 flex-shrink-0">
@@ -128,6 +124,12 @@ const ZoomableVisualization: React.FC<ZoomableVisualizationProps> = ({
             {getVisualizationIcon && getVisualizationIcon(visualization.type)}
             <div className="flex-1 min-w-0">
               <CardTitle className="text-base font-medium truncate">{visualization.title}</CardTitle>
+              {datasetName && (
+                <p className="text-xs text-gray-400 truncate" title={datasetName}>From: {datasetName}</p>
+              )}
+              {visualization.description && (
+                <p className="mt-1 text-xs leading-snug text-gray-600">{visualization.description}</p>
+              )}
               <div className="mt-1 flex items-center gap-2">
                 <p className="text-sm text-gray-500">{VISUALIZATION_TYPE_LABEL[selectedVisualizationType]} Chart</p>
                 <Select
@@ -138,7 +140,7 @@ const ZoomableVisualization: React.FC<ZoomableVisualizationProps> = ({
                     <SelectValue placeholder="Visual" />
                   </SelectTrigger>
                   <SelectContent>
-                    {VISUALIZATION_TYPE_OPTIONS.map(option => (
+                    {typeOptions.map(option => (
                       <SelectItem key={option} value={option} className="text-xs">
                         {VISUALIZATION_TYPE_LABEL[option]}
                       </SelectItem>

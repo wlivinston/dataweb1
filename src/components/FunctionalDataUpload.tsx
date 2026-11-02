@@ -21,7 +21,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 // chart-type union than the canonical ones, so every chart type added since
 // (histogram, treemap, waterfall, ...) failed to typecheck here.
 import { Dataset, ColumnInfo, DataType, Relationship, Visualization, DAXCalculation } from '@/lib/types';
-import { analyzeColumn, updateDatasetStats, createEmptyObservation } from '@/lib/dataUtils';
+import { analyzeColumn, updateDatasetStats, createEmptyObservation, minOf, maxOf } from '@/lib/dataUtils';
 // Import new components
 import DataEntryForm from './DataEntryForm';
 import CustomFieldDialog from './CustomFieldDialog';
@@ -71,6 +71,8 @@ import { CHART_COLOR_SCHEMES, SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATI
 // from a genuine BLANK. Every number shown below now comes from a parsed,
 // validated, evaluated expression, or is replaced by the reason it could not.
 import { createModelCache } from '@/lib/semantic/liveModel';
+import { orderForActiveDataset } from '@/lib/visualizationDisplay';
+import { CategoryGroups, chartNumber, sumByCategory, numbersIn, coverageNote, BLANK_LABEL } from '@/lib/chartValues';
 import type { SemanticModel } from '@/lib/semantic/types';
 import { runDax, formatDaxValue } from '@/lib/dax/run';
 import { suggestCalculations } from '@/lib/dax/suggest';
@@ -1178,6 +1180,9 @@ const FunctionalDataUpload: React.FC = () => {
       ? dataset.data.filter((_, i) => i % step === 0)
       : dataset.data;
 
+    /** "Drawn from N rows..." for the columns a chart reads. */
+    const note = (...columns: string[]) => coverageNote(dataToUse, columns, dataset.rowCount);
+
     // --- SMART COLUMN SELECTION ---
     // Helper: count unique values for a column
     const getUniqueCount = (colName: string): number => {
@@ -1241,8 +1246,12 @@ const FunctionalDataUpload: React.FC = () => {
       let score = 100;
       if (isLikelyNumericId(col.name, dataToUse)) score -= 80;
       const lower = col.name.toLowerCase();
+      // A sequence or position ("session_number", "line_no", "rank") counts
+      // things off; adding it up means nothing. It was chosen as the headline
+      // measure whenever it happened to be the first numeric column.
+      if (/(^|[\s_-])(number|no|num|seq|sequence|index|rank|position)$/.test(lower)) score -= 60;
       // Bonus for common measure names
-      if (['sales', 'revenue', 'profit', 'amount', 'price', 'cost', 'total', 'quantity', 'count', 'score', 'rating', 'discount', 'tax', 'weight', 'volume'].some(n => lower.includes(n))) {
+      if (['sales', 'revenue', 'profit', 'amount', 'price', 'cost', 'total', 'quantity', 'count', 'score', 'rating', 'discount', 'tax', 'weight', 'volume', 'minutes', 'hours', 'days', 'duration', 'held'].some(n => lower.includes(n))) {
         score += 30;
       }
       return score;
@@ -1270,22 +1279,18 @@ const FunctionalDataUpload: React.FC = () => {
       const categoryCol = bestCatCol;
       const valueCol = bestNumCol;
 
-      const groupedData = dataToUse.reduce((acc, row) => {
-        const category = String(row[categoryCol.name] || 'Other');
-        const numValue = Number(row[valueCol.name]) || 0;
-        acc[category] = (acc[category] || 0) + numValue;
-        return acc;
-      }, {} as Record<string, number>);
-
-      const barData = Object.entries(groupedData)
-        .map(([category, value]) => ({ category, value: Number(value) || 0 }))
-        .sort((a, b) => (b.value as number) - (a.value as number))
-        .slice(0, 25); // Top 25 for bar chart
+      const totals = sumByCategory(dataToUse, categoryCol.name, valueCol.name);
+      const barData = totals
+        .slice(0, 25) // Top 25 for bar chart
+        .map(({ category, value }) => ({ category, value }));
 
       if (barData.length > 0) {
         visualizations.push({
           id: `bar-${dataset.id}`,
           title: `${valueCol.name} by ${categoryCol.name}${isLarge ? ' (Sampled)' : ''}`,
+          description:
+            `Total ${valueCol.name} for each ${categoryCol.name}, largest first` +
+            `${totals.length > 25 ? ` (top 25 of ${totals.length})` : ''}. ${note(valueCol.name)}`,
           type: 'bar',
           data: optimizeVisualizationData(barData, 'bar'),
           colors: currentScheme.colors,
@@ -1302,24 +1307,24 @@ const FunctionalDataUpload: React.FC = () => {
       let groupedData: Record<string, number>;
 
       if (bestNumCol) {
-        const valueCol = bestNumCol;
-        groupedData = dataToUse.reduce((acc, row) => {
-          const category = String(row[categoryCol.name] || '');
-          const numValue = Number(row[valueCol.name]) || 0;
-          acc[category] = (acc[category] || 0) + numValue;
-          return acc;
-        }, {} as Record<string, number>);
+        groupedData = Object.fromEntries(
+          sumByCategory(dataToUse, categoryCol.name, bestNumCol.name).map(t => [t.category, t.value])
+        );
       } else {
-        groupedData = dataToUse.reduce((acc, row) => {
-          const category = String(row[categoryCol.name] || '');
-          acc[category] = (acc[category] || 0) + 1;
-          return acc;
-        }, {} as Record<string, number>);
+        const groups = new CategoryGroups();
+        groupedData = {};
+        for (const row of dataToUse) {
+          const label = groups.label(groups.key(row[categoryCol.name]));
+          groupedData[label] = (groupedData[label] || 0) + 1;
+        }
       }
 
+      // A blank category stays in as "(Blank)": dropping it silently made
+      // every other slice's percentage larger than it is.
       let pieEntries = Object.entries(groupedData)
-        .filter(([category]) => category && category !== 'null' && category !== 'undefined' && category !== '')
+        .filter(([, value]) => value > 0)
         .sort((a, b) => b[1] - a[1]);
+      const pieSliceCount = pieEntries.length;
 
       // If too many slices, group small ones into "Other"
       if (pieEntries.length > pieMaxSlices) {
@@ -1337,6 +1342,11 @@ const FunctionalDataUpload: React.FC = () => {
           title: bestNumCol
             ? `${bestNumCol.name} by ${categoryCol.name}${isLarge ? ' (Sampled)' : ''}`
             : `Distribution of ${categoryCol.name}${isLarge ? ' (Sampled)' : ''}`,
+          description: (bestNumCol
+            ? `Each ${categoryCol.name}'s share of total ${bestNumCol.name}.`
+            : `Each ${categoryCol.name}'s share of the rows.`) +
+            `${pieSliceCount > pieMaxSlices ? ` The ${pieSliceCount - pieMaxSlices + 1} smallest are combined as "Other".` : ''}` +
+            ` ${bestNumCol ? note(bestNumCol.name) : note()}`,
           type: 'pie',
           data: optimizeVisualizationData(pieData, 'pie'),
           colors: currentScheme.colors,
@@ -1354,9 +1364,10 @@ const FunctionalDataUpload: React.FC = () => {
 
       // Aggregate by date for time series
       const dateAgg = dataToUse.reduce((acc, row) => {
-        const dateVal = String(row[dateCol.name] || '');
+        const dateVal = String(row[dateCol.name] ?? '').trim();
         if (!dateVal || dateVal === 'null' || dateVal === 'undefined') return acc;
-        const numValue = Number(row[valueCol.name]) || 0;
+        const numValue = chartNumber(row[valueCol.name]);
+        if (numValue === null) return acc;
         acc[dateVal] = (acc[dateVal] || 0) + numValue;
         return acc;
       }, {} as Record<string, number>);
@@ -1370,6 +1381,7 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `line-${dataset.id}`,
           title: `${valueCol.name} over ${dateCol.name}${isLarge ? ' (Sampled)' : ''}`,
+          description: `Total ${valueCol.name} on each ${dateCol.name}, in date order. ${note(valueCol.name)}`,
           type: 'line',
           data: optimizeVisualizationData(lineData, 'line'),
           colors: currentScheme.colors,
@@ -1385,19 +1397,29 @@ const FunctionalDataUpload: React.FC = () => {
       const col1 = bestNumCol;
       const col2 = secondNumCol;
 
-      const scatterData = dataToUse
-        .map(row => ({
-          x: Number(row[col1.name]) || 0,
-          y: Number(row[col2.name]) || 0,
-          category: bestCatCol ? String(row[bestCatCol.name] || '') : ''
-        }))
-        .filter(d => !isNaN(d.x) && !isNaN(d.y))
-        .slice(0, RENDERING_LIMITS.MAX_CHART_POINTS);
+      // A row missing either value has no position, so it is left out
+      // rather than drawn at 0 - which put a column of false points on the axis.
+      const scatterGroups = new CategoryGroups();
+      const scatterData: { x: number; y: number; category: string }[] = [];
+      for (const row of dataToUse) {
+        const x = chartNumber(row[col1.name]);
+        const y = chartNumber(row[col2.name]);
+        if (x === null || y === null) continue;
+        scatterData.push({
+          x,
+          y,
+          category: bestCatCol ? scatterGroups.label(scatterGroups.key(row[bestCatCol.name])) : '',
+        });
+        if (scatterData.length === RENDERING_LIMITS.MAX_CHART_POINTS) break;
+      }
 
       if (scatterData.length > 1) {
         visualizations.push({
           id: `scatter-${dataset.id}`,
           title: `${col1.name} vs ${col2.name}${isLarge ? ' (Sampled)' : ''}`,
+          description:
+            `One point per row: ${col1.name} across, ${col2.name} up. ` +
+            `Points that rise together suggest the two move together. ${note(col1.name, col2.name)}`,
           type: 'scatter',
           data: scatterData,
           colors: currentScheme.colors,
@@ -1416,12 +1438,13 @@ const FunctionalDataUpload: React.FC = () => {
 
       // Aggregate by axis for cleaner area chart
       const areaAgg: Record<string, { v1: number; v2: number }> = {};
+      const areaGroups = new CategoryGroups();
       dataToUse.forEach(row => {
-        const key = String(row[axisCol.name] || '');
-        if (!key || key === 'null' || key === 'undefined') return;
+        const key = areaGroups.label(areaGroups.key(row[axisCol.name]));
+        if (key === BLANK_LABEL) return;
         if (!areaAgg[key]) areaAgg[key] = { v1: 0, v2: 0 };
-        areaAgg[key].v1 += Number(row[valueCol1.name]) || 0;
-        areaAgg[key].v2 += Number(row[valueCol2.name]) || 0;
+        areaAgg[key].v1 += chartNumber(row[valueCol1.name]) ?? 0;
+        areaAgg[key].v2 += chartNumber(row[valueCol2.name]) ?? 0;
       });
 
       let areaData = Object.entries(areaAgg)
@@ -1443,6 +1466,9 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `area-${dataset.id}`,
           title: `${valueCol1.name} & ${valueCol2.name} by ${axisCol.name}${isLarge ? ' (Sampled)' : ''}`,
+          description:
+            `Total ${valueCol1.name} ("value") and total ${valueCol2.name} ("value2") for each ${axisCol.name}. ` +
+            `Rows with no ${axisCol.name} are left out. ${note()}`,
           type: 'area',
           data: optimizeVisualizationData(areaData, 'area'),
           colors: currentScheme.colors,
@@ -1457,14 +1483,14 @@ const FunctionalDataUpload: React.FC = () => {
     if (categoricalColumns.length > 0 && numericColumns.length === 0 && bestCatCol) {
       const categoryCol = bestCatCol;
 
-      const countData = dataToUse.reduce((acc, row) => {
-        const category = String(row[categoryCol.name] || 'Unknown');
-        acc[category] = (acc[category] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>);
+      const countGroups = new CategoryGroups();
+      const countData: Record<string, number> = {};
+      for (const row of dataToUse) {
+        const label = countGroups.label(countGroups.key(row[categoryCol.name]));
+        countData[label] = (countData[label] || 0) + 1;
+      }
 
       const countChartData = Object.entries(countData)
-        .filter(([category]) => category && category !== 'null' && category !== 'undefined' && category !== '')
         .map(([category, value]) => ({ category, value }))
         .sort((a, b) => (b.value as number) - (a.value as number))
         .slice(0, 25);
@@ -1473,6 +1499,7 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `count-bar-${dataset.id}`,
           title: `Count by ${categoryCol.name}${isLarge ? ' (Sampled)' : ''}`,
+          description: `Number of rows for each ${categoryCol.name}, largest first. ${note()}`,
           type: 'bar',
           data: optimizeVisualizationData(countChartData, 'bar'),
           colors: currentScheme.colors,
@@ -1489,16 +1516,10 @@ const FunctionalDataUpload: React.FC = () => {
     if (pieCatCol && bestNumCol) {
       const categoryCol = pieCatCol;
       const valueCol = bestNumCol;
-      const donutAgg: Record<string, number> = dataToUse.reduce((acc: Record<string, number>, row) => {
-        const cat = String(row[categoryCol.name] || '');
-        const val = Number(row[valueCol.name]) || 0;
-        acc[cat] = (acc[cat] || 0) + val;
-        return acc;
-      }, {} as Record<string, number>);
-
-      let donutEntries: [string, number][] = Object.entries(donutAgg)
-        .filter(([c]) => c && c !== 'null' && c !== 'undefined' && c !== '')
-        .sort((a, b) => b[1] - a[1]);
+      let donutEntries: [string, number][] = sumByCategory(dataToUse, categoryCol.name, valueCol.name)
+        .filter(t => t.value > 0)
+        .map(t => [t.category, t.value] as [string, number]);
+      const donutSliceCount = donutEntries.length;
       if (donutEntries.length > 10) {
         const top = donutEntries.slice(0, 9);
         const rest = donutEntries.slice(9).reduce((s, [, v]) => s + v, 0);
@@ -1509,6 +1530,9 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `donut-${dataset.id}`,
           title: `${valueCol.name} Distribution (${categoryCol.name})`,
+          description:
+            `Each ${categoryCol.name}'s share of total ${valueCol.name}` +
+            `${donutSliceCount > 10 ? `; the ${donutSliceCount - 9} smallest are combined as "Other"` : ''}. ${note(valueCol.name)}`,
           type: 'donut',
           data: donutData,
           colors: currentScheme.colors,
@@ -1524,15 +1548,18 @@ const FunctionalDataUpload: React.FC = () => {
       col => !isLikelyNumericId(col.name, dataToUse) && getUniqueCount(col.name) > 20
     ).slice(0, 3);
     for (const col of histNumCols) {
-      const values = dataToUse
-        .map(r => Number(r[col.name]))
-        .filter(v => Number.isFinite(v));
+      // Number(null) and Number('') are 0, so every blank used to land in the
+      // lowest bin as a value that was never there.
+      const values = numbersIn(dataToUse, col.name);
       if (values.length < 10) continue;
       const histData = toHistogramData(values, Math.min(20, Math.ceil(Math.sqrt(values.length))));
       if (histData.length > 2) {
         visualizations.push({
           id: `histogram-${col.name}-${dataset.id}`,
           title: `Distribution of ${col.name}`,
+          description:
+            `How many rows fall in each range of ${col.name}. ` +
+            `Lowest ${minOf(values).toLocaleString()}, highest ${maxOf(values).toLocaleString()}. ${note(col.name)}`,
           type: 'histogram',
           data: histData,
           colors: currentScheme.colors,
@@ -1546,10 +1573,11 @@ const FunctionalDataUpload: React.FC = () => {
     // Box Plot - Categorical (2-8 groups) × Numeric
     if (bestCatCol && bestNumCol && bestCatUniques >= 2 && bestCatUniques <= 8) {
       const groups = new Map<string, number[]>();
+      const boxGroups = new CategoryGroups();
       for (const row of dataToUse) {
-        const cat = String(row[bestCatCol.name] || '');
-        const val = Number(row[bestNumCol.name]);
-        if (!Number.isFinite(val) || !cat) continue;
+        const cat = boxGroups.label(boxGroups.key(row[bestCatCol.name]));
+        const val = chartNumber(row[bestNumCol.name]);
+        if (val === null) continue;
         if (!groups.has(cat)) groups.set(cat, []);
         groups.get(cat)!.push(val);
       }
@@ -1558,6 +1586,10 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `boxplot-${dataset.id}`,
           title: `${bestNumCol.name} by ${bestCatCol.name} (Box Plot)`,
+          description:
+            `The spread of ${bestNumCol.name} within each ${bestCatCol.name}: the box holds the middle half of the rows, ` +
+            `the line is the median, the dots are the lowest and highest values that are not outliers. ` +
+            `Groups with fewer than 4 values are not shown. ${note(bestNumCol.name)}`,
           type: 'boxplot',
           data: boxData,
           colors: currentScheme.colors,
@@ -1577,8 +1609,9 @@ const FunctionalDataUpload: React.FC = () => {
       // `?? ''` and an explicit emptiness test: a category legitimately
       // labelled "0" or "false" is falsy, and `|| ''` plus filter(Boolean)
       // dropped it from the chart entirely.
-      const catValues = [...new Set(dataToUse.slice(0, 2000).map(r => String(r[bestCatCol.name] ?? '')))]
-        .filter(value => value !== '')
+      const radarGroups = new CategoryGroups();
+      const catValues = [...new Set(dataToUse.slice(0, 2000).map(r => radarGroups.label(radarGroups.key(r[bestCatCol.name]))))]
+        .filter(value => value !== BLANK_LABEL)
         .slice(0, 6);
       if (radarNumCols.length >= 3 && catValues.length >= 2) {
         const radarData = toRadarData(dataToUse, radarNumCols, bestCatCol.name, catValues);
@@ -1586,6 +1619,9 @@ const FunctionalDataUpload: React.FC = () => {
           visualizations.push({
             id: `radar-${dataset.id}`,
             title: `Metric Comparison by ${bestCatCol.name} (Radar)`,
+            description:
+              `Average of each measure (${radarNumCols.join(', ')}) for each ${bestCatCol.name}, one shape per ${bestCatCol.name}. ` +
+              `Blank values are not averaged in. ${note()}`,
             type: 'radar',
             data: radarData,
             colors: currentScheme.colors,
@@ -1604,6 +1640,7 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `treemap-${dataset.id}`,
           title: `${bestNumCol.name} by ${bestCatCol.name} (Treemap)`,
+          description: `Each box is a ${bestCatCol.name}, sized by its total ${bestNumCol.name} (negative values counted by size). ${note(bestNumCol.name)}`,
           type: 'treemap',
           data: treemapData,
           colors: currentScheme.colors,
@@ -1626,6 +1663,9 @@ const FunctionalDataUpload: React.FC = () => {
           visualizations.push({
             id: `heatmap-${dataset.id}`,
             title: `Correlation Matrix (${heatCols.length} metrics)`,
+            description:
+              `How closely each pair of measures moves together, from -1 (opposite) through 0 (unrelated) to 1 (together). ` +
+              `Each pair uses only the rows where both values are present. ${note()}`,
             type: 'heatmap',
             data: heatData,
             colors: currentScheme.colors,
@@ -1646,6 +1686,9 @@ const FunctionalDataUpload: React.FC = () => {
           visualizations.push({
             id: `stacked-bar-${dataset.id}`,
             title: `${bestNumCol.name} by ${bestCatCol.name} × ${secondCatCol.name} (Stacked)`,
+            description:
+              `Total ${bestNumCol.name} for each ${bestCatCol.name}, split by ${secondCatCol.name}. ` +
+              `Rows with no ${secondCatCol.name} are shown as "${BLANK_LABEL}". ${note(bestNumCol.name)}`,
             type: 'stacked_bar',
             data: stackedData,
             colors: currentScheme.colors,
@@ -1666,6 +1709,7 @@ const FunctionalDataUpload: React.FC = () => {
           visualizations.push({
             id: `funnel-${dataset.id}`,
             title: `${bestNumCol.name} Funnel by ${funnelCatCol.name}`,
+            description: `Total ${bestNumCol.name} at each ${funnelCatCol.name}, largest first. ${note(bestNumCol.name)}`,
             type: 'funnel',
             data: funnelData,
             colors: currentScheme.colors,
@@ -1682,12 +1726,13 @@ const FunctionalDataUpload: React.FC = () => {
       const axisCol = dateColumns.length > 0 ? dateColumns[0] : bestCatCol!;
       const composedAgg: Record<string, Record<string, number>> = {};
       const numKeys = rankedNumColumns.filter(c => !isLikelyNumericId(c.name, dataToUse)).slice(0, 3);
+      const composedGroups = new CategoryGroups();
       for (const row of dataToUse) {
-        const key = String(row[axisCol.name] || '');
-        if (!key || key === 'null') continue;
+        const key = composedGroups.label(composedGroups.key(row[axisCol.name]));
+        if (key === BLANK_LABEL) continue;
         if (!composedAgg[key]) composedAgg[key] = {};
         for (const nc of numKeys) {
-          composedAgg[key][nc.name] = (composedAgg[key][nc.name] || 0) + (Number(row[nc.name]) || 0);
+          composedAgg[key][nc.name] = (composedAgg[key][nc.name] || 0) + (chartNumber(row[nc.name]) ?? 0);
         }
       }
       const composedData = Object.entries(composedAgg)
@@ -1700,6 +1745,7 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `composed-${dataset.id}`,
           title: `${numKeys.map(c => c.name).join(' & ')} by ${axisCol.name} (Composed)`,
+          description: `Total ${numKeys.map(c => c.name).join(', ')} for each ${axisCol.name}, drawn together to compare their shape. ${note()}`,
           type: 'composed',
           data: composedData,
           colors: currentScheme.colors,
@@ -1719,17 +1765,21 @@ const FunctionalDataUpload: React.FC = () => {
         // Skip the primary scatter that was already generated
         if (scatterNumCols[i] === bestNumCol && scatterNumCols[j] === secondNumCol) continue;
         if (scatterNumCols[j] === bestNumCol && scatterNumCols[i] === secondNumCol) continue;
-        const sd = dataToUse
-          .map(r => ({
-            x: Number(r[scatterNumCols[i].name]) || 0,
-            y: Number(r[scatterNumCols[j].name]) || 0,
-          }))
-          .filter(d => Number.isFinite(d.x) && Number.isFinite(d.y))
-          .slice(0, RENDERING_LIMITS.MAX_CHART_POINTS);
+        const sd: { x: number; y: number }[] = [];
+        for (const r of dataToUse) {
+          const x = chartNumber(r[scatterNumCols[i].name]);
+          const y = chartNumber(r[scatterNumCols[j].name]);
+          if (x === null || y === null) continue;
+          sd.push({ x, y });
+          if (sd.length === RENDERING_LIMITS.MAX_CHART_POINTS) break;
+        }
         if (sd.length > 5) {
           visualizations.push({
             id: `scatter-${scatterNumCols[i].name}-${scatterNumCols[j].name}-${dataset.id}`,
             title: `${scatterNumCols[i].name} vs ${scatterNumCols[j].name}`,
+            description:
+              `One point per row: ${scatterNumCols[i].name} across, ${scatterNumCols[j].name} up. ` +
+              `${note(scatterNumCols[i].name, scatterNumCols[j].name)}`,
             type: 'scatter',
             data: sd,
             colors: currentScheme.colors,
@@ -1743,20 +1793,14 @@ const FunctionalDataUpload: React.FC = () => {
 
     // Second Bar Chart - Using second-best categorical column
     if (secondCatCol && bestNumCol && secondCatCol !== pieCatCol) {
-      const secondBarAgg: Record<string, number> = dataToUse.reduce((acc: Record<string, number>, row) => {
-        const cat = String(row[secondCatCol.name] || 'Other');
-        const val = Number(row[bestNumCol.name]) || 0;
-        acc[cat] = (acc[cat] || 0) + val;
-        return acc;
-      }, {} as Record<string, number>);
-      const secondBarData: { category: string; value: number }[] = Object.entries(secondBarAgg)
-        .map(([category, value]) => ({ category, value }))
-        .sort((a, b) => b.value - a.value)
-        .slice(0, 25);
+      const secondBarData: { category: string; value: number }[] = sumByCategory(dataToUse, secondCatCol.name, bestNumCol.name)
+        .slice(0, 25)
+        .map(({ category, value }) => ({ category, value }));
       if (secondBarData.length > 1) {
         visualizations.push({
           id: `bar2-${dataset.id}`,
           title: `${bestNumCol.name} by ${secondCatCol.name}`,
+          description: `Total ${bestNumCol.name} for each ${secondCatCol.name}, largest first. ${note(bestNumCol.name)}`,
           type: 'bar',
           data: secondBarData,
           colors: currentScheme.colors,
@@ -1774,6 +1818,7 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `topbottom-${dataset.id}`,
           title: `Top & Bottom: ${bestNumCol.name} by ${bestCatCol.name}`,
+          description: `The individual rows with the highest and lowest ${bestNumCol.name}, labelled by ${bestCatCol.name}. ${note(bestNumCol.name)}`,
           type: 'bar',
           data: topBottomData,
           colors: currentScheme.colors,
@@ -1791,6 +1836,9 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `pareto-${dataset.id}`,
           title: `Pareto Analysis: ${bestNumCol.name} by ${bestCatCol.name}`,
+          description:
+            `Bars: total ${bestNumCol.name} per ${bestCatCol.name}, largest first. ` +
+            `Line: running share of the overall total, to show how few ${bestCatCol.name} values make up most of it. ${note(bestNumCol.name)}`,
           type: 'pareto',
           data: paretoData,
           colors: currentScheme.colors,
@@ -1808,6 +1856,7 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `cumulative-${dataset.id}`,
           title: `Cumulative Trend: ${bestNumCol.name}`,
+          description: `Running total of ${bestNumCol.name} in ${dateColumns[0].name} order. ${note(bestNumCol.name)}`,
           type: 'line',
           data: cumulData.map(d => ({ category: d.category, value: d.cumulative })),
           colors: currentScheme.colors,
@@ -1825,6 +1874,9 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `pctstacked-${dataset.id}`,
           title: `% Composition: ${bestNumCol.name} by ${bestCatCol.name} × ${secondCatCol.name}`,
+          description:
+            `For each ${bestCatCol.name}, the share of its total ${bestNumCol.name} that comes from each ${secondCatCol.name} (every bar adds to 100%). ` +
+            `${note(bestNumCol.name)}`,
           type: 'pct_stacked_bar',
           data: pctData,
           colors: currentScheme.colors,
@@ -1844,6 +1896,9 @@ const FunctionalDataUpload: React.FC = () => {
           visualizations.push({
             id: `bubble-${dataset.id}`,
             title: `Bubble: ${bestNumCol.name} vs ${secondNumCol.name} (size: ${thirdNumCol.name})`,
+            description:
+              `One bubble per row: ${bestNumCol.name} across, ${secondNumCol.name} up, sized by ${thirdNumCol.name}. ` +
+              `${note(bestNumCol.name, secondNumCol.name, thirdNumCol.name)}`,
             type: 'bubble',
             data: bubbleData,
             colors: currentScheme.colors,
@@ -1858,23 +1913,27 @@ const FunctionalDataUpload: React.FC = () => {
     // ── Dual-Axis Composed ──
     if (bestNumCol && secondNumCol && (dateColumns.length > 0 || bestCatCol)) {
       // Only generate when scales differ significantly
-      const vals1 = dataToUse.map(r => Math.abs(Number(r[bestNumCol!.name]) || 0)).filter(Number.isFinite);
-      const vals2 = dataToUse.map(r => Math.abs(Number(r[secondNumCol!.name]) || 0)).filter(Number.isFinite);
+      const vals1 = numbersIn(dataToUse, bestNumCol.name).map(Math.abs);
+      const vals2 = numbersIn(dataToUse, secondNumCol.name).map(Math.abs);
       const mean1 = vals1.length > 0 ? vals1.reduce((s, v) => s + v, 0) / vals1.length : 0;
       const mean2 = vals2.length > 0 ? vals2.reduce((s, v) => s + v, 0) / vals2.length : 0;
       const ratio = mean1 > 0 && mean2 > 0 ? Math.max(mean1, mean2) / Math.min(mean1, mean2) : 1;
       if (ratio >= 10) {
         const axisCol = dateColumns.length > 0 ? dateColumns[0].name : bestCatCol!.name;
         const dualData = dataToUse
+          .filter(r => chartNumber(r[bestNumCol!.name]) !== null && chartNumber(r[secondNumCol!.name]) !== null)
           .slice(0, 200)
           .map(r => ({
-            category: String(r[axisCol] || ''),
-            [bestNumCol!.name]: Number(r[bestNumCol!.name]) || 0,
-            [secondNumCol!.name]: Number(r[secondNumCol!.name]) || 0,
+            category: String(r[axisCol] ?? '').trim() || BLANK_LABEL,
+            [bestNumCol!.name]: chartNumber(r[bestNumCol!.name]) as number,
+            [secondNumCol!.name]: chartNumber(r[secondNumCol!.name]) as number,
           }));
         visualizations.push({
           id: `dualaxis-${dataset.id}`,
           title: `Dual Axis: ${bestNumCol.name} & ${secondNumCol.name}`,
+          description:
+            `${bestNumCol.name} and ${secondNumCol.name} for the first 200 rows with both, each on its own scale ` +
+            `because their sizes differ by ${Math.round(ratio)}×. ${note(bestNumCol.name, secondNumCol.name)}`,
           type: 'dual_axis',
           data: dualData,
           colors: currentScheme.colors,
@@ -1892,6 +1951,7 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `stats-${dataset.id}`,
           title: `Statistical Summary - ${dataset.name}`,
+          description: `Count, average, spread and range of every numeric column. Count is the number of rows with a value; blanks are not counted as zero.`,
           type: 'table',
           data: statsData,
           colors: currentScheme.colors,
@@ -1905,8 +1965,8 @@ const FunctionalDataUpload: React.FC = () => {
     // ── Trend Line on Time Series ──
     if (dateColumns.length > 0 && bestNumCol) {
       const sorted = dataToUse
-        .map(r => ({ date: String(r[dateColumns[0].name] || ''), value: Number(r[bestNumCol!.name]) || 0 }))
-        .filter(r => r.date && Number.isFinite(r.value))
+        .map(r => ({ date: String(r[dateColumns[0].name] ?? '').trim(), value: chartNumber(r[bestNumCol!.name]) }))
+        .filter((r): r is { date: string; value: number } => r.date !== '' && r.value !== null)
         .sort((a, b) => a.date.localeCompare(b.date))
         .slice(0, 500);
       if (sorted.length >= 10) {
@@ -1919,6 +1979,7 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `trendline-${dataset.id}`,
           title: `Trend Analysis: ${bestNumCol.name}`,
+          description: `${bestNumCol.name} for each row in ${dateColumns[0].name} order, with a straight-line trend fitted through it. ${note(bestNumCol.name)}`,
           type: 'composed',
           data: trendData,
           colors: currentScheme.colors,
@@ -1936,6 +1997,7 @@ const FunctionalDataUpload: React.FC = () => {
         visualizations.push({
           id: `yoy-${dataset.id}`,
           title: `Year-over-Year: ${bestNumCol.name}`,
+          description: `Total ${bestNumCol.name} per month, one colour per year, to compare the same month across years. ${note(bestNumCol.name)}`,
           type: 'stacked_bar',
           data: yoyData,
           colors: currentScheme.colors,
@@ -1950,6 +2012,7 @@ const FunctionalDataUpload: React.FC = () => {
     visualizations.push({
       id: `table-${dataset.id}`,
       title: `Data Table - ${dataset.name}`,
+      description: `The rows of ${dataset.name} as uploaded (${dataset.rowCount.toLocaleString()} rows).`,
       type: 'table',
       data: dataset.data,
       colors: currentScheme.colors,
@@ -3373,7 +3436,7 @@ const FunctionalDataUpload: React.FC = () => {
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    {visualizations.slice(0, 20).map(viz => (
+                    {orderForActiveDataset(visualizations, activeDataset).slice(0, 20).map(viz => (
                       <ErrorBoundary
                         key={viz.id}
                         fallback={
@@ -3387,12 +3450,14 @@ const FunctionalDataUpload: React.FC = () => {
                         <ZoomableVisualization
                           visualization={viz}
                           getVisualizationIcon={getVisualizationIcon}
+                          datasetName={datasets.length > 1 ? datasets.find(d => d.id === viz.datasetId)?.name : undefined}
                         />
                       </ErrorBoundary>
                     ))}
                     {visualizations.length > 20 && (
                       <div className="col-span-2 text-center py-4 text-gray-500 text-sm">
                         Showing first 20 of {visualizations.length} visualizations for performance
+                        {datasets.length > 1 && ' - the active dataset\'s charts come first; select another dataset to see its charts'}
                       </div>
                     )}
                   </div>
