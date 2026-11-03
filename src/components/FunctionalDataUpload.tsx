@@ -158,7 +158,7 @@ const FunctionalDataUpload: React.FC = () => {
     hasAccess: boolean;
     checkedAt: number;
   } | null>(null);
-  const { user, session } = useAuth();
+  const { user, session, assurance } = useAuth();
 
   /**
    * Uploads that survive a refresh.
@@ -169,7 +169,9 @@ const FunctionalDataUpload: React.FC = () => {
    * What the user is never allowed to be is UNSURE - every outcome says
    * plainly whether the data will still be here tomorrow.
    */
-  const storedDatasets = useStoredDatasets(session?.access_token ?? null);
+  // Not until sign-in is finished: the API refuses a session that still owes
+  // its two-factor code, and the code prompt is already on screen.
+  const storedDatasets = useStoredDatasets(assurance.satisfied ? session?.access_token ?? null : null);
   /**
    * Local dataset id -> the id the server stored it under.
    *

@@ -16,6 +16,7 @@ const logger = require('../../config/logger');
 const ACTIONS = new Set([
   'dataset.create', 'dataset.append', 'dataset.complete', 'dataset.read', 'dataset.rows.read',
   'dataset.delete', 'dataset.list', 'analytics.query',
+  'auth.mfa_required', 'auth.mfa_verify',
 ]);
 
 const OUTCOMES = new Set(['ok', 'denied', 'error']);

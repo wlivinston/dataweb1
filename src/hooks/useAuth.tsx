@@ -13,6 +13,7 @@ import {
   clearFallbackAuth,
   readFallbackAuthState,
 } from '@/lib/fallbackAuth'
+import { assuranceOf, type Assurance } from '@/lib/mfa'
 
 interface AuthState {
   user: User | null
@@ -33,6 +34,8 @@ interface SignUpData {
 interface AuthContextValue extends AuthState {
   isConfigured: boolean
   configError: string | null
+  /** Two-factor state of this session: not `satisfied` means the code is still owed. */
+  assurance: Assurance
   signUp: (data: SignUpData) => Promise<{ data: unknown; error: unknown }>
   signIn: (email: string, password: string) => Promise<{ data: unknown; error: unknown }>
   signOut: () => Promise<{ error: unknown }>
@@ -406,6 +409,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     user: authState.user,
     session: authState.session,
     loading: authState.loading,
+    assurance: assuranceOf(authState.session),
     isConfigured: isSupabaseConfigured,
     configError: supabaseConfigError,
     signUp,
