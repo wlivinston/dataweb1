@@ -1,5 +1,6 @@
 ﻿import { ColumnInfo } from './types';
 import { FinanceColumnMapping } from './financeTypes';
+import { parseMoney } from './money';
 
 export type FinancialDatasetFormat = 'long' | 'wide' | 'unknown';
 
@@ -158,32 +159,13 @@ function normalizeName(value: string): string {
   return value.toLowerCase().replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+const isBlankAmount = (value: unknown): boolean =>
+  value === null || value === undefined || String(value).trim() === '';
+
+// One amount reader for the whole finance stack: see lib/money.ts. This copy
+// read "€1.250,00" as 1.25.
 function parseNumericValue(value: any): number | null {
-  if (value == null || value === '') return null;
-
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : null;
-  }
-
-  const raw = String(value).trim();
-  if (!raw) return null;
-
-  const isParenthesizedNegative = raw.startsWith('(') && raw.endsWith(')');
-  const normalized = raw
-    .replace(/[,$€£?\s]/g, '')
-    .replace(/[()]/g, '')
-    .replace(/[^0-9.-]/g, '');
-
-  if (!normalized || normalized === '-' || normalized === '.') return null;
-
-  const parsed = Number(normalized);
-  if (!Number.isFinite(parsed)) return null;
-
-  if (isParenthesizedNegative && parsed > 0) {
-    return -parsed;
-  }
-
-  return parsed;
+  return parseMoney(value);
 }
 
 function normalizeReferenceValue(value: any): string {
@@ -634,6 +616,7 @@ export function transformLongDatasetToCanonical(
   const fallbackDate = inferFallbackDateForLongImport(data, mapping);
   let fallbackDateRows = 0;
   let skippedAggregateRows = 0;
+  const unreadableAmountRows: number[] = [];
 
   if (!mapping.date) {
     auditLog.push(`Transformation layer: no date column mapped; fallback date "${fallbackDate}" will be applied.`);
@@ -674,6 +657,14 @@ export function transformLongDatasetToCanonical(
       const rawDebit = mapping.debit ? parseNumericValue(row[mapping.debit]) : null;
       const rawCredit = mapping.credit ? parseNumericValue(row[mapping.credit]) : null;
 
+      if (
+        (mapping.debit && rawDebit == null && !isBlankAmount(row[mapping.debit])) ||
+        (mapping.credit && rawCredit == null && !isBlankAmount(row[mapping.credit]))
+      ) {
+        unreadableAmountRows.push(index);
+        continue;
+      }
+
       if ((rawDebit == null || rawDebit === 0) && (rawCredit == null || rawCredit === 0)) {
         continue;
       }
@@ -681,13 +672,18 @@ export function transformLongDatasetToCanonical(
       let debit = rawDebit ?? 0;
       let credit = rawCredit ?? 0;
 
+      // A negative debit is a credit, and a negative credit a debit: a
+      // reversal. Making the value positive on the SAME side (as this did)
+      // booked a -50 reversal as another 50 of expense.
       if (debit < 0) {
-        debit = Math.abs(debit);
+        credit += -debit;
+        debit = 0;
         flags.push('negative_value_normalized');
       }
 
       if (credit < 0) {
-        credit = Math.abs(credit);
+        debit += -credit;
+        credit = 0;
         flags.push('negative_value_normalized');
       }
 
@@ -727,6 +723,10 @@ export function transformLongDatasetToCanonical(
 
     if (mapping.amount) {
       const rawAmount = parseNumericValue(row[mapping.amount]);
+      if (rawAmount == null && !isBlankAmount(row[mapping.amount])) {
+        unreadableAmountRows.push(index);
+        continue;
+      }
       if (rawAmount == null || rawAmount === 0) continue;
 
       const looksLikeAggregate =
@@ -794,6 +794,15 @@ export function transformLongDatasetToCanonical(
     auditLog.push(`Transformation layer: applied fallback date "${fallbackDate}" to ${fallbackDateRows} rows.`);
   }
 
+  if (unreadableAmountRows.length > 0) {
+    const shown = unreadableAmountRows.slice(0, 5).map(index => index + 2).join(', ');
+    warnings.push(
+      `${unreadableAmountRows.length} row(s) have an amount that could not be read as money and were NOT imported ` +
+      `(spreadsheet row ${shown}${unreadableAmountRows.length > 5 ? ', ...' : ''}). Fix those cells and import again.`
+    );
+    auditLog.push(`Transformation layer: ${unreadableAmountRows.length} rows with unreadable amounts excluded.`);
+  }
+
   if (skippedAggregateRows > 0) {
     warnings.push(`${skippedAggregateRows} aggregate/summary rows were skipped to avoid double-counting.`);
     auditLog.push(`Transformation layer: skipped ${skippedAggregateRows} aggregate rows without account codes.`);
@@ -801,7 +810,7 @@ export function transformLongDatasetToCanonical(
 
   const normalizedRows = transactions.filter(tx => tx.Flags?.includes('negative_value_normalized')).length;
   if (normalizedRows > 0) {
-    warnings.push(`${normalizedRows} rows had negative values normalized to positive amounts.`);
+    warnings.push(`${normalizedRows} rows had negative values, each booked as a reversal (to the opposite side).`);
     auditLog.push(`Transformation layer: normalized negative values on ${normalizedRows} rows.`);
   }
 
@@ -851,6 +860,7 @@ export function transformWideDatasetToCanonical(
       return new Date().toISOString().slice(0, 10);
     })();
   let fallbackWideDateRows = 0;
+  let unreadableWideCells = 0;
 
   for (let rowIndex = 0; rowIndex < data.length; rowIndex++) {
     const row = data[rowIndex];
@@ -860,6 +870,7 @@ export function transformWideDatasetToCanonical(
 
     for (const sourceColumn of config.incomeColumns) {
       const rawAmount = parseNumericValue(row[sourceColumn]);
+      if (rawAmount == null && !isBlankAmount(row[sourceColumn])) unreadableWideCells += 1;
       if (rawAmount == null || rawAmount === 0) continue;
 
       const flags: string[] = [];
@@ -877,8 +888,9 @@ export function transformWideDatasetToCanonical(
         Account: config.accountMappings[sourceColumn]?.trim() || sourceColumn,
         Category: config.categoryMappings[sourceColumn]?.trim() || sourceColumn,
         Type: 'Income',
-        Debit: 0,
-        Credit: normalizedAmount,
+        // A negative income figure (a refund) reduces income: debit side.
+        Debit: rawAmount < 0 ? normalizedAmount : 0,
+        Credit: rawAmount < 0 ? 0 : normalizedAmount,
         Description: config.defaultDescription?.trim() || `Converted from ${sourceColumn}`,
         SourceColumn: sourceColumn,
         SourceRow: rowIndex,
@@ -892,6 +904,7 @@ export function transformWideDatasetToCanonical(
 
     for (const sourceColumn of config.expenseColumns) {
       const rawAmount = parseNumericValue(row[sourceColumn]);
+      if (rawAmount == null && !isBlankAmount(row[sourceColumn])) unreadableWideCells += 1;
       if (rawAmount == null || rawAmount === 0) continue;
 
       const flags: string[] = [];
@@ -909,8 +922,9 @@ export function transformWideDatasetToCanonical(
         Account: config.accountMappings[sourceColumn]?.trim() || sourceColumn,
         Category: config.categoryMappings[sourceColumn]?.trim() || sourceColumn,
         Type: 'Expense',
-        Debit: normalizedAmount,
-        Credit: 0,
+        // A negative expense figure (a rebate) reduces the expense: credit side.
+        Debit: rawAmount < 0 ? 0 : normalizedAmount,
+        Credit: rawAmount < 0 ? normalizedAmount : 0,
         Description: config.defaultDescription?.trim() || `Converted from ${sourceColumn}`,
         SourceColumn: sourceColumn,
         SourceRow: rowIndex,
@@ -928,9 +942,13 @@ export function transformWideDatasetToCanonical(
     auditLog.push(`Transformation layer: applied fallback date "${fallbackWideDate}" to ${fallbackWideDateRows} wide rows.`);
   }
 
+  if (unreadableWideCells > 0) {
+    warnings.push(`${unreadableWideCells} wide-format cell(s) hold an amount that could not be read as money and were NOT imported. Fix those cells and import again.`);
+  }
+
   const normalizedRows = transactions.filter(tx => tx.Flags?.includes('negative_value_normalized')).length;
   if (normalizedRows > 0) {
-    warnings.push(`${normalizedRows} wide-format values were negative and normalized.`);
+    warnings.push(`${normalizedRows} wide-format values were negative, each booked as a reversal (a refund reduces income, a rebate reduces the expense).`);
     auditLog.push(`Transformation layer: normalized negative values on ${normalizedRows} generated rows.`);
   }
 
