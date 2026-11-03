@@ -338,7 +338,10 @@ function renderBalanceSheet(doc: jsPDF, report: FinancialReport): void {
   // Balance indicator
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);
-  if (bs.isBalanced) {
+  if (bs.isBalanced && bs.equityDerived) {
+    doc.setTextColor(180, 83, 9);
+    doc.text('The file has no equity accounts: Total Equity is derived as Assets - Liabilities.', MARGIN, y + 4);
+  } else if (bs.isBalanced) {
     doc.setTextColor(16, 185, 129);
     doc.text('Balance Sheet is balanced.', MARGIN, y + 4);
   } else {

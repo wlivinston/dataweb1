@@ -103,6 +103,8 @@ export interface BalanceSheet {
    * into an asset: a balancing plug in Total Assets is a confident wrong number.
    */
   unreconciledDifference?: number;
+  /** The file had no equity accounts; equity is stated as Assets - Liabilities. */
+  equityDerived?: boolean;
 }
 
 // === Cash Flow Statement ===

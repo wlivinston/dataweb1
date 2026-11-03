@@ -4452,7 +4452,11 @@ const FinanceDashboard: React.FC = () => {
                   </CardTitle>
                   <p className="text-sm text-gray-500">As of {bs.asOfDate}</p>
                 </div>
-                {bs.isBalanced ? (
+                {bs.isBalanced && bs.equityDerived ? (
+                  <Badge className="bg-amber-500" title="The file has no equity accounts; equity is Assets - Liabilities.">
+                    <AlertTriangle className="h-3 w-3 mr-1" /> Equity derived
+                  </Badge>
+                ) : bs.isBalanced ? (
                   <Badge className="bg-green-500"><CheckCircle className="h-3 w-3 mr-1" /> Balanced</Badge>
                 ) : (
                   <Badge className="bg-orange-500"><AlertTriangle className="h-3 w-3 mr-1" /> Not Balanced</Badge>

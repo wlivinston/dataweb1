@@ -3,6 +3,7 @@ import { generateFinancialReport, classifyAccount, reportWindow } from '../finan
 import { transformLongDatasetToCanonical, canonicalToReportInput } from '../financeImportPipeline';
 import { generateTrialBalance } from '../financeTrialBalance';
 import { reconcileBank } from '../financeBankRecon';
+import { validate_liability_journal } from '../financeAssetIngestion';
 import type { ReportPeriod } from '../financeTypes';
 
 /**
@@ -287,5 +288,121 @@ describe('generated balancing rows', () => {
     ]);
     expect(report.balanceSheet.isBalanced).toBe(true);
     expect(report.balanceSheet.unreconciledDifference).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A summary export whose RecordType column names each line's statement.
+//
+// Each line below reproduces a misfiling found on a real retail workbook,
+// where the account-name rules overruled what the file said:
+//
+//   Revenue   Sales 1,000 + Delivery Fees 50 + Rental Income 40 (section
+//             "Sales Revenue") - Returns 30 (ContraIncome, written -30)  = 1,060
+//   COGS      Opening Inv 200 + Purchases 700 + Shrinkage 10
+//             - Rebates 20 (written -20) - Closing Inv 250 (written +250) =   640
+//   Opex      Wages 150 + Card Processing Fees 12 + Property Taxes 8
+//             + Loyalty Program Costs 5                                  =   175
+//   Other     Interest Income 6 - Interest Expense 16 (written -16)      =   -10
+//   Tax       Income Tax 50 (written -50)                                =    50
+//   Net income  1,060 - 640 - 175 - 10 - 50                             =   185
+//   Assets    Cash 300 + Inventory 250 + Equipment 400 - Acc Dep 100     =   850
+//   Liabilities  Payables 220 (current) + Long-Term Debt 300            =   520
+//   Equity    no equity lines: 850 - 520 = 330, of which 185 is this year's
+//             profit and 145 is earlier equity the file does not itemise.
+// ---------------------------------------------------------------------------
+
+describe('a file that names each line\'s statement', () => {
+  const r = (RecordType: string, Section: string, AccountName: string, Amount: number) =>
+    ({ RecordType, Section, AccountName, Amount, FiscalYear: 2025 });
+  const rows = [
+    r('Income', 'Sales Revenue', 'In-Store Sales', 1000),
+    r('Income', 'Sales Revenue', 'Delivery & Handling Fees', 50),
+    r('Income', 'Sales Revenue', 'Rental Income (Equipment Rental)', 40),
+    r('ContraIncome', 'Contra Revenue', 'Sales Returns', -30),
+    r('InventoryInput', 'COGS Inputs', 'Opening Inventory', 200),
+    r('InventoryInput', 'COGS Inputs', 'Merchandise Purchases', 700),
+    r('InventoryInput', 'COGS Inputs', 'Inventory Shrinkage', 10),
+    r('InventoryInput', 'COGS Inputs', 'Supplier Rebates', -20),
+    r('InventoryInput', 'COGS Inputs', 'Closing Inventory', 250),
+    r('Expense', 'Labor & Payroll', 'Store Wages', 150),
+    r('Expense', 'Marketing & Sales', 'Credit Card Processing Fees', 12),
+    r('Expense', 'Occupancy & Utilities', 'Property Taxes', 8),
+    r('Expense', 'Marketing & Sales', 'Loyalty Program Costs', 5),
+    r('Other', 'Other Income/Expense', 'Interest Income', 6),
+    r('Other', 'Other Income/Expense', 'Interest Expense', -16),
+    r('Tax', 'Tax', 'Current Income Tax Expense', -50),
+    r('Asset', 'Current Assets', 'Cash & Cash Equivalents', 300),
+    r('Asset', 'Current Assets', 'Inventory', 250),
+    r('Asset', 'Non-Current Assets', 'Equipment & Fixtures', 400),
+    r('Asset', 'Non-Current Assets', 'Accumulated Depreciation', -100),
+    r('Liability', 'Current Liabilities', 'Accounts Payable', 220),
+    r('Liability', 'Long-Term Liabilities', 'Long-Term Debt', 300),
+  ];
+  const mapping = { account: 'AccountName', category: 'Section', type: 'RecordType', amount: 'Amount' };
+  const report = () => {
+    const canonical = transformLongDatasetToCanonical(rows, mapping);
+    const input = canonicalToReportInput(canonical.transactions);
+    return generateFinancialReport(input.data, input.mapping, { period: 'annual' as ReportPeriod, companyName: 'Test Co' });
+  };
+
+  it('the P&L follows the declared classes', async () => {
+    const pnl = (await report()).profitAndLoss;
+    expect(pnl.totalRevenue).toBe(1060);
+    expect(line(pnl.revenue, 'Delivery & Handling Fees')).toBe(50);
+    expect(line(pnl.revenue, 'Rental Income (Equipment Rental)')).toBe(40);
+    expect(pnl.totalCOGS).toBe(640);
+    expect(pnl.grossProfit).toBe(420);
+    expect(pnl.totalOperatingExpenses).toBe(175);
+    expect(line(pnl.operatingExpenses, 'Credit Card Processing Fees')).toBe(12);
+    expect(line(pnl.operatingExpenses, 'Property Taxes')).toBe(8);
+    expect(line(pnl.operatingExpenses, 'Loyalty Program Costs')).toBe(5);
+    expect(pnl.taxExpense).toBe(50);
+    expect(pnl.netIncome).toBe(185);
+  });
+
+  it('the balance sheet holds only balance-sheet lines, inventory once', async () => {
+    const bs = (await report()).balanceSheet;
+    expect(bs.totalAssets).toBe(850);
+    expect(line(bs.currentAssets, 'Inventory')).toBe(250);
+    for (const label of ['Opening Inventory', 'Closing Inventory', 'Inventory Shrinkage', 'Property Taxes']) {
+      expect(line([...bs.currentAssets, ...bs.nonCurrentAssets], label)).toBeUndefined();
+    }
+    expect(line(bs.currentLiabilities, 'Credit Card Processing Fees')).toBeUndefined();
+    expect(bs.totalCurrentLiabilities).toBe(220);
+    expect(bs.totalNonCurrentLiabilities).toBe(300);
+  });
+
+  it('with no equity accounts, equity is stated as Assets - Liabilities and labelled derived', async () => {
+    const bs = (await report()).balanceSheet;
+    expect(bs.totalEquity).toBe(330);
+    expect(line(bs.equity, 'Retained Earnings (Net Income)')).toBe(185);
+    expect(line(bs.equity, 'Equity before this period\'s profit (derived: not in the file)')).toBe(145);
+    expect(bs.equityDerived).toBe(true);
+    expect(bs.isBalanced).toBe(true);
+  });
+
+  it('the fiscal year sets the period, not the upload date', async () => {
+    const result = await report();
+    expect(result.balanceSheet.asOfDate).toBe('2025-12-31');
+  });
+
+  it('liability insurance is an expense, and does not block the report', () => {
+    const withInsurance = [...rows, r('Expense', 'Admin & Corporate', 'Insurance – General Liability', 7)];
+    const canonical = transformLongDatasetToCanonical(withInsurance, mapping);
+    expect(validate_liability_journal(canonical.transactions).errors).toEqual([]);
+    // A real liability filed under an expense is still caught.
+    const misfiled = [{ ...canonical.transactions[0], Account: 'Accounts Payable', Category: 'operating_expense' }];
+    expect(validate_liability_journal(misfiled).errors).toHaveLength(1);
+  });
+
+  it('a plain Income/Expense column is still read as a direction', () => {
+    const ledger = [
+      { Date: '2025-03-01', Account: 'Loan Repayment', Type: 'Expense', Amount: 100 },
+      { Date: '2025-03-02', Account: 'Customer Payment', Type: 'Income', Amount: 300 },
+    ];
+    const canonical = transformLongDatasetToCanonical(ledger, { date: 'Date', account: 'Account', type: 'Type', amount: 'Amount' });
+    // Not forced into operating_expense / revenue: the category stays for the name rules.
+    expect(canonical.transactions.map(t => t.Category)).toEqual(['Loan Repayment', 'Customer Payment']);
   });
 });

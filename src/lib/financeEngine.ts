@@ -1685,6 +1685,23 @@ export async function generateFinancialReport(
     : generateBalanceSheet(statementTransactions, asOfDate, cumulativeNetIncome);
   if (syntheticTransactions.length > 0 && !bs.isBalanced) {
     bs.unreconciledDifference = roundMoney(bs.totalLiabilitiesAndEquity - bs.totalAssets);
+  } else if (!bs.isBalanced && !statementTransactions.some(t => t.category === 'equity')) {
+    // The file has no equity accounts at all. Equity is by definition what
+    // the assets leave after the liabilities, so it can be stated - but only
+    // as that, labelled as derived. It never touches an asset or liability.
+    const earlierEquity = roundMoney(bs.totalAssets - bs.totalLiabilities - bs.totalEquity);
+    bs.equity = [
+      ...bs.equity,
+      { label: 'Equity before this period\'s profit (derived: not in the file)', amount: earlierEquity },
+    ];
+    bs.totalEquity = roundMoney(bs.totalEquity + earlierEquity);
+    bs.totalLiabilitiesAndEquity = roundMoney(bs.totalLiabilities + bs.totalEquity);
+    bs.isBalanced = Math.abs(bs.totalAssets - bs.totalLiabilitiesAndEquity) <= BALANCE_SHEET_TOLERANCE;
+    bs.equityDerived = true;
+    warnings.push(
+      `The file has no equity accounts, so Total Equity (${bs.totalEquity.toLocaleString()}) is derived as Assets - Liabilities. ` +
+      `${earlierEquity.toLocaleString()} of it is equity from before this period (opening equity less any dividends or buybacks) that the file does not itemise.`
+    );
   }
   const openingDiagnostics = detectOpeningBalances(statementTransactions);
 
