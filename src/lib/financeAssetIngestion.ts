@@ -1025,7 +1025,12 @@ export function validate_liability_journal(journal: CanonicalTransaction[]): Lia
     const categoryNormalized = normalizeHeader(category);
     const isLiabilityAccount = isLikelyLiabilityAccount(account);
     const isLiabilityCategory = categoryNormalized.includes('liability');
-    const isPnlCategory = PNL_CATEGORY_KEYWORDS.test(categoryNormalized);
+    // With no category column the importer copies the account name into the
+    // category, so "Sales Tax Payable" looked like a liability in a "tax" (P&L)
+    // category and blocked the report. A category that is just the account
+    // name says nothing about the category.
+    const categoryIsJustTheName = categoryNormalized === normalizeHeader(account);
+    const isPnlCategory = !categoryIsJustTheName && PNL_CATEGORY_KEYWORDS.test(categoryNormalized);
 
     if (isLiabilityAccount && isPnlCategory) {
       errors.push(

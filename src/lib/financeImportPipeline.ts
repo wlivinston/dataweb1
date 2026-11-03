@@ -782,6 +782,7 @@ export function transformLongDatasetToCanonical(
         const classCategory = categoryForClass(declaredClass, guess, section, rawAmount);
         const direction = directionForClass(declaredClass, account, rawAmount, classAllNegative.get(declaredClass) ?? false);
         const normalizedAmount = Math.abs(rawAmount);
+        flags.push('single_amount');
         if (rawAmount < 0) flags.push('negative_value_normalized');
         if (usedDateFallback) {
           flags.push('date_fallback_applied');
@@ -828,6 +829,7 @@ export function transformLongDatasetToCanonical(
       }
 
       const normalizedAmount = Math.abs(rawAmount);
+      flags.push('single_amount');
       const debit = type === 'Expense' ? normalizedAmount : 0;
       const credit = type === 'Income' ? normalizedAmount : 0;
 

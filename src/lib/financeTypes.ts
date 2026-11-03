@@ -29,6 +29,29 @@ export interface ClassifiedTransaction {
   reference?: string;
   type: 'debit' | 'credit';
   originalRow?: number;
+  /** How the category was decided; see PlacementBasis. */
+  basis?: PlacementBasis;
+}
+
+/**
+ * How a line's statement was decided, strongest first:
+ * - file: the file said so (a class column, or a category/section column
+ *   that names a statement exactly)
+ * - name: the account name names its kind ("Accounts Payable", "Rent Expense")
+ * - section: a heading in the file that only contains a statement word
+ * - name-ambiguous: a name that reads two ways ("Delivery Fees")
+ * - guess: nothing said; decided by the amount's sign or the default
+ */
+export type PlacementBasis = 'file' | 'name' | 'section' | 'name-ambiguous' | 'guess';
+
+/** One account in the report, where it went and why. */
+export interface LinePlacement {
+  account: string;
+  category: AccountCategory;
+  basis: PlacementBasis;
+  /** Debits minus credits, across the account's lines. */
+  net: number;
+  lines: number;
 }
 
 // === Column Mapping ===
@@ -166,6 +189,8 @@ export interface FinancialReport {
   warnings: string[];
   healthScore: number; // 0-100
   reconciliationDiagnostics?: ReconciliationDiagnostics;
+  /** Every account, where it was placed and on what basis. */
+  linePlacement?: LinePlacement[];
 }
 
 export type NetIncomeToEquityMode = 'auto' | 'always' | 'never';
