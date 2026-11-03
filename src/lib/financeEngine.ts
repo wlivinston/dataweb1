@@ -20,9 +20,12 @@ import {
   FinanceChartData,
   ReconciliationDiagnostics,
   ReportPeriod,
+  PlacementBasis,
+  LinePlacement,
 } from './financeTypes';
 import { SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATIVE_CHART_COLOR } from './chartColors';
 import { parseMoney, toCents, fromCents, sumMoney, roundMoney } from './money';
+import { classifyByName } from './financeAccountNames';
 
 // ============================================================
 // 1. SMART COLUMN DETECTION
@@ -339,6 +342,15 @@ export function classifyAccount(
   categoryHint?: string,
   amountHint?: number
 ): AccountCategory {
+  return classifyAccountDetailed(accountName, categoryHint, amountHint).category;
+}
+
+/** The category, and what decided it. */
+export function classifyAccountDetailed(
+  accountName: string,
+  categoryHint?: string,
+  amountHint?: number
+): { category: AccountCategory; basis: PlacementBasis } {
   const name = (accountName || '').toLowerCase().trim();
   // Hint and map keys are normalised the same way. The hint had its hyphens
   // turned into spaces while the keys kept theirs, so "Non-Current Liability"
@@ -383,7 +395,7 @@ export function classifyAccount(
     // 'contra asset' to the generic 'asset' key before reaching 'contra asset'.
     const normalisedMap = new Map(Object.entries(hintMap).map(([key, cat]) => [normaliseHint(key), cat]));
     const exact = normalisedMap.get(hint);
-    if (exact) return exact;
+    if (exact) return { category: exact, basis: 'file' };
 
     // A hint that only CONTAINS a generic word ("Operating costs - liability
     // side") is weaker than a specific name rule, so it is consulted after
@@ -397,36 +409,19 @@ export function classifyAccount(
     }
   }
 
-  // Keyword matching against account name.
-  //
-  // The most SPECIFIC match wins, not the first rule in the list. First-match
-  // ordering misfiled any account whose name contains a shorter, more generic
-  // keyword from an earlier rule: "Accumulated Depreciation" matched
-  // 'depreciation' under operating_expense and never reached the contra_asset
-  // rule, which both inflated operating expenses and dropped the account off the
-  // balance sheet entirely. Longest keyword wins, ties fall back to rule order.
-  let bestCategory: AccountCategory | null = null;
-  let bestKeywordLength = 0;
-
-  for (const rule of CLASSIFICATION_RULES) {
-    for (const keyword of rule.keywords) {
-      if (keyword.length > bestKeywordLength && name.includes(keyword)) {
-        bestCategory = rule.category;
-        bestKeywordLength = keyword.length;
-      }
-    }
-  }
-
-  if (bestCategory) return bestCategory;
-  if (substringHintCategory) return substringHintCategory;
+  // What the account name says (financeAccountNames.ts): whole words, with
+  // the word that names the kind of account deciding the statement.
+  const byName = classifyByName(accountName);
+  if (byName) return { category: byName.category, basis: byName.basis === 'ambiguous' ? 'name-ambiguous' : 'name' };
+  if (substringHintCategory) return { category: substringHintCategory, basis: 'section' };
 
   // Fallback: use amount sign if available
   if (amountHint !== undefined && amountHint !== 0) {
-    return amountHint > 0 ? 'revenue' : 'operating_expense';
+    return { category: amountHint > 0 ? 'revenue' : 'operating_expense', basis: 'guess' };
   }
 
   // Default: operating expense (most common catch-all)
-  return 'operating_expense';
+  return { category: 'operating_expense', basis: 'guess' };
 }
 
 // ============================================================
@@ -541,7 +536,7 @@ export function readTransactions(
     const categoryHint = mapping.category ? String(row[mapping.category] || '') : '';
 
     // Classify account
-    const category = classifyAccount(account, categoryHint, txType === 'credit' ? amount : -amount);
+    const { category, basis } = classifyAccountDetailed(account, categoryHint, txType === 'credit' ? amount : -amount);
 
     transactions.push({
       date,
@@ -552,6 +547,7 @@ export function readTransactions(
       reference: reference || undefined,
       type: txType,
       originalRow: i,
+      basis,
     });
   }
 
@@ -1825,6 +1821,34 @@ export async function generateFinancialReport(
     warnings,
     healthScore,
     reconciliationDiagnostics,
+    linePlacement: placementOf(statementTransactions),
   };
+}
+
+const BASIS_RANK: Record<PlacementBasis, number> = { guess: 0, 'name-ambiguous': 1, section: 2, name: 3, file: 4 };
+
+/**
+ * Every account in the statements: where it went and the weakest basis any of
+ * its lines was placed on, so one guessed line is not hidden by its siblings.
+ */
+export function placementOf(transactions: ClassifiedTransaction[]): LinePlacement[] {
+  const byAccount = new Map<string, Map<AccountCategory, { basis: PlacementBasis; cents: number; lines: number }>>();
+  for (const tx of transactions) {
+    const categories = byAccount.get(tx.account) ?? new Map<AccountCategory, { basis: PlacementBasis; cents: number; lines: number }>();
+    byAccount.set(tx.account, categories);
+    const entry = categories.get(tx.category) ?? { basis: tx.basis ?? 'file', cents: 0, lines: 0 };
+    const basis = tx.basis ?? 'file';
+    if (BASIS_RANK[basis] < BASIS_RANK[entry.basis]) entry.basis = basis;
+    entry.cents += tx.type === 'debit' ? toCents(tx.amount) : -toCents(tx.amount);
+    entry.lines += 1;
+    categories.set(tx.category, entry);
+  }
+  const out: LinePlacement[] = [];
+  for (const [account, categories] of byAccount) {
+    for (const [category, entry] of categories) {
+      out.push({ account, category, basis: entry.basis, net: fromCents(entry.cents), lines: entry.lines });
+    }
+  }
+  return out.sort((a, b) => BASIS_RANK[a.basis] - BASIS_RANK[b.basis] || a.account.localeCompare(b.account));
 }
 

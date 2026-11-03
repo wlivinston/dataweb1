@@ -117,6 +117,8 @@ import {
   getFinanceImportProfiles,
   saveFinanceImportProfile,
 } from '@/lib/financeImportProfiles';
+import LinePlacementPanel from '@/components/LinePlacementPanel';
+import { applyPlacementOverrides } from '@/lib/financePlacement';
 import { useAuth } from '@/hooks/useAuth';
 import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { PUBLIC_CONFIG, getApiUrl } from '@/lib/publicConfig';
@@ -271,6 +273,9 @@ const FinanceDashboard: React.FC = () => {
   const [liabilityAssumptions, setLiabilityAssumptions] = useState<string[]>([]);
   const [importSummaryLines, setImportSummaryLines] = useState<string[]>([]);
   const [canonicalTransactions, setCanonicalTransactions] = useState<CanonicalTransaction[]>([]);
+  // Accounts the user moved to another statement from "Where each line went".
+  const [placementOverrides, setPlacementOverrides] = useState<Record<string, AccountCategory>>({});
+  const [placementBusy, setPlacementBusy] = useState(false);
   const [importAuditLog, setImportAuditLog] = useState<string[]>([]);
   const [longProfiles, setLongProfiles] = useState<FinanceImportProfile[]>([]);
   const [wideProfiles, setWideProfiles] = useState<FinanceImportProfile[]>([]);
@@ -686,6 +691,7 @@ const FinanceDashboard: React.FC = () => {
     setAssetsRegisterSheetName('');
     setSheetDetectionSummary([]);
     setCanonicalTransactions([]);
+    setPlacementOverrides({});
     setImportAuditLog([]);
     setPreviewTransactions([]);
     setPreviewWarnings([]);
@@ -1825,6 +1831,22 @@ const FinanceDashboard: React.FC = () => {
       ['Opening balance fix: auto-generated balancing opening entry was added.'],
       blockedFallbackView
     );
+  };
+
+  const movePlacement = async (account: string, category: AccountCategory) => {
+    const next = { ...placementOverrides, [account]: category };
+    setPlacementOverrides(next);
+    setPlacementBusy(true);
+    try {
+      await runReportWithCanonicalJournal(
+        applyPlacementOverrides(canonicalTransactions, next),
+        [`You moved "${account}" to ${category.replace(/_/g, ' ')}.`],
+        [`Line placement: "${account}" moved to ${category} by the user.`],
+        'dashboard'
+      );
+    } finally {
+      setPlacementBusy(false);
+    }
   };
 
   const applySingleEntryOffsetFix = async () => {
@@ -4312,6 +4334,16 @@ const FinanceDashboard: React.FC = () => {
           </Badge>
         </div>
       </Card>
+
+      {report.linePlacement && (
+        <LinePlacementPanel
+          placement={report.linePlacement}
+          overrides={placementOverrides}
+          formatCurrency={formatCurrency}
+          onMove={movePlacement}
+          busy={placementBusy}
+        />
+      )}
 
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">

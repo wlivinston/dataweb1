@@ -138,6 +138,28 @@ closed**: a dataset with a sensitive column and no key configured is refused wit
 503 `ENCRYPTION_UNAVAILABLE`, never stored in plaintext. Blanks stay blank. Any future SQL
 pushdown must not filter or project on an encrypted column — the database holds ciphertext.
 
+### Finance: where a line goes
+
+The finance page places every imported line on a statement, strongest signal first, and
+the report shows the basis per account ("Where each line went", `LinePlacementPanel`):
+
+1. **The file's own words.** A type column of statement classes (Asset, Liability, Tax,
+   ContraIncome, InventoryInput...) decides the statement (`financeStatementClass.ts`), and
+   a section heading such as "Sales Revenue" outranks a name. A column of only
+   Income/Expense is a *direction* (a loan repayment can be "Expense") and is not read
+   this way.
+2. **The account name** (`financeAccountNames.ts`): whole words with plurals, and the word
+   that names the *kind* of account (payable, accrued, receivable, expense, fees, revenue)
+   beats the thing it is about (property, credit card, payroll). Names that read two
+   ways are flagged `name-ambiguous`; nothing-said is `guess`. Both are listed for the user
+   to move (`applyPlacementOverrides`).
+
+Never let a name guess overrule what the file declared, and never fold a balancing plug
+into an asset: generated balancing rows are excluded and shown as an unreconciled
+difference; a file with no equity accounts gets equity *labelled derived* (A - L).
+`financeAccountNames.test.ts` is a hand-labelled table of real account names: add to it
+when a name misfiles.
+
 ### Upload path
 
 `components/FunctionalDataUpload.tsx` is the hub: file → `lib/excelRows.ts` (shared by the
