@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AuthProvider } from "@/hooks/useAuth";
+import TwoFactorGate from "@/components/TwoFactorGate";
 import CookieConsentBanner from "@/components/CookieConsentBanner";
 import RouteScrollToTop from "@/components/RouteScrollToTop";
 import AccessibilityControls from "@/components/AccessibilityControls";
@@ -68,6 +69,7 @@ const App = () => (
               </Routes>
             </div>
 
+            <TwoFactorGate />
             <AccessibilityControls />
             <CookieConsentBanner />
           </BrowserRouter>

@@ -1,10 +1,11 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
-import { Menu, X, LogIn } from 'lucide-react';
+import { Menu, X, LogIn, ShieldCheck } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { PUBLIC_CONFIG } from '@/lib/publicConfig';
 import NotificationBell from '@/components/NotificationBell';
+import TwoFactorSettings from '@/components/TwoFactorSettings';
 
 interface NavbarProps {
   activeSection?: string;
@@ -41,6 +42,7 @@ const Navbar: React.FC<NavbarProps> = ({
   const location = useLocation();
   const navigate = useNavigate();
   const { user, signOut, loading } = useAuth();
+  const [securityOpen, setSecurityOpen] = React.useState(false);
   const isHomePage = location.pathname === '/';
   const hasLogo = Boolean(PUBLIC_CONFIG.logoUrl);
 
@@ -130,6 +132,16 @@ const Navbar: React.FC<NavbarProps> = ({
                 <Button
                   variant="ghost"
                   size="sm"
+                  onClick={() => setSecurityOpen(true)}
+                  className="text-gray-600 hover:text-gray-900"
+                  aria-label="Two-factor sign-in settings"
+                  title="Two-factor sign-in"
+                >
+                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => signOut()}
                   className="text-gray-600 hover:text-gray-900"
                 >
@@ -208,9 +220,19 @@ const Navbar: React.FC<NavbarProps> = ({
                     </div>
                     <span className="text-sm text-gray-700 truncate max-w-[180px]">{user.email}</span>
                   </div>
-                  <Button variant="ghost" size="sm" onClick={() => { signOut(); setMobileMenuOpen(false); }}>
-                    Sign Out
-                  </Button>
+                  <div className="flex items-center">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => { setSecurityOpen(true); setMobileMenuOpen(false); }}
+                      aria-label="Two-factor sign-in settings"
+                    >
+                      <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => { signOut(); setMobileMenuOpen(false); }}>
+                      Sign Out
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 <Link
@@ -227,6 +249,7 @@ const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
       )}
+      {user && <TwoFactorSettings open={securityOpen} onOpenChange={setSecurityOpen} />}
     </nav>
   );
 };

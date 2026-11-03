@@ -6,6 +6,7 @@ const {
 } = require('../../services/emailService');
 const { ApiError } = require('../common/apiError');
 const authRepository = require('./auth.repository');
+const mfa = require('../security/mfa');
 
 async function signInWithSupabase({ email, password }) {
   if (!hasAnonKey || !supabaseAnon) {
@@ -33,6 +34,9 @@ async function signInWithSupabase({ email, password }) {
     expires_in: data.session.expires_in,
     token_type: data.session.token_type,
     user: data.user,
+    // The session above is password-only (aal1). When the user has two-factor
+    // sign-in on, the API refuses it until a code is verified.
+    mfa: mfa.signInMfaSummary(data.user),
   };
 }
 
