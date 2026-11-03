@@ -19,13 +19,31 @@ import {
 import type { SemanticModel } from '@/lib/semantic/types';
 import { answerQuestion, suggestQuestions } from '@/lib/nlq';
 import type { NlqAnswer } from '@/lib/nlq';
+import type { StoredDataset } from '@/lib/storedDataset';
+import type { ServerAnswer } from '@/lib/serverAnalytics';
 import { toast } from 'sonner';
 
 interface NaturalLanguageQueryProps {
   /** Null before any data is loaded. A question names its own columns, so
    *  there is no "against which dataset" for the caller to answer. */
   model: SemanticModel | null;
+  /**
+   * Saved datasets too large to load into this page. Questions about one of
+   * these are answered on the server, by the same engine.
+   */
+  serverDatasets?: StoredDataset[];
+  /** Answers a question over saved datasets on the server. */
+  askServer?: (datasetIds: string[], question: string) => Promise<ServerAnswer>;
 }
+
+/** Where a question goes: the data loaded in this page, or one saved dataset on the server. */
+const LOCAL = 'local';
+
+const describeServerMeta = (meta: ServerAnswer['meta']): string => {
+  const seconds = (meta.timingMs.load + meta.timingMs.build + meta.timingMs.evaluate) / 1000;
+  return `Answered on the server over ${meta.rows.toLocaleString()} rows in ${seconds.toFixed(1)} s` +
+    (meta.modelCached ? ' (data already prepared)' : '') + '.';
+};
 
 interface QueryHistoryItem {
   question: string;
@@ -33,7 +51,13 @@ interface QueryHistoryItem {
   timestamp: Date;
 }
 
-const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model }) => {
+const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model, serverDatasets = [], askServer }) => {
+  const canAskServer = Boolean(askServer) && serverDatasets.length > 0;
+  const [target, setTarget] = useState<string>(LOCAL);
+  const [serverNote, setServerNote] = useState<string | null>(null);
+  // With nothing loaded locally, the only place to ask is a saved dataset.
+  const effectiveTarget = !model && canAskServer && target === LOCAL ? serverDatasets[0].id : target;
+  const serverTarget = effectiveTarget === LOCAL ? null : serverDatasets.find(d => d.id === effectiveTarget) ?? null;
   const [query, setQuery] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [current, setCurrent] = useState<NlqAnswer | null>(null);
@@ -49,19 +73,40 @@ const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model }) =>
     setCurrent(null);
   }, [model]);
 
-  const ask = (question: string) => {
+  const record = (question: string, answer: NlqAnswer) => {
+    setCurrent(answer);
+    setHistory(prev => [
+      { question: question.trim(), answer, timestamp: new Date() },
+      ...prev.slice(0, 19),
+    ]);
+  };
+
+  const ask = async (question: string) => {
     if (!question.trim()) {
       toast.error('Type a question first.');
       return;
     }
     setIsProcessing(true);
+    setServerNote(null);
     try {
-      const answer = answerQuestion(question, model);
-      setCurrent(answer);
-      setHistory(prev => [
-        { question: question.trim(), answer, timestamp: new Date() },
-        ...prev.slice(0, 19),
-      ]);
+      if (serverTarget && askServer) {
+        try {
+          const { answer, meta } = await askServer([serverTarget.id], question.trim());
+          record(question, answer);
+          setServerNote(describeServerMeta(meta));
+        } catch (error) {
+          // Shown in the same place as the engine's own refusals: a reason,
+          // never a number.
+          record(question, {
+            ok: false,
+            question: question.trim(),
+            reason: error instanceof Error ? error.message : 'The server could not answer just now.',
+            suggestions: [],
+          });
+        }
+        return;
+      }
+      record(question, answerQuestion(question, model));
     } finally {
       setIsProcessing(false);
     }
@@ -69,7 +114,7 @@ const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model }) =>
 
   const handleSubmit = (event?: React.FormEvent) => {
     event?.preventDefault();
-    ask(query);
+    void ask(query);
   };
 
   const use = (question: string) => {
@@ -77,7 +122,7 @@ const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model }) =>
     inputRef.current?.focus();
   };
 
-  if (!model) {
+  if (!model && !canAskServer) {
     return (
       <Card className="border-dashed">
         <CardContent className="py-12 text-center">
@@ -126,6 +171,28 @@ const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model }) =>
       </CardHeader>
 
       <CardContent className="space-y-4 p-4">
+        {canAskServer && (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <label htmlFor="nlq-target" className="text-gray-600">Ask about:</label>
+            <select
+              id="nlq-target"
+              value={effectiveTarget}
+              onChange={event => {
+                setTarget(event.target.value);
+                setCurrent(null);
+                setServerNote(null);
+              }}
+              className="h-9 max-w-full rounded-md border border-gray-200 bg-white px-2 text-sm"
+            >
+              {model && <option value={LOCAL}>The data loaded on this page</option>}
+              {serverDatasets.map(dataset => (
+                <option key={dataset.id} value={dataset.id}>
+                  {dataset.name} - {dataset.rowCount.toLocaleString()} rows, saved (answered on the server)
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <form onSubmit={handleSubmit}>
           <div className="flex gap-2">
             <div className="relative flex-1">
@@ -161,7 +228,7 @@ const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model }) =>
           </div>
         </form>
 
-        {!current && !showHistory && suggestions.length > 0 && (
+        {!current && !showHistory && !serverTarget && suggestions.length > 0 && (
           <div className="space-y-3">
             <div className="flex items-center gap-2 text-sm text-gray-500">
               <Lightbulb className="h-4 w-4 text-yellow-500" />
@@ -344,6 +411,10 @@ const NaturalLanguageQuery: React.FC<NaturalLanguageQueryProps> = ({ model }) =>
               </div>
             </div>
           </div>
+        )}
+
+        {current && current.ok && serverNote && (
+          <p className="text-xs text-gray-500">{serverNote}</p>
         )}
 
         {current && !current.ok && (

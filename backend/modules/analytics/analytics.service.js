@@ -5,6 +5,7 @@ const repository = require('../datasets/datasets.repository');
 // which fails if this file differs from the source). One implementation of the
 // DAX semantics on both sides - docs/server-side-compute-decision.md.
 const engine = require('../../engine/engine.cjs');
+const logger = require('../../config/logger');
 
 /**
  * Questions answered over stored datasets, on the server.
@@ -23,7 +24,9 @@ const numberFromEnv = (name, fallback) => {
 /** Rows read per round trip to the store. */
 const PAGE_ROWS = numberFromEnv('ANALYTICS_PAGE_ROWS', 5000);
 /** Total rows one query may load across its datasets. */
-const MAX_ROWS = numberFromEnv('ANALYTICS_MAX_ROWS', 1000000);
+// 500k rows is ~0.5 GB of heap and ~2 s to build (measured on the engine
+// bundle); 1M was ~1.2 GB, too close to a default serverless function's memory.
+const MAX_ROWS = numberFromEnv('ANALYTICS_MAX_ROWS', 500000);
 const MAX_DATASETS = 10;
 const MAX_TEXT = 4000;
 const CACHE_SIZE = numberFromEnv('ANALYTICS_MODEL_CACHE', 8);
@@ -119,12 +122,19 @@ async function query({ ownerId, datasetIds, expression, question }) {
 
   const { model, datasets, totalRows, cached, loadMs, buildMs } = await modelFor(ownerId, datasetIds || []);
   const evalStart = Date.now();
-  const meta = () => ({
-    datasets: datasets.map((d) => ({ id: d.id, name: d.name, rowCount: d.rowCount })),
-    rows: totalRows,
-    modelCached: cached,
-    timingMs: { load: loadMs, build: buildMs, evaluate: Date.now() - evalStart },
-  });
+  const meta = () => {
+    const timingMs = { load: loadMs, build: buildMs, evaluate: Date.now() - evalStart };
+    // Logged so speed over real stored data can be read from production
+    // logs: the function has a 30 s limit, and only measurements against the
+    // real store say how close large datasets come to it.
+    logger.info({ rows: totalRows, datasets: datasets.length, modelCached: cached, timingMs }, 'analytics query');
+    return {
+      datasets: datasets.map((d) => ({ id: d.id, name: d.name, rowCount: d.rowCount })),
+      rows: totalRows,
+      modelCached: cached,
+      timingMs,
+    };
+  };
 
   if (hasExpression) {
     const result = engine.runDax(text, model);

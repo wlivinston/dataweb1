@@ -78,6 +78,7 @@ import { CHART_COLOR_SCHEMES, SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATI
 // validated, evaluated expression, or is replaced by the reason it could not.
 import { createModelCache } from '@/lib/semantic/liveModel';
 import { parseCsvRecords } from '@/lib/csv';
+import { askServer, ServerAnalyticsError } from '@/lib/serverAnalytics';
 import { diagramRelationships, lookupJoin } from '@/lib/semantic/diagramRelationships';
 import { orderForActiveDataset } from '@/lib/visualizationDisplay';
 import { CategoryGroups, chartNumber, sumByCategory, numbersIn, coverageNote, BLANK_LABEL } from '@/lib/chartValues';
@@ -219,7 +220,8 @@ const FunctionalDataUpload: React.FC = () => {
     if (storedDatasets.skipped.length > 0) {
       parts.push(
         `${storedDatasets.skipped.length} more ${storedDatasets.skipped.length === 1 ? 'is' : 'are'} ` +
-          'saved but too large to load automatically'
+          'saved but too large to load here - ask about ' +
+          `${storedDatasets.skipped.length === 1 ? 'it' : 'them'} in Ask Data, answered on the server`
       );
     }
     toast.success(`${parts.join('. ')}.`);
@@ -3159,7 +3161,18 @@ const FunctionalDataUpload: React.FC = () => {
             {/* The whole model, not one dataset: a question names its own
                 columns, and an answer that has to cross a relationship
                 cannot be computed from a single table. */}
-            <NaturalLanguageQuery model={semanticModel} />
+            <NaturalLanguageQuery
+              model={semanticModel}
+              // Saved datasets past the restore budget are not loaded into
+              // the page; questions about them run on the server, on the same
+              // engine (backend/engine/engine.cjs).
+              serverDatasets={storedDatasets.skipped}
+              askServer={async (datasetIds, question) => {
+                const token = await getAccessToken();
+                if (!token) throw new ServerAnalyticsError('Sign in again to ask about your saved datasets.', 401);
+                return askServer(datasetIds, question, token);
+              }}
+            />
           </TabsContent>
 
           {/* Smart Connections Tab - NEW */}
