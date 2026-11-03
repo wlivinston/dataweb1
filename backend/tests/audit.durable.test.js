@@ -42,4 +42,8 @@ describeDurable('audit_events in Postgres', () => {
   test('refuses DELETE', async () => {
     await expect(query('DELETE FROM audit_events WHERE actor_id = $1', [ACTOR])).rejects.toThrow(/append-only/);
   });
+
+  test('refuses TRUNCATE', async () => {
+    await expect(query('TRUNCATE audit_events', [])).rejects.toThrow(/append-only/);
+  });
 });

@@ -4,8 +4,8 @@ const logger = require('../../config/logger');
 /**
  * Durable storage for the audit trail.
  *
- * APPEND-ONLY, enforced by the database, not by convention: a trigger rejects
- * every UPDATE and DELETE on audit_events, so neither a bug nor a compromised
+ * APPEND-ONLY, enforced by the database, not by convention: triggers reject
+ * every UPDATE, DELETE and TRUNCATE on audit_events, so neither a bug nor a compromised
  * application credential can quietly rewrite who did what. Rows are only ever
  * inserted and read.
  *
@@ -59,6 +59,15 @@ async function initializeDurableStore() {
     []
   );
   await query(`DROP TRIGGER IF EXISTS audit_events_no_change ON audit_events`, []);
+  await query(`DROP TRIGGER IF EXISTS audit_events_no_truncate ON audit_events`, []);
+  // A row trigger does not see TRUNCATE, which empties the table in one
+  // statement; this one does.
+  await query(
+    `CREATE TRIGGER audit_events_no_truncate
+     BEFORE TRUNCATE ON audit_events
+     FOR EACH STATEMENT EXECUTE FUNCTION audit_events_append_only()`,
+    []
+  );
   await query(
     `CREATE TRIGGER audit_events_no_change
      BEFORE UPDATE OR DELETE ON audit_events
