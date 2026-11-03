@@ -116,6 +116,15 @@ uploading or a short read, caps rows per query, caches models per dataset versio
 translate DAX to SQL (`docs/server-side-compute-decision.md`); pushdown may only ever
 select rows, never decide a value.
 
+### Audit trail
+
+`backend/modules/audit`: an **append-only** `audit_events` table (a trigger rejects UPDATE
+and DELETE). Every route that touches stored data records `audit.record({ req, action, ... })`
+on success and on failure (`audit.outcomeForError` marks 401/403/404 as `denied`). **Never
+record the data**: no row values, no question or DAX text (it can quote values), no raw IP
+(it is HMAC-hashed). New routes on stored data must add their action to `ACTIONS` and record
+it. Users read their own trail at `GET /api/v1/audit/me`.
+
 ### Upload path
 
 `components/FunctionalDataUpload.tsx` is the hub: file → `lib/excelRows.ts` (shared by the
