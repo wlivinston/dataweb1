@@ -1,5 +1,6 @@
 const { ApiError } = require('../common/apiError');
 const repository = require('./datasets.repository');
+const fieldCrypto = require('../security/fieldCrypto');
 
 /**
  * Dataset validation and limits.
@@ -99,8 +100,24 @@ function validateColumns(columns) {
       );
     }
 
-    return { name, type };
+    // Encrypted at rest: marked by the uploader, or named like an identifier
+    // or financial detail (SSN, tax id, bank account...) whatever the client
+    // said - a client that forgets to mark one must not store it in clear.
+    const sensitive = column.sensitive === true || fieldCrypto.looksSensitive(name);
+    return sensitive ? { name, type, sensitive: true } : { name, type };
   });
+}
+
+const sensitiveColumnsOf = (dataset) =>
+  (dataset.columns || []).filter((column) => column.sensitive === true).map((column) => column.name);
+
+/**
+ * Rows as the owner sees them: sensitive columns decrypted. Every read of
+ * stored rows goes through this - the rows endpoint and server analytics -
+ * so neither ever sees, or answers over, ciphertext.
+ */
+function decryptRows(dataset, rows) {
+  return fieldCrypto.decryptColumns(rows, sensitiveColumnsOf(dataset));
 }
 
 /**
@@ -143,6 +160,18 @@ async function createDataset({ ownerId, name, sourceName, columns }) {
   const owner = assertOwner(ownerId);
   const cleanName = validateName(name);
   const cleanColumns = validateColumns(columns);
+
+  // Fail closed: a sensitive column is never stored in plain text because a
+  // key was missing.
+  const sensitive = cleanColumns.filter((column) => column.sensitive).map((column) => column.name);
+  if (sensitive.length > 0 && !fieldCrypto.isConfigured()) {
+    throw new ApiError(
+      503,
+      'ENCRYPTION_UNAVAILABLE',
+      `This dataset has sensitive columns (${sensitive.join(', ')}) and encryption is not configured on ` +
+        'the server, so it is refused rather than stored unprotected.'
+    );
+  }
 
   return repository.createDataset({
     ownerId: owner,
@@ -190,7 +219,7 @@ async function appendRows({ ownerId, datasetId, startIndex, rows }) {
     );
   }
 
-  const cleanRows = validateRows(rows, dataset.columns);
+  const cleanRows = fieldCrypto.encryptColumns(validateRows(rows, dataset.columns), sensitiveColumnsOf(dataset));
   const written = await repository.appendRows(dataset.id, index, cleanRows);
 
   return { written, startIndex: index };
@@ -272,10 +301,13 @@ async function getDatasetRows(datasetId, ownerId, { offset = 0, limit = 1000 } =
     Number.isFinite(requested) && requested > 0 ? requested : 1000
   );
 
-  const rows = await repository.getDatasetRows(dataset.id, {
-    offset: safeOffset,
-    limit: safeLimit,
-  });
+  const rows = decryptRows(
+    dataset,
+    await repository.getDatasetRows(dataset.id, {
+      offset: safeOffset,
+      limit: safeLimit,
+    })
+  );
 
   return {
     rows,
@@ -298,6 +330,7 @@ async function deleteDataset(datasetId, ownerId) {
 }
 
 module.exports = {
+  decryptRows,
   createDataset,
   appendRows,
   completeDataset,
