@@ -395,7 +395,7 @@ paths:
         '409':
           description: A dataset is still building, or the store returned fewer rows than it holds
         '413':
-          description: The datasets hold more rows than one question may use
+          description: The datasets hold more rows than one question may use (ANALYTICS_MAX_ROWS, default 500,000)
         '422':
           description: The engine refused the expression; the message says why
   /datasets:
