@@ -171,6 +171,19 @@ difference; a file with no equity accounts gets equity *labelled derived* (A - L
 `financeAccountNames.test.ts` is a hand-labelled table of real account names: add to it
 when a name misfiles.
 
+### Tax estimate
+
+`/tax` (`components/TaxEstimator.tsx`) estimates federal income tax from W-2 boxes 1-6,
+**entirely in the browser** (nothing is sent or stored). `lib/tax/federalTables.ts` holds each
+supported year's figures **with their IRS/SSA source**; a year not there is refused, never
+extrapolated. `lib/tax/federalEstimate.ts` follows Form 1040 line by line in integer cents,
+including two details that move the answer by dollars: below $100,000 of taxable income the
+tax is the **Tax Table's** (row midpoint, half a dollar rounds up), and the child tax credit
+phases out per $1,000 **or fraction**. Out-of-scope situations are refused (dependent
+filers, a spouse W-2 on a non-joint return) or listed as not included. Expected values in
+`taxFederal.test.ts` are worked by hand in comments; keep it that way. Adding a year: its
+Revenue Procedure figures, sources, and hand-worked cases.
+
 ### Upload path
 
 `components/FunctionalDataUpload.tsx` is the hub: file → `lib/excelRows.ts` (shared by the
