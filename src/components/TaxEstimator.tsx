@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react'
-import { AlertTriangle, Info, Lock, Plus, Trash2 } from 'lucide-react'
+import React, { useMemo, useRef, useState } from 'react'
+import { AlertTriangle, FileUp, Info, Lock, Plus, Trash2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,6 +7,19 @@ import { Label } from '@/components/ui/label'
 import { estimateFederalTax, type TaxInput, type W2 } from '@/lib/tax/federalEstimate'
 import { FEDERAL_YEARS, type FilingStatus } from '@/lib/tax/federalTables'
 import { parseMoney } from '@/lib/money'
+import type { W2Read } from '@/lib/tax/w2Parse'
+
+/** What was read from a PDF into one W-2 card, until the user confirms it. */
+interface PdfFill {
+  file: string
+  /** Boxes filled from the PDF that the user has not edited since. */
+  fromPdf: BoxKey[]
+  conflicts: BoxKey[]
+  notes: string[]
+  confirmed: boolean
+}
+
+const formatBox = (value: number) => value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 const STATUSES: Array<{ value: FilingStatus; label: string }> = [
   { value: 'single', label: 'Single' },
@@ -51,6 +64,10 @@ const TaxEstimator: React.FC = () => {
   const [dependent, setDependent] = useState(false)
   const [drafts, setDrafts] = useState<W2Draft[]>([emptyW2(1)])
   const [nextId, setNextId] = useState(2)
+  const [pdfFills, setPdfFills] = useState<Record<number, PdfFill>>({})
+  const [uploadMessage, setUploadMessage] = useState<{ tone: 'error' | 'info'; text: string } | null>(null)
+  const [reading, setReading] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
   const joint = status === 'married_joint'
 
   const unreadable = useMemo(() => {
@@ -94,8 +111,67 @@ const TaxEstimator: React.FC = () => {
     return estimateFederalTax(input)
   }, [drafts, joint, year, status, you, spouse, children, others, dependent])
 
-  const update = (id: number, key: BoxKey | 'employer' | 'owner', value: string) =>
+  const update = (id: number, key: BoxKey | 'employer' | 'owner', value: string) => {
     setDrafts(list => list.map(draft => (draft.id === id ? { ...draft, [key]: value } : draft)))
+    // A box the user typed over is theirs, not the PDF's.
+    setPdfFills(fills => {
+      const fill = fills[id]
+      if (!fill || !fill.fromPdf.includes(key as BoxKey)) return fills
+      return { ...fills, [id]: { ...fill, fromPdf: fill.fromPdf.filter(k => k !== key), conflicts: fill.conflicts.filter(k => k !== key) } }
+    })
+  }
+
+  const unconfirmed = drafts.some(draft => pdfFills[draft.id] && !pdfFills[draft.id].confirmed)
+
+  const onPdf = async (file: File) => {
+    setReading(true)
+    setUploadMessage(null)
+    try {
+      // Loaded only when a W-2 is uploaded; runs in this browser.
+      const { readW2File } = await import('@/lib/tax/w2Pdf')
+      const result: W2Read = await readW2File(file)
+      if (!result.ok) {
+        setUploadMessage({ tone: 'error', text: `${file.name}: ${result.reason}` })
+        return
+      }
+      const filled = (Object.keys(result.boxes) as BoxKey[])
+      if (filled.length === 0) {
+        setUploadMessage({ tone: 'error', text: `${file.name}: no W-2 boxes could be read. Type them in by hand.` })
+        return
+      }
+      const blank = drafts.find(d => !d.employer && BOXES.every(({ key }) => d[key].trim() === '') && !pdfFills[d.id])
+      const id = blank ? blank.id : nextId
+      const draft: W2Draft = { ...(blank ?? emptyW2(id)), employer: result.employer ?? (blank?.employer || '') }
+      for (const key of filled) draft[key] = formatBox(result.boxes[key]!.value)
+      setDrafts(list => (blank ? list.map(d => (d.id === id ? draft : d)) : [...list, draft]))
+      if (!blank) setNextId(n => n + 1)
+      const notes = [...result.notes]
+      if (result.year !== null) {
+        if (years.includes(result.year)) {
+          if (result.year !== year) {
+            setYear(result.year)
+            notes.unshift(`Tax year set to ${result.year}, as printed on this W-2.`)
+          }
+        } else {
+          notes.unshift(`This W-2 is for ${result.year}, which this estimate does not support yet.`)
+        }
+      }
+      setPdfFills(fills => ({
+        ...fills,
+        [id]: {
+          file: file.name,
+          fromPdf: filled,
+          conflicts: filled.filter(key => result.boxes[key]!.confidence === 'conflict'),
+          notes,
+          confirmed: false,
+        },
+      }))
+      setUploadMessage({ tone: 'info', text: `Read ${filled.length} of 6 boxes from ${file.name}. Check each one against your W-2 below.` })
+    } finally {
+      setReading(false)
+      if (fileInput.current) fileInput.current.value = ''
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -155,19 +231,59 @@ const TaxEstimator: React.FC = () => {
             </CardContent>
           </Card>
 
+          <Card className="border-dashed">
+            <CardContent className="pt-5 space-y-2">
+              <input
+                ref={fileInput}
+                type="file"
+                accept="application/pdf,.pdf"
+                className="hidden"
+                id="w2-pdf-upload"
+                onChange={e => { const file = e.target.files?.[0]; if (file) void onPdf(file) }}
+              />
+              <Button type="button" variant="outline" onClick={() => fileInput.current?.click()} disabled={reading}>
+                <FileUp className="h-4 w-4 mr-2" /> {reading ? 'Reading…' : 'Upload a W-2 PDF'}
+              </Button>
+              <p className="text-xs text-gray-500">
+                The PDF from your employer or payroll provider. It is read here in your browser and not uploaded anywhere. Your Social Security number is not read.
+              </p>
+              {uploadMessage && (
+                <p role={uploadMessage.tone === 'error' ? 'alert' : 'status'} className={`text-sm ${uploadMessage.tone === 'error' ? 'text-red-700' : 'text-green-800'}`}>
+                  {uploadMessage.text}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
           {drafts.map((draft, index) => (
             <Card key={draft.id} data-testid="w2-card">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-2">
                   <CardTitle className="text-lg">W-2 #{index + 1}</CardTitle>
                   {drafts.length > 1 && (
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setDrafts(list => list.filter(d => d.id !== draft.id))} aria-label={`Remove W-2 #${index + 1}`}>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => { setDrafts(list => list.filter(d => d.id !== draft.id)); setPdfFills(fills => { const next = { ...fills }; delete next[draft.id]; return next }) }} aria-label={`Remove W-2 #${index + 1}`}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   )}
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
+                {pdfFills[draft.id] && (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 space-y-2" data-testid="w2-pdf-fill">
+                    <p>Read from <strong>{pdfFills[draft.id].file}</strong>. Boxes marked &quot;from PDF&quot; must be checked against your W-2.</p>
+                    {pdfFills[draft.id].notes.length > 0 && (
+                      <ul className="list-disc pl-5 space-y-0.5">{pdfFills[draft.id].notes.map(n => <li key={n}>{n}</li>)}</ul>
+                    )}
+                    <label className="flex items-center gap-2 font-medium">
+                      <input
+                        type="checkbox"
+                        checked={pdfFills[draft.id].confirmed}
+                        onChange={e => setPdfFills(fills => ({ ...fills, [draft.id]: { ...fills[draft.id], confirmed: e.target.checked } }))}
+                      />
+                      I have checked these boxes against my W-2
+                    </label>
+                  </div>
+                )}
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
                     <Label htmlFor={`w2-${draft.id}-employer`}>Employer (optional)</Label>
@@ -186,8 +302,22 @@ const TaxEstimator: React.FC = () => {
                 <div className="grid gap-3 sm:grid-cols-2">
                   {BOXES.map(({ key, box, label }) => (
                     <div key={key} className="space-y-1">
-                      <Label htmlFor={`w2-${draft.id}-${key}`} className="text-xs">Box {box}: {label}</Label>
-                      <Input id={`w2-${draft.id}-${key}`} inputMode="decimal" placeholder="0.00" value={draft[key]} onChange={e => update(draft.id, key, e.target.value)} />
+                      <Label htmlFor={`w2-${draft.id}-${key}`} className="text-xs">
+                        Box {box}: {label}
+                        {pdfFills[draft.id]?.fromPdf.includes(key) && (
+                          <span className={`ml-1 rounded px-1 ${pdfFills[draft.id].conflicts.includes(key) ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-900'}`}>
+                            {pdfFills[draft.id].conflicts.includes(key) ? 'copies disagree' : 'from PDF'}
+                          </span>
+                        )}
+                      </Label>
+                      <Input
+                        id={`w2-${draft.id}-${key}`}
+                        inputMode="decimal"
+                        placeholder="0.00"
+                        value={draft[key]}
+                        onChange={e => update(draft.id, key, e.target.value)}
+                        className={pdfFills[draft.id]?.fromPdf.includes(key) ? (pdfFills[draft.id].conflicts.includes(key) ? 'border-red-400' : 'border-amber-400') : undefined}
+                      />
                     </div>
                   ))}
                 </div>
@@ -210,7 +340,14 @@ const TaxEstimator: React.FC = () => {
               </CardContent>
             </Card>
           )}
-          {!estimate.ok ? (
+          {unconfirmed ? (
+            <Card className="border-amber-200 bg-amber-50" data-testid="tax-unconfirmed">
+              <CardContent className="pt-4 flex gap-2 text-sm text-amber-900">
+                <Info className="h-4 w-4 shrink-0 mt-0.5" aria-hidden="true" />
+                Check the boxes read from your W-2 PDF and tick &quot;I have checked these boxes against my W-2&quot; to see the estimate.
+              </CardContent>
+            </Card>
+          ) : !estimate.ok ? (
             <Card className="border-amber-200 bg-amber-50" data-testid="tax-refusal">
               <CardContent className="pt-4 flex gap-2 text-sm text-amber-900">
                 <Info className="h-4 w-4 shrink-0 mt-0.5" aria-hidden="true" /> {estimate.refusal}
