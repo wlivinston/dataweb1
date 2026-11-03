@@ -1,5 +1,11 @@
 import { getApiUrl } from './publicConfig';
 import type { ColumnInfo, Dataset, DataType } from './types';
+import type { StoredDataset } from './storedDataset';
+
+// Moved to storedDataset.ts so the server engine can share it (no browser
+// dependencies there); re-exported so existing imports keep working.
+export { toDataset } from './storedDataset';
+export type { StoredDataset } from './storedDataset';
 
 /**
  * Storing an uploaded dataset on the server, and getting it back.
@@ -13,19 +19,6 @@ import type { ColumnInfo, Dataset, DataType } from './types';
  * by exactly the amount nobody can see, which is the failure this whole
  * engine was built to remove. Every path here would rather throw.
  */
-
-/** What the server knows about a stored dataset, without its rows. */
-export interface StoredDataset {
-  id: string;
-  name: string;
-  sourceName: string | null;
-  status: 'building' | 'ready';
-  rowCount: number;
-  columns: Array<{ name: string; type: DataType }>;
-  byteSize: number;
-  createdAt: string | null;
-  updatedAt: string | null;
-}
 
 export interface DatasetLimits {
   MAX_ROWS: number;
@@ -268,40 +261,3 @@ export const loadDatasetRows = async (
   return rows;
 };
 
-/**
- * A stored dataset as the app's own Dataset, statistics and all.
- *
- * analyzeColumn is the same function the upload path uses, so a reloaded
- * dataset is described by exactly the code that described it the first time -
- * rather than by stored statistics that could have been computed by an older
- * version of that code.
- */
-export const toDataset = (
-  stored: StoredDataset,
-  rows: Record<string, unknown>[],
-  analyzeColumn: (name: string, values: unknown[]) => ColumnInfo
-): Dataset => {
-  const columns = stored.columns.map(column => {
-    const analysed = analyzeColumn(
-      column.name,
-      rows.map(row => row[column.name])
-    );
-    // The stored type wins. It was decided when the file was parsed, with the
-    // original cell types visible; re-detecting from JSON round-tripped values
-    // could quietly reclassify a column - a date column read back as text
-    // loses every time-intelligence question the user could ask of it.
-    return { ...analysed, type: column.type };
-  });
-
-  return {
-    id: stored.id,
-    name: stored.name,
-    description: stored.sourceName ? `Stored: ${stored.sourceName}` : 'Stored dataset',
-    columns,
-    rowCount: rows.length,
-    dataTypes: Object.fromEntries(stored.columns.map(column => [column.name, column.type])),
-    data: rows,
-    createdAt: stored.createdAt ? new Date(stored.createdAt) : undefined,
-    updatedAt: stored.updatedAt ? new Date(stored.updatedAt) : undefined,
-  };
-};

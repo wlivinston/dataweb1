@@ -18,6 +18,7 @@ tags:
   - name: finance
   - name: datasets
   - name: notifications
+  - name: analytics
 paths:
   /:
     get:
@@ -351,6 +352,52 @@ paths:
       responses:
         '200':
           description: Subscription result
+  /analytics/query:
+    post:
+      tags: [analytics]
+      summary: Evaluate DAX or answer a question over stored datasets, on the server
+      description: >
+        Runs the same engine as the browser (bundled from src/lib/engine; a
+        drift test fails if the bundle differs from the source) over every row
+        of the named datasets. Owner-scoped. Never answers over part of a
+        dataset: a short read from the store is refused. An expression the
+        engine cannot parse or evaluate is refused with its reason (422), not
+        answered with a guess.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [datasetIds]
+              properties:
+                datasetIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 10
+                  items:
+                    type: string
+                expression:
+                  type: string
+                  description: A DAX expression. Send this or question, not both.
+                question:
+                  type: string
+                  description: A plain-English question. Send this or expression, not both.
+      responses:
+        '200':
+          description: The value (DAX) or the answer (question), with meta on rows, caching and timing
+        '400':
+          description: Neither or both of expression and question, or invalid dataset ids
+        '404':
+          description: A dataset does not exist or belongs to someone else
+        '409':
+          description: A dataset is still building, or the store returned fewer rows than it holds
+        '413':
+          description: The datasets hold more rows than one question may use
+        '422':
+          description: The engine refused the expression; the message says why
   /datasets:
     get:
       tags: [datasets]

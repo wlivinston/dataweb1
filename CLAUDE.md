@@ -25,6 +25,7 @@ npm run test:watch   # vitest
 npm run typecheck    # tsc --noEmit -p tsconfig.app.json
 npm run build        # vite build (prebuild regenerates public/sitemap.xml)
 npm run lint         # eslint . - see "lint backlog" below
+npm run build:engine # rebundle the engine for the backend - see "The server runs the same engine"
 ```
 
 One test file, or one test:
@@ -99,6 +100,21 @@ number on screen. They now share the engine's rules; keep it that way:
 - **The model the UI answers from** is derived from `datasets`
   (`lib/semantic/liveModel.ts`), so an edit, a cleaning step or a deletion can never
   leave Ask Data answering from old rows.
+
+### The server runs the same engine
+
+`src/lib/engine/index.ts` is the engine's public surface for the backend. `npm run
+build:engine` bundles it (esbuild, CJS) into **`backend/engine/engine.cjs`, which is
+committed** — the backend has no build step. `engineBundle.test.ts` fails if the
+committed bundle differs from a fresh build, and runs every Power BI parity case through
+both the source and the bundle. **Any change under `src/lib` that the engine imports
+needs `npm run build:engine` and the regenerated bundle in the same commit**, or CI fails.
+
+`POST /api/v1/analytics/query` (`backend/modules/analytics`) evaluates DAX or answers a
+question over stored datasets with that bundle: owner-scoped, refuses a dataset still
+uploading or a short read, caps rows per query, caches models per dataset version. Never
+translate DAX to SQL (`docs/server-side-compute-decision.md`); pushdown may only ever
+select rows, never decide a value.
 
 ### Upload path
 
