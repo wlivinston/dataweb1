@@ -22,6 +22,7 @@ import {
   ReportPeriod,
 } from './financeTypes';
 import { SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATIVE_CHART_COLOR } from './chartColors';
+import { parseMoney, toCents, fromCents, sumMoney, roundMoney } from './money';
 
 // ============================================================
 // 1. SMART COLUMN DETECTION
@@ -58,20 +59,10 @@ function normalizeColumnName(value: string): string {
   return value.toLowerCase().replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// One amount reader for the whole finance stack: see lib/money.ts. This copy
+// stripped the brackets from "(500)" and returned +500.
 function parsePotentialNumber(value: any): number | null {
-  if (value == null || value === '') return null;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-
-  const raw = String(value).trim();
-  if (!raw) return null;
-  const normalized = raw
-    .replace(/[,$€£\s]/g, '')
-    .replace(/[()]/g, '')
-    .replace(/[^0-9.-]/g, '');
-
-  if (!normalized || normalized === '-' || normalized === '.') return null;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
+  return parseMoney(value);
 }
 
 function normalizeReferenceValue(value: any): string {
@@ -422,7 +413,28 @@ export function parseTransactions(
   data: Record<string, any>[],
   mapping: FinanceColumnMapping
 ): ClassifiedTransaction[] {
+  return readTransactions(data, mapping).transactions;
+}
+
+const isBlankCell = (value: unknown): boolean =>
+  value === null || value === undefined || String(value).trim() === '';
+
+/**
+ * Transactions from ledger rows, and the rows whose amount could not be read.
+ *
+ * Amounts go through `parseMoney`, the finance stack's one reader. This used
+ * `Number(cell) || 0`, so "1,250.00", "$300.00" and "(500)" became 0 and their
+ * rows were skipped as if empty - a ledger written the way accountants write
+ * numbers lost rows with nothing said. A row is now skipped only when its
+ * amount is genuinely zero or blank; one that holds something unreadable is
+ * returned in `unreadableRows` so the report can say so.
+ */
+export function readTransactions(
+  data: Record<string, any>[],
+  mapping: FinanceColumnMapping
+): { transactions: ClassifiedTransaction[]; unreadableRows: number[] } {
   const transactions: ClassifiedTransaction[] = [];
+  const unreadableRows: number[] = [];
   const hasDebitCredit = !!(mapping.debit && mapping.credit);
 
   for (let i = 0; i < data.length; i++) {
@@ -433,7 +445,9 @@ export function parseTransactions(
     if (mapping.date && row[mapping.date] != null) {
       const raw = row[mapping.date];
       if (raw instanceof Date) {
-        date = raw.toISOString().split('T')[0];
+        // The calendar day the cell shows. toISOString() is UTC and moved a
+        // locally-midnight date to the previous day anywhere ahead of UTC.
+        date = `${raw.getFullYear()}-${String(raw.getMonth() + 1).padStart(2, '0')}-${String(raw.getDate()).padStart(2, '0')}`;
       } else {
         date = String(raw);
       }
@@ -459,20 +473,28 @@ export function parseTransactions(
     let txType: 'debit' | 'credit' = 'debit';
 
     if (hasDebitCredit) {
-      const debitVal = Number(row[mapping.debit!]) || 0;
-      const creditVal = Number(row[mapping.credit!]) || 0;
-      if (debitVal > 0) {
-        amount = debitVal;
-        txType = 'debit';
-      } else if (creditVal > 0) {
-        amount = creditVal;
-        txType = 'credit';
-      } else {
-        continue; // Skip zero rows
+      const debitCell = row[mapping.debit!];
+      const creditCell = row[mapping.credit!];
+      const debitVal = parseMoney(debitCell);
+      const creditVal = parseMoney(creditCell);
+      if ((debitVal === null && !isBlankCell(debitCell)) || (creditVal === null && !isBlankCell(creditCell))) {
+        unreadableRows.push(i);
+        continue;
       }
+      // The row's net, in cents: a negative debit is a credit (a reversal),
+      // and a row with both sides filled nets them rather than dropping one.
+      const netCents = toCents(debitVal ?? 0) - toCents(creditVal ?? 0);
+      if (netCents === 0) continue; // Genuinely nothing on this row
+      amount = fromCents(Math.abs(netCents));
+      txType = netCents > 0 ? 'debit' : 'credit';
     } else if (mapping.amount) {
-      const rawAmount = Number(row[mapping.amount]);
-      if (isNaN(rawAmount) || rawAmount === 0) continue;
+      const amountCell = row[mapping.amount];
+      const rawAmount = parseMoney(amountCell);
+      if (rawAmount === null) {
+        if (!isBlankCell(amountCell)) unreadableRows.push(i);
+        continue;
+      }
+      if (rawAmount === 0) continue;
       amount = Math.abs(rawAmount);
 
       // Determine type from type column or amount sign
@@ -485,7 +507,7 @@ export function parseTransactions(
         }
       } else {
         // Positive = credit (income), negative = debit (expense) by convention
-        txType = Number(row[mapping.amount]) >= 0 ? 'credit' : 'debit';
+        txType = rawAmount >= 0 ? 'credit' : 'debit';
       }
     } else {
       continue;
@@ -510,7 +532,8 @@ export function parseTransactions(
   }
 
   // Sort by date
-  return transactions.sort((a, b) => a.date.localeCompare(b.date));
+  transactions.sort((a, b) => a.date.localeCompare(b.date));
+  return { transactions, unreadableRows };
 }
 
 // ============================================================
@@ -547,18 +570,19 @@ function groupByAccount(
         ? (isCreditNormal ? t.amount : -t.amount)
         : (isCreditNormal ? -t.amount : t.amount);
 
+    // Accumulated in whole cents: float sums of a long ledger drift.
     const key = t.account;
     if (!grouped[key]) grouped[key] = 0;
-    grouped[key] += signedAmount;
+    grouped[key] += toCents(signedAmount);
   }
 
   return Object.entries(grouped)
-    .map(([label, amount]) => ({ label, amount: Math.round(amount * 100) / 100 }))
+    .map(([label, cents]) => ({ label, amount: fromCents(cents) }))
     .sort((a, b) => b.amount - a.amount);
 }
 
 function sumLineItems(items: LineItem[]): number {
-  return Math.round(items.reduce((s, i) => s + i.amount, 0) * 100) / 100;
+  return sumMoney(items.map(i => i.amount));
 }
 
 function safeDivide(numerator: number, denominator: number): number | null {
@@ -838,7 +862,7 @@ function detectOpeningBalances(transactions: ClassifiedTransaction[]): OpeningBa
           (tx.category === 'current_liability' || tx.category === 'non_current_liability' || tx.category === 'equity') &&
           tx.type === 'credit'
       )
-      .reduce((sum, tx) => sum + tx.amount, 0) * 100
+      .reduce((sum, tx) => sum + toCents(tx.amount), 0) / 100 * 100
   ) / 100;
 
   const assetFirstDateDebitTotal = Math.round(
@@ -848,7 +872,7 @@ function detectOpeningBalances(transactions: ClassifiedTransaction[]): OpeningBa
           (tx.category === 'current_asset' || tx.category === 'non_current_asset' || tx.category === 'contra_asset') &&
           tx.type === 'debit'
       )
-      .reduce((sum, tx) => sum + tx.amount, 0) * 100
+      .reduce((sum, tx) => sum + toCents(tx.amount), 0) / 100 * 100
   ) / 100;
 
   const evidence: string[] = [
@@ -1020,7 +1044,7 @@ export function generateCashFlow(
       t.category === 'operating_expense' &&
       (t.account.toLowerCase().includes('depreciation') || t.account.toLowerCase().includes('amortization'))
   );
-  const depreciation = depreciationTxns.reduce((s, t) => s + t.amount, 0);
+  const depreciation = depreciationTxns.reduce((s, t) => s + toCents(t.amount), 0) / 100;
   if (depreciation > 0) {
     operatingItems.push({ label: 'Add: Depreciation & Amortization', amount: Math.round(depreciation * 100) / 100 });
   }
@@ -1061,7 +1085,7 @@ export function generateCashFlow(
   // Investing activities: asset purchases/sales
   const investingItems: LineItem[] = [];
   const assetPurchases = transactions.filter(t => t.category === 'non_current_asset');
-  const assetTotal = assetPurchases.reduce((s, t) => s + t.amount, 0);
+  const assetTotal = assetPurchases.reduce((s, t) => s + toCents(t.amount), 0) / 100;
   if (assetTotal > 0) {
     investingItems.push({
       label: 'Purchase of Property & Equipment',
@@ -1078,7 +1102,7 @@ export function generateCashFlow(
       t.type === 'credit' &&
       (t.account.toLowerCase().includes('loan') || t.account.toLowerCase().includes('debt') || t.account.toLowerCase().includes('mortgage'))
   );
-  const debtInflowTotal = debtInflows.reduce((s, t) => s + t.amount, 0);
+  const debtInflowTotal = debtInflows.reduce((s, t) => s + toCents(t.amount), 0) / 100;
   if (debtInflowTotal > 0) {
     financingItems.push({ label: 'Proceeds from Borrowings', amount: Math.round(debtInflowTotal * 100) / 100 });
   }
@@ -1089,20 +1113,20 @@ export function generateCashFlow(
       t.type === 'debit' &&
       (t.account.toLowerCase().includes('loan') || t.account.toLowerCase().includes('debt') || t.account.toLowerCase().includes('mortgage'))
   );
-  const repaymentTotal = debtRepayments.reduce((s, t) => s + t.amount, 0);
+  const repaymentTotal = debtRepayments.reduce((s, t) => s + toCents(t.amount), 0) / 100;
   if (repaymentTotal > 0) {
     financingItems.push({ label: 'Repayment of Borrowings', amount: Math.round(-repaymentTotal * 100) / 100 });
   }
 
   const equityTxns = transactions.filter(t => t.category === 'equity');
   const capitalContributions = equityTxns.filter(t => t.type === 'credit' && !t.account.toLowerCase().includes('drawing') && !t.account.toLowerCase().includes('dividend'));
-  const capitalTotal = capitalContributions.reduce((s, t) => s + t.amount, 0);
+  const capitalTotal = capitalContributions.reduce((s, t) => s + toCents(t.amount), 0) / 100;
   if (capitalTotal > 0) {
     financingItems.push({ label: 'Capital Contributions', amount: Math.round(capitalTotal * 100) / 100 });
   }
 
   const drawings = equityTxns.filter(t => t.account.toLowerCase().includes('drawing') || t.account.toLowerCase().includes('dividend'));
-  const drawingsTotal = drawings.reduce((s, t) => s + t.amount, 0);
+  const drawingsTotal = drawings.reduce((s, t) => s + toCents(t.amount), 0) / 100;
   if (drawingsTotal > 0) {
     financingItems.push({ label: 'Owner Drawings / Dividends', amount: Math.round(-drawingsTotal * 100) / 100 });
   }
@@ -1112,12 +1136,15 @@ export function generateCashFlow(
   // Net cash change
   const netCashChange = Math.round((netOperatingCashFlow + netInvestingCashFlow + netFinancingCashFlow) * 100) / 100;
 
-  // Beginning cash: sum of cash accounts
-  const cashAccounts = transactions.filter(
-    t => t.category === 'current_asset' && (t.account.toLowerCase().includes('cash') || t.account.toLowerCase().includes('bank'))
-  );
-  const beginningCash = Math.round(cashAccounts.reduce((s, t) => s + (t.type === 'debit' ? t.amount : -t.amount), 0) * 100) / 100;
-  const endingCash = Math.round((beginningCash + netCashChange) * 100) / 100;
+  // Beginning cash is zero: every row of the ledger is treated as a flow in
+  // this statement (opening entries included - capital paid in appears as a
+  // contribution above), so the period starts from nothing. This used to be
+  // the sum of every cash movement in the ledger - the ENDING balance - and
+  // the net change was then added on top, so ending cash came out double
+  // (21,700 for a business holding 10,850). Ending cash is now the flows, and
+  // the check against balance-sheet cash is a real test of the indirect method.
+  const beginningCash = 0;
+  const endingCash = roundMoney(beginningCash + netCashChange);
 
   return {
     period,
@@ -1136,7 +1163,7 @@ export function generateCashFlow(
 function getBalanceSheetCashTotal(bs: BalanceSheet): number {
   const cashLike = [...bs.currentAssets, ...bs.nonCurrentAssets]
     .filter(item => /(cash|bank|cash equivalents?)/i.test(item.label))
-    .reduce((sum, item) => sum + item.amount, 0);
+    .reduce((sum, item) => sum + toCents(item.amount), 0) / 100;
   return Math.round(cashLike * 100) / 100;
 }
 
@@ -1179,10 +1206,10 @@ export function calculateFinancialRatios(
       ? (() => {
           const inventory = bs.currentAssets
             .filter(a => a.label.toLowerCase().includes('inventor'))
-            .reduce((s, a) => s + a.amount, 0);
+            .reduce((s, a) => s + toCents(a.amount), 0) / 100;
           const prepaid = bs.currentAssets
             .filter(a => a.label.toLowerCase().includes('prepaid'))
-            .reduce((s, a) => s + a.amount, 0);
+            .reduce((s, a) => s + toCents(a.amount), 0) / 100;
           return Math.round(((bs.totalCurrentAssets - inventory - prepaid) / bs.totalCurrentLiabilities) * 100) / 100;
         })()
       : null,
@@ -1458,7 +1485,14 @@ export async function generateFinancialReport(
   // Step 1: Parse transactions
   onProgress?.(10, 'Parsing and classifying transactions...');
   await yieldToBrowser();
-  const transactions = parseTransactions(data, mapping);
+  const { transactions, unreadableRows } = readTransactions(data, mapping);
+  if (unreadableRows.length > 0) {
+    const shown = unreadableRows.slice(0, 5).map(index => index + 2).join(', ');
+    warnings.push(
+      `${unreadableRows.length} row(s) have an amount that could not be read as money and are NOT in these statements ` +
+      `(spreadsheet row ${shown}${unreadableRows.length > 5 ? ', ...' : ''}). Fix those cells and run the report again.`
+    );
+  }
 
   const syntheticRowIndexes = new Set<number>();
   for (let index = 0; index < data.length; index++) {
