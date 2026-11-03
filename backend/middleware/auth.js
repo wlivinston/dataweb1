@@ -2,6 +2,8 @@ const logger = require('../config/logger')
 const { supabase } = require('../config/supabase')
 const { sendError } = require('../modules/common/apiResponse')
 const { ApiError } = require('../modules/common/apiError')
+const mfa = require('../modules/security/mfa')
+const audit = require('../modules/audit/audit.service')
 
 const safeString = (value, fallback = '') => {
   if (value === null || value === undefined) return fallback
@@ -69,6 +71,14 @@ const authenticateToken = async (req, res, next) => {
       return sendError(res, ApiError.unauthorized('Invalid token'))
     }
 
+    // A user who turned on two-factor sign-in is not signed in by password
+    // alone: an aal1 token is refused until the authenticator code is entered.
+    const assurance = mfa.assuranceOf(user, token)
+    if (!assurance.satisfied) {
+      await audit.record({ req, actorId: user.id, action: 'auth.mfa_required', outcome: 'denied' })
+      return sendError(res, mfa.mfaRequiredError())
+    }
+
     // Get additional user data from customers table.
     // If unavailable, continue with Supabase auth metadata so protected endpoints still work.
     const { customerData } = await fetchCustomerByEmail(user.email)
@@ -77,7 +87,7 @@ const authenticateToken = async (req, res, next) => {
       return sendError(res, ApiError.unauthorized('Account is deactivated'))
     }
 
-    req.user = buildUserContext(user, customerData)
+    req.user = { ...buildUserContext(user, customerData), aal: assurance.aal }
 
     next()
   } catch (error) {
@@ -104,7 +114,7 @@ const optionalAuth = async (req, res, next) => {
 
     const { data: { user }, error } = await supabase.auth.getUser(token)
 
-    if (error || !user) {
+    if (error || !user || !mfa.assuranceOf(user, token).satisfied) {
       req.user = null
       return next()
     }
@@ -148,6 +158,10 @@ const verifyToken = async (token) => {
 
     if (error || !user) {
       return { valid: false, user: null, error }
+    }
+
+    if (!mfa.assuranceOf(user, token).satisfied) {
+      return { valid: false, user: null, error: mfa.mfaRequiredError() }
     }
 
     return { valid: true, user, error: null }

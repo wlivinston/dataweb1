@@ -61,6 +61,36 @@ paths:
           description: Authenticated
         '401':
           description: Invalid credentials
+  /auth/supabase/mfa/verify:
+    post:
+      tags: [auth]
+      summary: Verify an authenticator code and upgrade a password-only session to two-factor
+      description: >
+        Requires the user's password-only (aal1) access token as a Bearer token. Users with
+        two-factor sign-in turned on are refused by every authenticated route (401
+        MFA_REQUIRED) until this, or Supabase's own MFA verify, returns an aal2 session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [factorId, code]
+              properties:
+                factorId:
+                  type: string
+                code:
+                  type: string
+                  pattern: '^[0-9]{6}$'
+      responses:
+        '200':
+          description: The upgraded (aal2) session
+        '401':
+          description: Missing or invalid token, or the code is wrong or expired
+        '404':
+          description: The factor is not a verified factor of this user
+        '429':
+          description: Too many attempts
   /blog/posts:
     get:
       tags: [blog]

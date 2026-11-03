@@ -38,6 +38,8 @@ const normalizeUser = (rawUser: Record<string, unknown> | null | undefined): Use
     app_metadata,
     user_metadata,
     identities: Array.isArray(user.identities) ? user.identities : [],
+    // Kept so a fallback session still knows the user has two-factor sign-in on.
+    factors: Array.isArray(user.factors) ? user.factors : undefined,
     created_at: typeof user.created_at === 'string' ? user.created_at : new Date().toISOString(),
     updated_at: typeof user.updated_at === 'string' ? user.updated_at : new Date().toISOString(),
   } as unknown as User
