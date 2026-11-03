@@ -15,6 +15,7 @@ const staticRoutes = [
   "/",
   "/analyze",
   "/finance",
+  "/tax",
   "/blog",
   "/pricing",
   "/request-report",

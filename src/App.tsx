@@ -22,6 +22,7 @@ const PricingPage = lazy(() => import("./pages/Pricing"));
 const RequestReportPage = lazy(() => import("./pages/RequestReport"));
 const Login = lazy(() => import("./pages/Login"));
 const FinancePage = lazy(() => import("./pages/Finance"));
+const TaxPage = lazy(() => import("./pages/Tax"));
 const CookiePolicyPage = lazy(() => import("./pages/CookiePolicy"));
 const MLEnginePage = lazy(() => import("./pages/MLEngine"));
 
@@ -61,6 +62,7 @@ const App = () => (
                 <Route path="/pricing" element={withSuspense(<PricingPage />)} />
                 <Route path="/request-report" element={withSuspense(<RequestReportPage />)} />
                 <Route path="/finance" element={withSuspense(<FinancePage />)} />
+                <Route path="/tax" element={withSuspense(<TaxPage />)} />
                 <Route path="/login" element={withSuspense(<Login />)} />
                 <Route path="/cookie-policy" element={withSuspense(<CookiePolicyPage />)} />
                 <Route path="/ml-engine" element={withSuspense(<MLEnginePage />)} />
