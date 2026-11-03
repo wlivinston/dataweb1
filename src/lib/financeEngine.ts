@@ -1630,6 +1630,12 @@ export async function generateFinancialReport(
   const transactionsForCashAnalysis = transactions.filter(
     tx => tx.originalRow == null || !syntheticRowIndexes.has(tx.originalRow)
   );
+  // Balancing rows the app generated (a "System Clearing Account" offset, an
+  // invented opening Cash/Equity pair) are not the company's assets or equity.
+  // Booking them as such made Total Assets whatever balanced the sheet. They
+  // are left out of every statement; what they would have plugged is reported
+  // as an unreconciled difference instead.
+  const statementTransactions = transactionsForCashAnalysis;
 
   if (transactions.length === 0) {
     warnings.push('No valid transactions were found. Please check your column mapping.');
@@ -1637,7 +1643,8 @@ export async function generateFinancialReport(
 
   if (syntheticTransactions.length > 0) {
     warnings.push(
-      `Caveat: ${syntheticTransactions.length} synthetic balancing row(s) detected (e.g., System Clearing / Single_Entry_Offset). They are excluded from Cash Flow and cash-driven ratio analysis.`
+      `${syntheticTransactions.length} generated balancing row(s) (System Clearing / opening balance fix) are NOT counted as assets, ` +
+      `liabilities or equity. The amount they would have plugged is shown on the Balance Sheet as an unreconciled difference.`
     );
   }
 
@@ -1647,11 +1654,12 @@ export async function generateFinancialReport(
 
   const periodLabel = window.label;
 
-  const pnl = generateProfitAndLoss(periodTransactions, periodLabel);
+  const isGenerated = (t: ClassifiedTransaction) => t.originalRow != null && syntheticRowIndexes.has(t.originalRow);
+  const pnl = generateProfitAndLoss(periodTransactions.filter(t => !isGenerated(t)), periodLabel);
   // The balance sheet's equity needs all profit to date, not just this period's.
   const cumulativeNetIncome = window.all
     ? pnl.netIncome
-    : generateProfitAndLoss(transactions, periodLabel).netIncome;
+    : generateProfitAndLoss(statementTransactions, periodLabel).netIncome;
 
   if (pnl.totalRevenue === 0) {
     warnings.push('No revenue transactions found. Check that income items are properly classified.');
@@ -1667,15 +1675,18 @@ export async function generateFinancialReport(
     options.autoNetIncomeDefaultOnMediumSignal ||
     'auto';
   const closingDecision = determineNetIncomeClosingDecision(
-    transactions,
+    statementTransactions,
     cumulativeNetIncome,
     netIncomeMode,
     mediumSignalDefault
   );
   const bs = closingDecision.mode === 'use_imported_equity'
-    ? generateBalanceSheet(transactions, asOfDate)
-    : generateBalanceSheet(transactions, asOfDate, cumulativeNetIncome);
-  const openingDiagnostics = detectOpeningBalances(transactions);
+    ? generateBalanceSheet(statementTransactions, asOfDate)
+    : generateBalanceSheet(statementTransactions, asOfDate, cumulativeNetIncome);
+  if (syntheticTransactions.length > 0 && !bs.isBalanced) {
+    bs.unreconciledDifference = roundMoney(bs.totalLiabilitiesAndEquity - bs.totalAssets);
+  }
+  const openingDiagnostics = detectOpeningBalances(statementTransactions);
 
   warnings.push(`Equity closing decision: ${closingDecision.reason}`);
   closingDecision.evidence.slice(0, 3).forEach(line => warnings.push(`Equity closing evidence: ${line}`));
