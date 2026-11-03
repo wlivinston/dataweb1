@@ -1,6 +1,8 @@
 ﻿import { ColumnInfo } from './types';
 import { FinanceColumnMapping } from './financeTypes';
 import { parseMoney } from './money';
+import { classifyAccount } from './financeEngine';
+import { categoryForClass, directionForClass, isStatementClassColumn, statementClassOf, type StatementClass } from './financeStatementClass';
 
 export type FinancialDatasetFormat = 'long' | 'wide' | 'unknown';
 
@@ -349,6 +351,19 @@ function inferFallbackDateForLongImport(data: Record<string, any>[], mapping: Fi
     }
   }
 
+  // A fiscal-year column with one year: the statements are for that year, not
+  // for whatever day the file was uploaded. (Year end taken as 31 December;
+  // the import warning names the date used.)
+  const columns = data.length > 0 ? Object.keys(data[0]) : [];
+  const yearColumn = columns.find(column => /^(fiscal\s*_?\s*year|fy|financial\s*_?\s*year|year)$/i.test(column.trim()));
+  if (yearColumn) {
+    const years = new Set(
+      data.map(row => String(row[yearColumn] ?? '').trim()).filter(value => value !== '')
+    );
+    const [only] = [...years];
+    if (years.size === 1 && /^(19|20)\d{2}$/.test(only)) return `${only}-12-31`;
+  }
+
   return new Date().toISOString().slice(0, 10);
 }
 
@@ -615,6 +630,28 @@ export function transformLongDatasetToCanonical(
 
   const fallbackDate = inferFallbackDateForLongImport(data, mapping);
   let fallbackDateRows = 0;
+
+  // A type column that names statement classes (Asset, Liability, Tax,
+  // ContraIncome, ...) decides the statement of every line; see
+  // financeStatementClass.ts. Which classes the file writes all-negative is
+  // its sign convention for that class.
+  const classColumn =
+    mapping.type && mapping.amount && isStatementClassColumn(data.map(row => row[mapping.type!]))
+      ? mapping.type
+      : null;
+  const classAllNegative = new Map<StatementClass, boolean>();
+  if (classColumn) {
+    for (const row of data) {
+      const cls = statementClassOf(row[classColumn]);
+      const amount = parseNumericValue(row[mapping.amount!]);
+      if (!cls || amount == null || amount === 0) continue;
+      classAllNegative.set(cls, (classAllNegative.get(cls) ?? true) && amount < 0);
+    }
+    auditLog.push(
+      `Transformation layer: "${classColumn}" names the statement class of each line ` +
+      `(${[...classAllNegative.keys()].join(', ')}); it decides each line's statement, and account names only pick the line within it.`
+    );
+  }
   let skippedAggregateRows = 0;
   const unreadableAmountRows: number[] = [];
 
@@ -735,6 +772,35 @@ export function transformLongDatasetToCanonical(
         (description ? isLikelyAggregateLabel(description) : false);
       if (looksLikeAggregate && !hasLikelyAccountCodeValue(row)) {
         skippedAggregateRows += 1;
+        continue;
+      }
+
+      const declaredClass = classColumn ? statementClassOf(row[classColumn]) : null;
+      if (declaredClass) {
+        const section = mapping.category ? String(row[mapping.category] ?? '').trim() : '';
+        const guess = classifyAccount(account, section || undefined);
+        const classCategory = categoryForClass(declaredClass, guess, section, rawAmount);
+        const direction = directionForClass(declaredClass, account, rawAmount, classAllNegative.get(declaredClass) ?? false);
+        const normalizedAmount = Math.abs(rawAmount);
+        if (rawAmount < 0) flags.push('negative_value_normalized');
+        if (usedDateFallback) {
+          flags.push('date_fallback_applied');
+          fallbackDateRows += 1;
+        }
+        transactions.push({
+          Date: parsedDate,
+          Account: account,
+          // The engine category itself, so no later name rule can move it.
+          Category: classCategory,
+          Type: direction === 'credit' ? 'Income' : 'Expense',
+          Debit: direction === 'debit' ? normalizedAmount : 0,
+          Credit: direction === 'credit' ? normalizedAmount : 0,
+          Description: description,
+          Reference: reference || undefined,
+          SourceColumn: mapping.amount,
+          SourceRow: index,
+          Flags: flags.length > 0 ? flags : undefined,
+        });
         continue;
       }
 

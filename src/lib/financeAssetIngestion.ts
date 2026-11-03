@@ -156,7 +156,12 @@ function isLikelyLiabilityAccount(accountName: string): boolean {
   const account = String(accountName || '').toLowerCase().trim();
   if (!account) return false;
 
-  // Avoid false positives on legitimate P&L/tax lines.
+  // Avoid false positives on legitimate P&L/tax lines. Liability insurance
+  // ("Insurance - General Liability", "Product Liability Insurance") is a
+  // premium paid: an expense, not a liability.
+  if (/\binsurance\b/.test(account)) {
+    return false;
+  }
   if (
     account.includes('deferred tax expense') ||
     account.includes('deferred tax benefit') ||
