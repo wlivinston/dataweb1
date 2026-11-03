@@ -138,6 +138,17 @@ closed**: a dataset with a sensitive column and no key configured is refused wit
 503 `ENCRYPTION_UNAVAILABLE`, never stored in plaintext. Blanks stay blank. Any future SQL
 pushdown must not filter or project on an encrypted column — the database holds ciphertext.
 
+### Two-factor sign-in
+
+`backend/modules/security/mfa.js` + `src/lib/mfa.ts` (TOTP via Supabase MFA). Supabase
+issues a usable `aal1` token after the password alone, so **the rule lives in the auth
+middleware**: a user with a verified factor is refused (401 `MFA_REQUIRED`, audited as
+`auth.mfa_required`) until the token says `aal2`. `optionalAuth` treats such a session as
+signed out. The browser shows `TwoFactorGate` on every page until the code is entered, and
+holds API loads (e.g. stored datasets) until `assurance.satisfied`. The sign-in fallback for
+networks that cannot reach Supabase has a matching `POST /api/v1/auth/supabase/mfa/verify`.
+Users without a verified factor are unaffected.
+
 ### Finance: where a line goes
 
 The finance page places every imported line on a statement, strongest signal first, and
