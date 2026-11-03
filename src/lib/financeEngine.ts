@@ -319,15 +319,17 @@ const CLASSIFICATION_RULES: ClassificationRule[] = [
   // Other Expense
   { category: 'other_expense', keywords: ['interest expense', 'loss on sale', 'loss on disposal', 'other expense', 'miscellaneous expense', 'foreign exchange loss', 'penalty', 'fine'] },
   // Current Assets
-  { category: 'current_asset', keywords: ['cash', 'cash in hand', 'cash at bank', 'bank', 'petty cash', 'accounts receivable', 'trade receivable', 'inventory', 'stock', 'prepaid', 'prepayment', 'short-term investment', 'marketable securities', 'notes receivable'] },
+  { category: 'current_asset', keywords: ['cash', 'cash in hand', 'cash at bank', 'bank', 'petty cash', 'accounts receivable', 'trade receivable', 'inventory', 'stock', 'prepaid', 'prepayment', 'short-term investment', 'marketable securities', 'notes receivable', 'loan receivable', 'loans receivable', 'receivable'] },
   // Non-Current Assets
   { category: 'non_current_asset', keywords: ['property', 'plant', 'equipment', 'vehicle', 'building', 'land', 'furniture', 'fixture', 'intangible', 'goodwill', 'patent', 'trademark', 'long-term investment', 'capital work in progress'] },
   // Contra-assets — credit-normal accounts that reduce asset totals
   { category: 'contra_asset', keywords: ['accumulated depreciation', 'accumulated amortization', 'allowance for doubtful', 'allowance for bad debt', 'provision for depreciation'] },
   // Current Liabilities
-  { category: 'current_liability', keywords: ['accounts payable', 'trade payable', 'accrued', 'accrual', 'short-term loan', 'short-term debt', 'unearned revenue', 'deferred revenue', 'credit card', 'current portion', 'wages payable', 'salaries payable', 'tax payable', 'vat payable', 'gst payable', 'overdraft', 'notes payable'] },
+  { category: 'current_liability', keywords: ['accounts payable', 'trade payable', 'accrued', 'accrual', 'short-term loan', 'short-term debt', 'unearned revenue', 'deferred revenue', 'credit card', 'current portion', 'wages payable', 'salaries payable', 'tax payable', 'vat payable', 'gst payable', 'overdraft', 'notes payable', 'payable'] },
   // Non-Current Liabilities
-  { category: 'non_current_liability', keywords: ['long-term loan', 'long-term debt', 'mortgage', 'bonds payable', 'deferred tax liability', 'lease liability', 'long-term note', 'pension liability'] },
+  // 'bank loan' outranks the cash rule's 'bank' (longest keyword wins); a
+  // plain 'loan' is taken as a term loan. "Bank Loan" was filed as cash.
+  { category: 'non_current_liability', keywords: ['loan', 'bank loan', 'term loan', 'borrowing', 'borrowings', 'long-term loan', 'long-term debt', 'mortgage', 'bonds payable', 'deferred tax liability', 'lease liability', 'long-term note', 'pension liability'] },
   // Equity
   { category: 'equity', keywords: ['owner equity', "owner's equity", 'retained earnings', 'capital', 'common stock', 'share capital', 'paid-in capital', 'additional paid-in', 'drawings', 'dividends', 'treasury stock', 'accumulated other comprehensive', 'reserves', 'share premium', 'opening balance equity'] },
 ];
@@ -338,9 +340,27 @@ export function classifyAccount(
   amountHint?: number
 ): AccountCategory {
   const name = (accountName || '').toLowerCase().trim();
-  const hint = (categoryHint || '').toLowerCase().replace(/[_-]+/g, ' ').trim();
+  // Hint and map keys are normalised the same way. The hint had its hyphens
+  // turned into spaces while the keys kept theirs, so "Non-Current Liability"
+  // never matched its key and fell through to the generic "liability" -
+  // filing a long-term loan as a current liability and skewing the current
+  // ratio. Plurals ("Current Liabilities") did not match at all.
+  const normaliseHint = (text: string): string =>
+    text
+      .toLowerCase()
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/liabilities\b/g, 'liability')
+      .replace(/\b(assets|expenses|revenues|sales)\b/g, match => (match === 'sales' ? 'sales' : match.slice(0, -1)));
+  const rawHint = normaliseHint(categoryHint || '');
+  // The import pipeline passes the account name as the hint when no category
+  // column is mapped. A hint that is just the name says nothing more than the
+  // name, so it must not outrank the name rules below.
+  const hint = rawHint === normaliseHint(accountName || '') ? '' : rawHint;
 
   // Check category hint first (user-provided or column value)
+  let substringHintCategory: AccountCategory | null = null;
   if (hint) {
     // Direct category mapping from common labels
     const hintMap: Record<string, AccountCategory> = {
@@ -348,30 +368,33 @@ export function classifyAccount(
       'cogs': 'cost_of_goods_sold', 'cost of goods sold': 'cost_of_goods_sold', 'cost of sales': 'cost_of_goods_sold',
       'expense': 'operating_expense', 'operating expense': 'operating_expense', 'opex': 'operating_expense',
       'asset': 'current_asset', 'current asset': 'current_asset',
-      'fixed asset': 'non_current_asset', 'non-current asset': 'non_current_asset',
+      'fixed asset': 'non_current_asset', 'non-current asset': 'non_current_asset', 'long-term asset': 'non_current_asset',
       'contra asset': 'contra_asset', 'accumulated depreciation': 'contra_asset',
       'liability': 'current_liability', 'current liability': 'current_liability',
       'long-term liability': 'non_current_liability', 'non-current liability': 'non_current_liability',
+      'long-term debt': 'non_current_liability',
       'equity': 'equity', "owner's equity": 'equity',
       'tax': 'tax',
       'other income': 'other_income',
       'other expense': 'other_expense',
     };
 
-    // Exact hint match first, then the longest substring match. Scanning in
-    // insertion order resolved the hint 'contra asset' to the generic 'asset'
-    // key before ever reaching 'contra asset'.
-    if (hintMap[hint]) return hintMap[hint];
+    // Exact hint match first. Scanning in insertion order resolved the hint
+    // 'contra asset' to the generic 'asset' key before reaching 'contra asset'.
+    const normalisedMap = new Map(Object.entries(hintMap).map(([key, cat]) => [normaliseHint(key), cat]));
+    const exact = normalisedMap.get(hint);
+    if (exact) return exact;
 
-    let hintCategory: AccountCategory | null = null;
+    // A hint that only CONTAINS a generic word ("Operating costs - liability
+    // side") is weaker than a specific name rule, so it is consulted after
+    // the name rules below.
     let hintKeyLength = 0;
-    for (const [key, cat] of Object.entries(hintMap)) {
+    for (const [key, cat] of normalisedMap) {
       if (key.length > hintKeyLength && hint.includes(key)) {
-        hintCategory = cat;
+        substringHintCategory = cat;
         hintKeyLength = key.length;
       }
     }
-    if (hintCategory) return hintCategory;
   }
 
   // Keyword matching against account name.
@@ -395,6 +418,7 @@ export function classifyAccount(
   }
 
   if (bestCategory) return bestCategory;
+  if (substringHintCategory) return substringHintCategory;
 
   // Fallback: use amount sign if available
   if (amountHint !== undefined && amountHint !== 0) {
@@ -534,6 +558,75 @@ export function readTransactions(
   // Sort by date
   transactions.sort((a, b) => a.date.localeCompare(b.date));
   return { transactions, unreadableRows };
+}
+
+// ============================================================
+// REPORT WINDOW
+// ============================================================
+
+export interface ReportWindow {
+  /** True when every transaction is in scope (custom period, or dates unusable). */
+  all: boolean;
+  start: string;
+  end: string;
+  label: string;
+}
+
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+const monthName = (month: number): string =>
+  ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][month - 1];
+
+/**
+ * Which dates a report covers.
+ *
+ * The period selector used to change only the title: "Monthly" on a two-year
+ * ledger showed both years' totals, and the balance sheet included
+ * transactions dated after its own as-of date. Now monthly / quarterly /
+ * annual mean the last such period in the data, or the one ending on
+ * `asOfDate`; custom means everything. Dates must be ISO days to be compared -
+ * otherwise everything is in scope and the caller says so.
+ */
+export function reportWindow(
+  transactions: readonly { date: string }[],
+  period: ReportPeriod,
+  asOfDate?: string
+): ReportWindow {
+  const dates = transactions.map(t => t.date).filter(Boolean).sort();
+  const first = dates[0] ?? '';
+  const last = dates[dates.length - 1] ?? '';
+  const everything = (label: string): ReportWindow => ({ all: true, start: first, end: asOfDate || last, label });
+
+  if (dates.length === 0 || !transactions.every(t => ISO_DAY.test(t.date))) {
+    return everything('All transactions');
+  }
+  const end = asOfDate && ISO_DAY.test(asOfDate) ? asOfDate : last;
+  const [year, month] = end.split('-').map(Number);
+
+  if (period === 'monthly') {
+    return { all: false, start: `${year}-${String(month).padStart(2, '0')}-01`, end, label: `${monthName(month)} ${year}` };
+  }
+  if (period === 'quarterly') {
+    const quarter = Math.ceil(month / 3);
+    const startMonth = (quarter - 1) * 3 + 1;
+    return { all: false, start: `${year}-${String(startMonth).padStart(2, '0')}-01`, end, label: `Q${quarter} ${year}` };
+  }
+  if (period === 'annual') {
+    return { all: false, start: `${year}-01-01`, end, label: `Year ${year}` };
+  }
+  return everything(first && last ? `${first} to ${end}` : 'All transactions');
+}
+
+/** Cash and bank balance of a set of transactions (debits less credits). */
+function cashBalanceOf(transactions: readonly ClassifiedTransaction[]): number {
+  let cents = 0;
+  for (const t of transactions) {
+    if (t.category !== 'current_asset') continue;
+    const name = t.account.toLowerCase();
+    if (!name.includes('cash') && !name.includes('bank')) continue;
+    cents += t.type === 'debit' ? toCents(t.amount) : -toCents(t.amount);
+  }
+  return fromCents(cents);
 }
 
 // ============================================================
@@ -1031,7 +1124,8 @@ export function generateBalanceSheet(
 export function generateCashFlow(
   transactions: ClassifiedTransaction[],
   period: string,
-  netIncome: number
+  netIncome: number,
+  openingCash = 0
 ): CashFlowStatement {
   // Operating activities: start with net income, add back non-cash items
   const operatingItems: LineItem[] = [
@@ -1136,14 +1230,14 @@ export function generateCashFlow(
   // Net cash change
   const netCashChange = Math.round((netOperatingCashFlow + netInvestingCashFlow + netFinancingCashFlow) * 100) / 100;
 
-  // Beginning cash is zero: every row of the ledger is treated as a flow in
-  // this statement (opening entries included - capital paid in appears as a
-  // contribution above), so the period starts from nothing. This used to be
+  // Beginning cash is the cash held before these transactions (`openingCash`,
+  // zero when they are the whole ledger): every row passed in is treated as a
+  // flow of this period, opening entries included. This used to be
   // the sum of every cash movement in the ledger - the ENDING balance - and
   // the net change was then added on top, so ending cash came out double
   // (21,700 for a business holding 10,850). Ending cash is now the flows, and
   // the check against balance-sheet cash is a real test of the indirect method.
-  const beginningCash = 0;
+  const beginningCash = roundMoney(openingCash);
   const endingCash = roundMoney(beginningCash + netCashChange);
 
   return {
@@ -1485,13 +1579,31 @@ export async function generateFinancialReport(
   // Step 1: Parse transactions
   onProgress?.(10, 'Parsing and classifying transactions...');
   await yieldToBrowser();
-  const { transactions, unreadableRows } = readTransactions(data, mapping);
+  const { transactions: allTransactions, unreadableRows } = readTransactions(data, mapping);
   if (unreadableRows.length > 0) {
     const shown = unreadableRows.slice(0, 5).map(index => index + 2).join(', ');
     warnings.push(
       `${unreadableRows.length} row(s) have an amount that could not be read as money and are NOT in these statements ` +
       `(spreadsheet row ${shown}${unreadableRows.length > 5 ? ', ...' : ''}). Fix those cells and run the report again.`
     );
+  }
+
+  // The report window: the P&L and cash flow cover it; the balance sheet is
+  // everything up to its end, with earlier profit carried as retained earnings.
+  const window = reportWindow(allTransactions, options.period, options.asOfDate);
+  const transactions = window.all ? allTransactions : allTransactions.filter(t => t.date <= window.end);
+  const inWindow = (t: ClassifiedTransaction) => window.all || t.date >= window.start;
+  const periodTransactions = transactions.filter(inWindow);
+  if (!window.all) {
+    const carried = transactions.length - periodTransactions.length;
+    const later = allTransactions.length - transactions.length;
+    warnings.push(
+      `Statements cover ${window.start} to ${window.end} (${window.label}).` +
+      (carried > 0 ? ` ${carried} earlier transaction(s) are carried in as opening balances and retained earnings.` : '') +
+      (later > 0 ? ` ${later} transaction(s) dated after ${window.end} are not included.` : '')
+    );
+  } else if (allTransactions.some(t => t.date && !ISO_DAY.test(t.date))) {
+    warnings.push('Some transaction dates could not be read, so these statements cover every transaction regardless of the period chosen.');
   }
 
   const syntheticRowIndexes = new Set<number>();
@@ -1533,11 +1645,13 @@ export async function generateFinancialReport(
   onProgress?.(30, 'Generating Profit & Loss Statement...');
   await yieldToBrowser();
 
-  const periodLabel = options.asOfDate
-    ? `Period ending ${options.asOfDate}`
-    : `${options.period.charAt(0).toUpperCase() + options.period.slice(1)} Report`;
+  const periodLabel = window.label;
 
-  const pnl = generateProfitAndLoss(transactions, periodLabel);
+  const pnl = generateProfitAndLoss(periodTransactions, periodLabel);
+  // The balance sheet's equity needs all profit to date, not just this period's.
+  const cumulativeNetIncome = window.all
+    ? pnl.netIncome
+    : generateProfitAndLoss(transactions, periodLabel).netIncome;
 
   if (pnl.totalRevenue === 0) {
     warnings.push('No revenue transactions found. Check that income items are properly classified.');
@@ -1546,7 +1660,7 @@ export async function generateFinancialReport(
   // Step 3: Generate Balance Sheet
   onProgress?.(50, 'Generating Balance Sheet...');
   await yieldToBrowser();
-  const asOfDate = options.asOfDate || new Date().toISOString().split('T')[0];
+  const asOfDate = window.end || options.asOfDate || new Date().toISOString().split('T')[0];
   const netIncomeMode = options.netIncomeToEquityMode || 'auto';
   const mediumSignalDefault =
     options.netIncomeEquityDefault ||
@@ -1554,13 +1668,13 @@ export async function generateFinancialReport(
     'auto';
   const closingDecision = determineNetIncomeClosingDecision(
     transactions,
-    pnl.netIncome,
+    cumulativeNetIncome,
     netIncomeMode,
     mediumSignalDefault
   );
   const bs = closingDecision.mode === 'use_imported_equity'
     ? generateBalanceSheet(transactions, asOfDate)
-    : generateBalanceSheet(transactions, asOfDate, pnl.netIncome);
+    : generateBalanceSheet(transactions, asOfDate, cumulativeNetIncome);
   const openingDiagnostics = detectOpeningBalances(transactions);
 
   warnings.push(`Equity closing decision: ${closingDecision.reason}`);
@@ -1610,7 +1724,13 @@ export async function generateFinancialReport(
   if (transactionsForCashAnalysis.length === 0 && syntheticTransactions.length > 0) {
     warnings.push('Caveat: all rows were detected as synthetic; Cash Flow fallback used full journal and may be unreliable.');
   }
-  const cf = generateCashFlow(cashFlowSource, periodLabel, pnl.netIncome);
+  const cf = generateCashFlow(
+    cashFlowSource.filter(inWindow),
+    periodLabel,
+    pnl.netIncome,
+    // Cash held before the window opens; zero when the window is everything.
+    cashBalanceOf(cashFlowSource.filter(t => !inWindow(t)))
+  );
 
   const uniqueDatesForCash = new Set(
     cashFlowSource
