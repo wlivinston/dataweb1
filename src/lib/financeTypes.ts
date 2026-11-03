@@ -97,6 +97,12 @@ export interface BalanceSheet {
   totalEquity: number;
   totalLiabilitiesAndEquity: number;
   isBalanced: boolean;
+  /**
+   * Liabilities + Equity - Assets, when the data does not balance and the
+   * user chose to see the report anyway. Shown as its own line, never folded
+   * into an asset: a balancing plug in Total Assets is a confident wrong number.
+   */
+  unreconciledDifference?: number;
 }
 
 // === Cash Flow Statement ===

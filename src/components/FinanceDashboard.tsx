@@ -1514,14 +1514,20 @@ const FinanceDashboard: React.FC = () => {
       );
       const openingMissing = Boolean(result.reconciliationDiagnostics?.opening.missingOpeningAssets);
       const driftWithinTolerance = difference > 0 && difference <= BALANCE_SHEET_TOLERANCE;
-      const shouldBlockForBalance = difference > BALANCE_SHEET_TOLERANCE;
+      // The user chose to see the report with the difference shown (the
+      // balancing rows they accepted are not booked as assets or equity, so
+      // the sheet still does not balance - and says so).
+      const differenceAccepted = journal.some(
+        row => row.SourceColumn === OPENING_INITIALIZATION_SOURCE_COLUMN || row.SourceColumn === 'Opening_Balance_Fix'
+      );
+      const shouldBlockForBalance = difference > BALANCE_SHEET_TOLERANCE && !differenceAccepted;
       if (!openingMissing && driftWithinTolerance) {
         finalAuditLog = [
           ...finalAuditLog,
           `Rounding drift accepted: ${difference.toFixed(2)} (tolerance ${BALANCE_SHEET_TOLERANCE.toFixed(2)}).`,
         ];
       }
-      if (shouldBlockForBalance || openingMissing) {
+      if (shouldBlockForBalance || (openingMissing && !differenceAccepted)) {
         const diagnostics = result.reconciliationDiagnostics;
         const closingEvidence = diagnostics?.closing.evidence.length
           ? diagnostics.closing.evidence.join(' | ')
@@ -2922,23 +2928,23 @@ const FinanceDashboard: React.FC = () => {
             <div className="pt-3 rounded-md border-2 border-red-300 bg-white p-3">
               <div className="flex items-center justify-between mb-2">
                 <p className="text-[11px] font-bold uppercase tracking-wide text-red-800">
-                  Action Required
+                  The data does not balance
                 </p>
-                <Badge className="bg-red-600 text-white border-transparent">Recommended</Badge>
               </div>
               <Button
                 size="default"
-                className="w-full h-12 text-base font-bold bg-red-600 hover:bg-red-700 text-white border border-red-700 ring-2 ring-red-300 shadow-lg shadow-red-300/60 animate-pulse"
+                className="w-full h-12 text-base font-bold bg-red-600 hover:bg-red-700 text-white border border-red-700"
                 onClick={applySingleEntryOffsetFix}
               >
                 <AlertTriangle className="h-5 w-5 mr-2" />
-                Apply Opening Balance Initialization ({singleEntryFixSuggestion.offsetRows} offsets)
+                Show the report with the difference ({singleEntryFixSuggestion.offsetRows} offsets)
               </Button>
               <p className="mt-2 text-[11px] text-red-700 font-medium">
                 Strategy: {formatOpeningInitializationStrategy(singleEntryFixSuggestion.strategy)} compression ({singleEntryFixSuggestion.sourceRows.toLocaleString()} source rows {'->'} {singleEntryFixSuggestion.offsetRows.toLocaleString()} offsets).
               </p>
               <p className="mt-1 text-[11px] text-red-700 font-medium">
-                Use this when your file is a summary export (not a full double-entry journal).
+                Use this when your file is a summary export (not a full double-entry journal). The report will show the
+                difference as an unreconciled line; it is never added to your assets or equity. Fixing the data is better.
               </p>
             </div>
           )}
@@ -2949,7 +2955,7 @@ const FinanceDashboard: React.FC = () => {
                 className="bg-red-600 hover:bg-red-700"
                 onClick={applyOpeningBalanceFix}
               >
-                Apply One-Click Opening Balance Fix ({openingFixSuggestion.amount.toFixed(2)})
+                Show the report with the opening balances missing ({openingFixSuggestion.amount.toFixed(2)} unreconciled)
               </Button>
             </div>
           )}
@@ -4467,6 +4473,21 @@ const FinanceDashboard: React.FC = () => {
                     <span>Total Assets</span>
                     <span className="font-mono text-right break-all">{formatCurrency(bs.totalAssets)}</span>
                   </div>
+                  {bs.unreconciledDifference !== undefined && (
+                    <div
+                      className="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+                      data-testid="unreconciled-difference"
+                    >
+                      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 font-bold">
+                        <span>Unreconciled difference (not an asset)</span>
+                        <span className="font-mono text-right break-all">{formatCurrency(bs.unreconciledDifference)}</span>
+                      </div>
+                      <p className="mt-1 text-xs">
+                        Liabilities + Equity exceed Assets by this amount in the data. It is not added to any account;
+                        check for missing asset lines, lines classified under the wrong heading, or profit counted twice in equity.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Liabilities & Equity */}

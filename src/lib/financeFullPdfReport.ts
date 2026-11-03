@@ -307,6 +307,12 @@ function renderBalanceSheet(doc: jsPDF, report: FinancialReport): void {
   body.push(...lineItemRows(bs.nonCurrentAssets));
   body.push(addBoldRow('Total Non-Current Assets', bs.totalNonCurrentAssets));
   body.push(addBoldRow('Total Assets', bs.totalAssets));
+  if (bs.unreconciledDifference !== undefined) {
+    body.push([
+      { content: 'Unreconciled difference (not an asset; not in any total)', styles: { fontStyle: 'bold', textColor: [220, 38, 38] } },
+      { content: formatCurrency(bs.unreconciledDifference), styles: { fontStyle: 'bold', textColor: [220, 38, 38], halign: 'right' } },
+    ]);
+  }
 
   // Liabilities
   body.push([{ content: 'LIABILITIES', styles: { fontStyle: 'bold', fillColor: [254, 226, 226] } }, '']);

@@ -220,3 +220,72 @@ describe('bank reconciliation', () => {
     expect(recon.bankCreditsUnrecorded).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Generated balancing rows are never assets.
+//
+// A summary export (each line one-sided, no counterparts) does not balance.
+// The dashboard can add "System Clearing Account" offsets so a report can be
+// shown anyway. Those offsets used to be booked as a current asset, so Total
+// Assets became whatever balanced the sheet: on a real workbook, $13.04B of
+// assets that do not exist.
+//
+//   Cash 85 (Dr) | AP 20, Loan 10, Stock 20 (Cr) | Revenue 100 (Cr), COGS 60 (Dr)
+//   Real assets          85
+//   Liabilities          30
+//   Equity               20 stock + 40 net income  = 60
+//   L + E - A            90 - 85                   = 5 unreconciled
+// ---------------------------------------------------------------------------
+
+describe('generated balancing rows', () => {
+  const oneSided = (Account: string, Category: string, Debit: number | '', Credit: number | '') =>
+    ({ Date: '2025-12-31', Account, Category, Debit, Credit });
+  const summary = [
+    oneSided('Cash', 'current_asset', 85, ''),
+    oneSided('Accounts Payable', 'current_liability', '', 20),
+    oneSided('Bank Loan', 'non_current_liability', '', 10),
+    oneSided('Common Stock', 'equity', '', 20),
+    oneSided('Sales Revenue', 'revenue', '', 100),
+    oneSided('Cost of Goods Sold', 'cogs', 60, ''),
+  ];
+  // What the dashboard's per-row Opening Balance Initialization adds.
+  const offsets = summary.map((row) => ({
+    Date: row.Date,
+    Account: 'System Clearing Account',
+    Category: 'current_asset',
+    Debit: row.Credit,
+    Credit: row.Debit,
+    SourceColumn: 'Single_Entry_Offset',
+  }));
+  const withOffsets = (rows: Record<string, unknown>[]) => {
+    const mapping = { date: 'Date', account: 'Account', debit: 'Debit', credit: 'Credit', category: 'Category' };
+    // The SourceColumn tag is how the engine knows a row was generated.
+    return generateFinancialReport(rows, mapping, { period: 'annual' as ReportPeriod, companyName: 'Test Co' });
+  };
+
+  it('keeps them out of Total Assets and reports the difference instead', async () => {
+    const report = await withOffsets([...summary, ...offsets]);
+    const bs = report.balanceSheet;
+    expect(bs.totalAssets).toBe(85);
+    expect(line(bs.currentAssets, 'System Clearing Account')).toBeUndefined();
+    expect(bs.totalLiabilities).toBe(30);
+    expect(bs.totalEquity).toBe(60);
+    expect(bs.isBalanced).toBe(false);
+    expect(bs.unreconciledDifference).toBe(5);
+  });
+
+  it('leave the P&L alone', async () => {
+    const report = await withOffsets([...summary, ...offsets]);
+    expect(report.profitAndLoss.totalRevenue).toBe(100);
+    expect(report.profitAndLoss.grossProfit).toBe(40);
+  });
+
+  it('a ledger that balances on its own has no difference line', async () => {
+    const report = await withOffsets([
+      oneSided('Cash', 'current_asset', 90, ''),
+      oneSided('Common Stock', 'equity', '', 90),
+    ]);
+    expect(report.balanceSheet.isBalanced).toBe(true);
+    expect(report.balanceSheet.unreconciledDifference).toBeUndefined();
+  });
+});
