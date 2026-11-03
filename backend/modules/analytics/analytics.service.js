@@ -53,7 +53,12 @@ const remember = (key, model) => {
 async function loadAllRows(dataset) {
   const rows = [];
   while (rows.length < dataset.rowCount) {
-    const page = await repository.getDatasetRows(dataset.id, { offset: rows.length, limit: PAGE_ROWS });
+    // Sensitive columns are decrypted here, so a question is answered over
+    // the values, never over ciphertext.
+    const page = datasetsService.decryptRows(
+      dataset,
+      await repository.getDatasetRows(dataset.id, { offset: rows.length, limit: PAGE_ROWS })
+    );
     if (page.length === 0) break;
     rows.push(...page);
   }

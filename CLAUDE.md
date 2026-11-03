@@ -125,6 +125,19 @@ record the data**: no row values, no question or DAX text (it can quote values),
 (it is HMAC-hashed). New routes on stored data must add their action to `ACTIONS` and record
 it. Users read their own trail at `GET /api/v1/audit/me`.
 
+### Field encryption
+
+`backend/modules/security/fieldCrypto.js`: **sensitive columns only** are encrypted at rest
+(AES-256-GCM, stored as `enc:v1:<kid>:<iv>:<tag>:<ct>`; the key id makes rotation possible).
+A column is sensitive when its name looks like one (`looksSensitive`: SSN, tax ID, bank
+account, IBAN, date of birth, Ghana Card, BVN, NIN, …) or the uploader sends
+`sensitive: true`. `datasets.service` encrypts on `appendRows` and decrypts in
+`getDatasetRows`/`decryptRows`; the analytics engine only ever sees plaintext. Keys come from
+`FIELD_ENCRYPTION_KEYS="kid:base64key,..."` and `FIELD_ENCRYPTION_ACTIVE_KEY_ID`. **It fails
+closed**: a dataset with a sensitive column and no key configured is refused with
+503 `ENCRYPTION_UNAVAILABLE`, never stored in plaintext. Blanks stay blank. Any future SQL
+pushdown must not filter or project on an encrypted column — the database holds ciphertext.
+
 ### Upload path
 
 `components/FunctionalDataUpload.tsx` is the hub: file → `lib/excelRows.ts` (shared by the
