@@ -19,6 +19,7 @@ tags:
   - name: datasets
   - name: notifications
   - name: analytics
+  - name: audit
 paths:
   /:
     get:
@@ -352,6 +353,27 @@ paths:
       responses:
         '200':
           description: Subscription result
+  /audit/me:
+    get:
+      tags: [audit]
+      summary: The signed-in user's own audit trail, newest first
+      description: >
+        Every action on the user's stored data and every refused attempt, from
+        an append-only log (the database rejects updates and deletes). Records
+        who, what, when, the target and the outcome - never the data itself,
+        the question text, or the raw IP address.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+      responses:
+        '200':
+          description: Events, newest first
   /analytics/query:
     post:
       tags: [analytics]

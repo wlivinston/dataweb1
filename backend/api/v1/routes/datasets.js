@@ -4,6 +4,7 @@ const datasetsService = require('../../../modules/datasets/datasets.service');
 const { assertValidRequest } = require('../../../modules/common/validation');
 const { sendSuccess, sendError } = require('../../../modules/common/apiResponse');
 const { authenticateToken } = require('../../../middleware/auth');
+const audit = require('../../../modules/audit/audit.service');
 
 const router = express.Router();
 
@@ -45,8 +46,10 @@ router.post(
         sourceName,
         columns,
       });
+      await audit.record({ req, action: 'dataset.create', targetType: 'dataset', targetId: dataset.id, details: { columns: (columns || []).length } });
       return sendSuccess(res, { status: 201, data: dataset });
     } catch (error) {
+      await audit.record({ req, action: 'dataset.create', targetType: 'dataset', outcome: audit.outcomeForError(error) });
       return sendError(res, error);
     }
   }
@@ -75,8 +78,13 @@ router.post(
         startIndex: req.body.startIndex,
         rows: req.body.rows,
       });
+      await audit.record({
+        req, action: 'dataset.append', targetType: 'dataset', targetId: req.params.id,
+        details: { startIndex: req.body.startIndex, rows: req.body.rows.length },
+      });
       return sendSuccess(res, { status: 202, data: result });
     } catch (error) {
+      await audit.record({ req, action: 'dataset.append', targetType: 'dataset', targetId: req.params.id, outcome: audit.outcomeForError(error) });
       return sendError(res, error);
     }
   }
@@ -97,8 +105,10 @@ router.post(
         datasetId: req.params.id,
         expectedRowCount: req.body.expectedRowCount,
       });
+      await audit.record({ req, action: 'dataset.complete', targetType: 'dataset', targetId: req.params.id, details: { rowCount: dataset.rowCount } });
       return sendSuccess(res, { data: dataset });
     } catch (error) {
+      await audit.record({ req, action: 'dataset.complete', targetType: 'dataset', targetId: req.params.id, outcome: audit.outcomeForError(error) });
       return sendError(res, error);
     }
   }
@@ -114,8 +124,10 @@ router.get('/:id', [param('id').isString().trim().notEmpty()], async (req, res) 
   try {
     assertValidRequest(req);
     const dataset = await datasetsService.getDataset(req.params.id, ownerOf(req));
+    await audit.record({ req, action: 'dataset.read', targetType: 'dataset', targetId: req.params.id });
     return sendSuccess(res, { data: dataset });
   } catch (error) {
+    await audit.record({ req, action: 'dataset.read', targetType: 'dataset', targetId: req.params.id, outcome: audit.outcomeForError(error) });
     return sendError(res, error);
   }
 });
@@ -134,8 +146,13 @@ router.get(
         offset: req.query.offset,
         limit: req.query.limit,
       });
+      await audit.record({
+        req, action: 'dataset.rows.read', targetType: 'dataset', targetId: req.params.id,
+        details: { offset: meta.offset, returned: meta.returned },
+      });
       return sendSuccess(res, { data: rows, meta });
     } catch (error) {
+      await audit.record({ req, action: 'dataset.rows.read', targetType: 'dataset', targetId: req.params.id, outcome: audit.outcomeForError(error) });
       return sendError(res, error);
     }
   }
@@ -145,8 +162,10 @@ router.delete('/:id', [param('id').isString().trim().notEmpty()], async (req, re
   try {
     assertValidRequest(req);
     await datasetsService.deleteDataset(req.params.id, ownerOf(req));
+    await audit.record({ req, action: 'dataset.delete', targetType: 'dataset', targetId: req.params.id });
     return sendSuccess(res, { status: 200, data: { deleted: true } });
   } catch (error) {
+    await audit.record({ req, action: 'dataset.delete', targetType: 'dataset', targetId: req.params.id, outcome: audit.outcomeForError(error) });
     return sendError(res, error);
   }
 });
