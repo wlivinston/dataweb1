@@ -122,6 +122,8 @@ import { isSupabaseConfigured, supabase } from '@/lib/supabase';
 import { PUBLIC_CONFIG, getApiUrl } from '@/lib/publicConfig';
 import { SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATIVE_CHART_COLOR } from '@/lib/chartColors';
 import { v4 as uuidv4 } from 'uuid';
+import { parseCsvRecords } from '@/lib/csv';
+import { planHeaders } from '@/lib/excelRows';
 
 // ============================================================
 // Types
@@ -926,15 +928,17 @@ const FinanceDashboard: React.FC = () => {
 
   const parseCSV = (text: string): { data: Record<string, any>[]; columns: ColumnInfo[] } => {
     // Remove BOM
-    const clean = text.replace(/^\uFEFF/, '');
-    const lines = clean.split('\n').filter(l => l.trim().length > 0);
-    if (lines.length < 2) return { data: [], columns: [] };
+    // Quote-aware: splitting on every comma turned "10,000.00" into a debit
+    // of 10 and a credit of 000.00. Repeated or blank headings get the same
+    // names as on the main upload page ("Amount (2)", "Column 3").
+    const records = parseCsvRecords(text);
+    if (records.length < 2) return { data: [], columns: [] };
 
-    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+    const headers = planHeaders(records[0]).names;
     const data: Record<string, any>[] = [];
 
-    for (let i = 1; i < lines.length; i++) {
-      const values = lines[i].split(',').map(v => v.trim().replace(/^"|"$/g, ''));
+    for (let i = 1; i < records.length; i++) {
+      const values = records[i];
       const row: Record<string, any> = {};
       headers.forEach((h, idx) => {
         row[h] = values[idx] ?? '';

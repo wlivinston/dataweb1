@@ -77,6 +77,7 @@ import { CHART_COLOR_SCHEMES, SHARED_CHART_PALETTE, POSITIVE_CHART_COLOR, NEGATI
 // from a genuine BLANK. Every number shown below now comes from a parsed,
 // validated, evaluated expression, or is replaced by the reason it could not.
 import { createModelCache } from '@/lib/semantic/liveModel';
+import { parseCsvRecords } from '@/lib/csv';
 import { diagramRelationships, lookupJoin } from '@/lib/semantic/diagramRelationships';
 import { orderForActiveDataset } from '@/lib/visualizationDisplay';
 import { CategoryGroups, chartNumber, sumByCategory, numbersIn, coverageNote, BLANK_LABEL } from '@/lib/chartValues';
@@ -638,53 +639,8 @@ const FunctionalDataUpload: React.FC = () => {
       throw new Error('CSV file is empty');
     }
 
-    // Remove UTF-8 BOM if present
-    if (csvText.charCodeAt(0) === 0xFEFF) {
-      csvText = csvText.slice(1);
-    }
-
-    const records: any[] = [];
-    let inQuote = false;
-    let currentField = '';
-    let currentRow: string[] = [];
-
-    for (let i = 0; i < csvText.length; i++) {
-      const char = csvText[i];
-      const nextChar = csvText[i + 1];
-
-      if (char === '"') {
-        if (inQuote && nextChar === '"') {
-          // Escaped quote
-          currentField += '"';
-          i++; // Skip next quote
-        } else {
-          inQuote = !inQuote;
-        }
-      } else if (char === ',' && !inQuote) {
-        currentRow.push(currentField.trim());
-        currentField = '';
-      } else if ((char === '\n' || (char === '\r' && nextChar !== '\n')) && !inQuote) {
-        currentRow.push(currentField.trim());
-        if (currentRow.length > 0 && currentRow.some(field => field.length > 0)) {
-          records.push(currentRow);
-        }
-        currentRow = [];
-        currentField = '';
-        if (char === '\r' && nextChar === '\n') {
-          i++; // Skip LF after CR
-        }
-      } else if (char !== '\r') {
-        currentField += char;
-      }
-    }
-
-    // Add the last field and row if any
-    if (currentField.length > 0 || currentRow.length > 0) {
-      currentRow.push(currentField.trim());
-      if (currentRow.length > 0 && currentRow.some(field => field.length > 0)) {
-        records.push(currentRow);
-      }
-    }
+    // Quote-aware reader shared with the Finance page (lib/csv.ts).
+    const records: any[] = parseCsvRecords(csvText);
 
     if (records.length === 0) {
       throw new Error('CSV file contains no data rows');
