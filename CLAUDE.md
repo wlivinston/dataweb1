@@ -184,6 +184,15 @@ filers, a spouse W-2 on a non-joint return) or listed as not included. Expected 
 `taxFederal.test.ts` are worked by hand in comments; keep it that way. Adding a year: its
 Revenue Procedure figures, sources, and hand-worked cases.
 
+**W-2 PDF upload** (`lib/tax/w2Parse.ts`, `w2Pdf.ts`): pdf.js (`pdfjs-dist`, pinned, loaded
+only on upload, worker from our bundle) reads the PDF's text in the browser; each box's amount
+is the money text nearest its label, below it or on its line, and nearer to it than to any
+other label. Every copy on the page is read and they must agree, or the box is flagged. A box
+not found stays empty; a scan with no text, or a PDF without a W-2 title, is refused. The SSN
+is never read. Boxes read from a PDF are marked and the estimate is withheld until the user
+ticks that they checked them. `w2Read.test.ts` builds W-2 PDFs with jsPDF and reads them back
+through the real pdf.js extraction.
+
 ### Upload path
 
 `components/FunctionalDataUpload.tsx` is the hub: file → `lib/excelRows.ts` (shared by the
