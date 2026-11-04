@@ -146,3 +146,70 @@ describe('stored datasets', () => {
     }
   });
 });
+
+/**
+ * How the keys are read from the environment. A key the server cannot use
+ * used to be skipped without a word, so a value pasted without "a:" looked
+ * set in Vercel and still refused every sensitive upload.
+ */
+describe('reading the key settings', () => {
+  const withEnv = (keys, active) => {
+    const saved = [process.env.FIELD_ENCRYPTION_KEYS, process.env.FIELD_ENCRYPTION_ACTIVE_KEY_ID];
+    if (keys === undefined) delete process.env.FIELD_ENCRYPTION_KEYS; else process.env.FIELD_ENCRYPTION_KEYS = keys;
+    if (active === undefined) delete process.env.FIELD_ENCRYPTION_ACTIVE_KEY_ID; else process.env.FIELD_ENCRYPTION_ACTIVE_KEY_ID = active;
+    let loaded;
+    jest.isolateModules(() => { loaded = require('../modules/security/fieldCrypto'); });
+    [process.env.FIELD_ENCRYPTION_KEYS, process.env.FIELD_ENCRYPTION_ACTIVE_KEY_ID] = saved;
+    return loaded;
+  };
+
+  test.each([
+    ['the documented form', `a:${KEY_A}`, 'a'],
+    ['quotes around both values', `"a:${KEY_A}"`, '"a"'],
+    ['a key pasted without "a:"', KEY_A, 'a'],
+    ['a key pasted without "a:" and no active id', KEY_A, undefined],
+    ['spaces around the parts', ` a : ${KEY_A} `, ' a '],
+  ])('%s works, and round-trips', (_, keys, active) => {
+    const loaded = withEnv(keys, active);
+    expect(loaded.configurationProblems()).toEqual([]);
+    expect(loaded.isConfigured()).toBe(true);
+    expect(loaded.decryptValue(loaded.encryptValue('111-22-3333'))).toBe('111-22-3333');
+  });
+
+  test('a key saved in the documented form still decrypts after it is re-entered without "a:"', () => {
+    const stored = withEnv(`a:${KEY_A}`, 'a').encryptValue('111-22-3333');
+    expect(withEnv(KEY_A, undefined).decryptValue(stored)).toBe('111-22-3333');
+  });
+
+  test.each([
+    ['nothing set', undefined, undefined, 'FIELD_ENCRYPTION_KEYS is not set'],
+    ['a short key', `a:${crypto.randomBytes(16).toString('base64')}`, 'a', 'is 16 bytes, not 32'],
+    ['the active id naming no key', `a:${KEY_A}`, 'b', 'FIELD_ENCRYPTION_ACTIVE_KEY_ID is "b", but the keys present are: a'],
+    ['an entry with an empty key', 'a:', 'a', 'is not in the form'],
+  ])('%s is refused with a reason that names the setting', (_, keys, active, reason) => {
+    const loaded = withEnv(keys, active);
+    expect(loaded.isConfigured()).toBe(false);
+    expect(loaded.configurationProblems().join(' | ')).toContain(reason);
+  });
+
+  test('the reason never contains key material', () => {
+    const short = crypto.randomBytes(16).toString('base64');
+    const loaded = withEnv(`a:${short}`, 'a');
+    expect(loaded.configurationProblems().join(' ')).not.toContain(short);
+  });
+
+  test('the refusal of a sensitive upload says which setting is wrong', async () => {
+    const saved = [process.env.FIELD_ENCRYPTION_KEYS, process.env.FIELD_ENCRYPTION_ACTIVE_KEY_ID];
+    process.env.FIELD_ENCRYPTION_KEYS = `a:${KEY_A}`;
+    process.env.FIELD_ENCRYPTION_ACTIVE_KEY_ID = 'b';
+    try {
+      await jest.isolateModulesAsync(async () => {
+        const misconfigured = require('../modules/datasets/datasets.service');
+        await expect(misconfigured.createDataset({ ownerId: 'u-1', name: 'Staff', columns: [{ name: 'SSN', type: 'string' }] }))
+          .rejects.toMatchObject({ statusCode: 503, message: expect.stringContaining('FIELD_ENCRYPTION_ACTIVE_KEY_ID is "b"') });
+      });
+    } finally {
+      [process.env.FIELD_ENCRYPTION_KEYS, process.env.FIELD_ENCRYPTION_ACTIVE_KEY_ID] = saved;
+    }
+  });
+});
