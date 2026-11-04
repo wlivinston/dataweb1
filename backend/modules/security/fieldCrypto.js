@@ -28,29 +28,63 @@ const logger = require('../../config/logger');
 
 const PREFIX = 'enc:v1:';
 
+// What is wrong with the key configuration, in words that never include a
+// key. A key the server cannot use used to be skipped silently, so a value
+// pasted without its "a:" prefix, or wrapped in quotes, looked set in Vercel
+// and still refused every sensitive upload with no clue why.
+const problems = [];
+
+const unquote = (text) => text.replace(/^(['"])(.*)\1$/, '$2').trim();
+
 function loadKeys() {
-  const raw = String(process.env.FIELD_ENCRYPTION_KEYS || '').trim();
+  const raw = unquote(String(process.env.FIELD_ENCRYPTION_KEYS || '').trim());
   const keys = new Map();
-  if (!raw) return keys;
-  for (const entry of raw.split(',')) {
-    const [kid, b64] = entry.split(':').map((part) => (part || '').trim());
-    if (!kid || !b64) continue;
+  if (!raw) {
+    problems.push('FIELD_ENCRYPTION_KEYS is not set');
+    return keys;
+  }
+  raw.split(',').forEach((entry, index) => {
+    const at = entry.indexOf(':');
+    // A base64 key never contains ":", so a lone key pasted without its id is
+    // unambiguous: it takes the active id (or "a").
+    const bare = at < 0 && entry.trim() !== '';
+    const kid = bare
+      ? unquote(String(process.env.FIELD_ENCRYPTION_ACTIVE_KEY_ID || '').trim()) || 'a'
+      : at > 0 ? unquote(entry.slice(0, at).trim()) : '';
+    const b64 = bare ? unquote(entry.trim()) : at > 0 ? unquote(entry.slice(at + 1).trim()) : '';
+    if (!kid || !b64) {
+      problems.push(`FIELD_ENCRYPTION_KEYS entry ${index + 1} is not in the form "<id>:<key>" (for example "a:" followed by the key)`);
+      return;
+    }
     const key = Buffer.from(b64, 'base64');
     if (key.length !== 32) {
-      logger.error({ kid }, 'field encryption key is not 32 bytes; ignored');
-      continue;
+      problems.push(`FIELD_ENCRYPTION_KEYS key "${kid}" is ${key.length} bytes, not 32 (generate one with: openssl rand -base64 32)`);
+      return;
     }
     keys.set(kid, key);
-  }
+  });
   return keys;
 }
 
 const keys = loadKeys();
-const activeKeyId = String(process.env.FIELD_ENCRYPTION_ACTIVE_KEY_ID || '').trim() || [...keys.keys()][0] || '';
+const activeKeyId = unquote(String(process.env.FIELD_ENCRYPTION_ACTIVE_KEY_ID || '').trim()) || [...keys.keys()][0] || '';
+if (keys.size > 0 && !keys.has(activeKeyId)) {
+  problems.push(`FIELD_ENCRYPTION_ACTIVE_KEY_ID is "${activeKeyId}", but the keys present are: ${[...keys.keys()].join(', ')}`);
+}
+if (problems.length > 0) {
+  logger.warn({ problems }, 'field encryption is not usable; sensitive columns will be refused');
+} else {
+  logger.info({ keyIds: [...keys.keys()], activeKeyId }, 'field encryption configured');
+}
 
 /** Whether sensitive values can be stored. When false, they must be refused - never stored in plain text. */
 function isConfigured() {
   return Boolean(activeKeyId) && keys.has(activeKeyId);
+}
+
+/** Why encryption is not usable, without any key material; empty when it is. */
+function configurationProblems() {
+  return isConfigured() ? [] : [...problems];
 }
 
 function isEncrypted(value) {
@@ -127,5 +161,5 @@ function looksSensitive(columnName) {
 }
 
 module.exports = {
-  isConfigured, isEncrypted, encryptValue, decryptValue, encryptColumns, decryptColumns, looksSensitive,
+  isConfigured, configurationProblems, isEncrypted, encryptValue, decryptValue, encryptColumns, decryptColumns, looksSensitive,
 };

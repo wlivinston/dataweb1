@@ -169,7 +169,9 @@ async function createDataset({ ownerId, name, sourceName, columns }) {
       503,
       'ENCRYPTION_UNAVAILABLE',
       `This dataset has sensitive columns (${sensitive.join(', ')}) and encryption is not configured on ` +
-        'the server, so it is refused rather than stored unprotected.'
+        'the server, so it is refused rather than stored unprotected.' +
+        // Names the setting at fault, never a key.
+        (fieldCrypto.configurationProblems().length > 0 ? ` (${fieldCrypto.configurationProblems().join('; ')})` : '')
     );
   }
 

@@ -137,6 +137,9 @@ account, IBAN, date of birth, Ghana Card, BVN, NIN, …) or the uploader sends
 closed**: a dataset with a sensitive column and no key configured is refused with
 503 `ENCRYPTION_UNAVAILABLE`, never stored in plaintext. Blanks stay blank. Any future SQL
 pushdown must not filter or project on an encrypted column — the database holds ciphertext.
+A key the server cannot use is reported, never skipped silently: `configurationProblems()`
+names the faulty setting (never key material) in the startup log ("field encryption is not
+usable") and in the 503. Quotes around a value and a bare key without `a:` are accepted.
 
 ### Two-factor sign-in
 
